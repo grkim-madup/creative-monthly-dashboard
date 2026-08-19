@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 import dropbox
+from dropbox.common import PathRoot
 
 CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "google_ads_dropbox"
 
@@ -69,6 +70,13 @@ def sync_google_folder(dest_dir: Path | str = CACHE_DIR) -> Path:
         app_key=config["DROPBOX_APP_KEY"],
         app_secret=config["DROPBOX_APP_SECRET"],
     )
+    # 매드업은 Dropbox Business 팀 계정이라 "광고사업부" 폴더는 로그인한 사람의 개인
+    # 홈 네임스페이스가 아니라 팀 스페이스 루트에 있다(개인 홈은 팀 스페이스 안의
+    # "<이름>" 폴더 하나일 뿐). 기본 클라이언트는 홈 네임스페이스를 봐서 경로를 못 찾으므로,
+    # 계정의 root_namespace_id로 경로 기준을 바꿔야 한다. 개인(non-team) 계정은 두 값이
+    # 같아서 이 처리를 해도 동작이 그대로다.
+    root_namespace_id = client.users_get_current_account().root_info.root_namespace_id
+    client = client.with_path_root(PathRoot.root(root_namespace_id))
     root = config["DROPBOX_FOLDER_PATH"].rstrip("/")
 
     downloaded = 0
