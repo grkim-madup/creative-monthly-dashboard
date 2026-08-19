@@ -575,7 +575,7 @@ with data_card:
     st.markdown('<div class="sb-sub">구글 (별도 소스)</div>', unsafe_allow_html=True)
     google_files_slot = st.container()
     if dropbox_source.configured():
-        if st.button("Dropbox에서 다시 불러오기", key="google_refetch"):
+        if st.button("Dropbox에서 다시 불러오기", key="google_refetch", width="stretch"):
             st.session_state["_google_cache_bust"] = (
                 st.session_state.get("_google_cache_bust", 0) + 1
             )
