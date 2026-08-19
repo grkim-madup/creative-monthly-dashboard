@@ -521,6 +521,30 @@ section[data-testid="stSidebar"] h2 {
   background: #fff !important; border-color: var(--brand) !important;
   color: var(--brand-deep) !important;
 }
+/* 구글 데이터 고정 CTA — 고정 전엔 놓치면 안 되는 일이라 브랜드 톤 강조 박스로 눈에
+   띄게, 고정 후엔 평소엔 신경 쓸 필요 없는 상태라 옅은 캡션 한 줄로 조용하게 낮춘다. */
+.st-key-google_freeze_pending {
+  border: 1.5px solid var(--brand) !important;
+  background: #e7f9f0 !important;
+  border-radius: 6px !important;
+  padding: 12px 14px 14px !important;
+}
+.freeze-cta-title {
+  font-size: 12.5px; font-weight: 700; color: var(--brand-deep); margin-bottom: 3px;
+}
+.freeze-cta-body {
+  font-size: 11px; color: var(--ink-2); margin-bottom: 10px; line-height: 1.5;
+}
+.st-key-google_freeze_pending .stButton button[kind="primary"] {
+  min-height: 34px !important; font-size: 12.5px !important;
+}
+.st-key-google_freeze_done { padding: 4px 2px 0; }
+.st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
+  font-size: 10.5px !important; color: var(--faint) !important;
+}
+.st-key-google_freeze_done .stButton button {
+  min-height: 26px !important; font-size: 10.5px !important; padding: 2px 8px !important;
+}
 /* 메인 필터 셀렉트만 크고 또렷하게 (Streamlit이 key로 붙여주는 st-key-* 클래스로 지정) */
 .st-key-report_month .react-aria-ComboBox > div {
   border: 1.5px solid var(--brand) !important;

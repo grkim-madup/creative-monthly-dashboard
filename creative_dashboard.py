@@ -587,6 +587,9 @@ with data_card:
         help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 맞추려면 "
              "이 배율을 곱합니다(2026-07 실측 1.0830).",
     )
+    # 고정 여부에 따라 완전히 다른 톤(강조 vs 조용함)으로 그려야 해서, 데이터 카드
+    # 맨 아래에 독립된 블록으로 뺀다 — 자리만 먼저 잡아두고 내용은 아래에서 채운다.
+    freeze_slot = st.container()
 
 google_folder = _synced_google_folder(st.session_state.get("_google_cache_bust", 0))
 
@@ -783,25 +786,44 @@ with google_files_slot:
             "애셋 보고서 파일", f"{len(used_files)}개",
             help=f"출처: {google_source_label}{source_detail}",
         )
-        if has_snapshot:
-            st.caption(f"🔒 {month}월 데이터 고정됨 ({_snapshot_frozen_at(month)} 기준)")
-        else:
+        if not has_snapshot:
             st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
         with st.expander("읽은 파일 보기"):
             st.markdown("\n".join(f"- `{name}`" for name in used_files))
 
-    # 다음 달로 넘어가기 전에 미리 확정해 두고 싶을 때를 위한 수동 고정 — 최신 달에도
-    # 쓸 수 있다. 항상 "지금 라이브 상태"를 기준으로 얼리므로, 이미 고정된 달이라도
-    # 다시 누르면 그 시점 값으로 재고정된다.
-    if dropbox_source.configured() or Path(google_folder).exists():
-        freeze_label = "지금 시점으로 다시 고정" if has_snapshot else "지금 시점으로 고정"
-        if st.button(freeze_label, key="google_freeze", width="stretch"):
-            try:
-                google_snapshot.save(month, google_folder)
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as error:  # noqa: BLE001 - 구글시트 API 오류까지 폭넓게 화면에 보여준다
-                st.error(f"고정 실패: {error}")
+# 다음 달로 넘어가기 전에 미리 확정해 두고 싶을 때를 위한 수동 고정 — 최신 달에도 쓸 수
+# 있다. 항상 "지금 라이브 상태"를 기준으로 얼리므로, 이미 고정된 달이라도 다시 누르면
+# 그 시점 값으로 재고정된다. 고정 전에는 놓치면 안 되는 일이라 눈에 띄게, 고정 후에는
+# 평소엔 신경 쓸 필요 없는 상태라 조용하게 — 언제 고정됐는지만 작게 남긴다.
+live_source_available = dropbox_source.configured() or Path(google_folder).exists()
+with freeze_slot:
+    if has_snapshot:
+        with st.container(key="google_freeze_done"):
+            done_cols = st.columns([3, 1.4], vertical_alignment="center")
+            done_cols[0].caption(f"🔒 {month}월 데이터 고정됨 · {_snapshot_frozen_at(month)}")
+            if live_source_available:
+                if done_cols[1].button("다시 고정", key="google_freeze", width="stretch"):
+                    try:
+                        google_snapshot.save(month, google_folder)
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
+                        st.error(f"고정 실패: {error}")
+    elif live_source_available and not google_all.empty:
+        with st.container(key="google_freeze_pending", border=True):
+            st.markdown(
+                '<div class="freeze-cta-title">이 달 데이터가 아직 고정되지 않았습니다</div>'
+                '<div class="freeze-cta-body">드롭박스 폴더가 다음 달 파일로 바뀌면 '
+                '지금 이 숫자는 사라집니다.</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("지금 시점으로 고정", key="google_freeze", type="primary", width="stretch"):
+                try:
+                    google_snapshot.save(month, google_folder)
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
+                    st.error(f"고정 실패: {error}")
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
 # 옮긴다 — 성공적으로 읽었을 때만 채워진다(실패·데이터 없음은 아래 경고로 바로 보여준다).
