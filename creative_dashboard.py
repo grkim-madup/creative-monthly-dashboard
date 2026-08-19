@@ -9,6 +9,7 @@ TOP 소재 / 소재 속성별 성과 / 작품별 성과를 매달 같은 절차�
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
@@ -18,6 +19,7 @@ import streamlit as st
 import auth
 import blocks as report_blocks
 import dropbox_source
+import google_snapshot
 import highlights
 import locks
 import overrides as manual_overrides
@@ -724,10 +726,17 @@ def _google(folder: str, markup: float) -> pd.DataFrame:
     return load_google_ads_folder(folder, cost_markup=markup)
 
 
+# 리포트 히스토리 보존: 최신 달(진행 중)은 항상 라이브 폴더를 보고, 최신이 아닌 달은
+# 스냅샷이 있으면 무조건 스냅샷만 본다 — 담당자가 드롭박스 폴더를 다음 달 파일로
+# 덮어써도 이미 지나간 달의 숫자는 바뀌지 않는다.
+is_latest_month = bool(months) and month == months[-1]
+has_snapshot = google_snapshot.exists(month)
+google_source_dir = str(google_snapshot.path(month)) if has_snapshot else google_folder
+
 google_all = pd.DataFrame()
 google_error = None
 try:
-    google_all = _google(google_folder, cost_markup)
+    google_all = _google(google_source_dir, cost_markup)
 except Exception as error:
     google_error = str(error)
 
@@ -736,23 +745,49 @@ if not google_all.empty:
     google_all = google_all[google_all["month"] == month]
     google = creative_assets(google_all)
 
+# 스냅샷이 아직 없는 지난 달을 처음 열면, 지금 라이브에 남아있는 값으로 바로 고정한다
+# (월이 지나면 자동으로 고정되는 것처럼 동작하는 지연 평가 방식). 라이브에 이미 그 달
+# 데이터가 없으면(다음 달 파일로 덮어써짐) 고정할 게 없으니 건너뛴다.
+if not is_latest_month and not has_snapshot and not google_error and not google_all.empty:
+    try:
+        google_snapshot.save(month, google_folder)
+        has_snapshot = True
+    except OSError:
+        pass  # 스냅샷 저장 실패는 화면 표시를 막을 이유가 아니다 — 조용히 넘어간다
+
 # 사이드바에 '이번 달 실제로 읽은 파일'을 채운다(위에서 자리만 잡아둔 곳).
 with google_files_slot:
     if google_error:
-        st.metric("애셋 보고서 파일", "읽기 실패", help=f"폴더: {google_folder}")
+        st.metric("애셋 보고서 파일", "읽기 실패", help=f"폴더: {google_source_dir}")
         st.caption(google_error[:120])
     elif google_all.empty:
-        st.metric("애셋 보고서 파일", "0개", help=f"폴더: {google_folder}")
+        st.metric("애셋 보고서 파일", "0개", help=f"폴더: {google_source_dir}")
         st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
     else:
         used_files = sorted(google_all["source_file"].dropna().unique())
         st.metric(
             "애셋 보고서 파일", f"{len(used_files)}개",
-            help=f"폴더: {google_folder} (하위 폴더까지 모두 읽습니다)",
+            help=f"폴더: {google_source_dir} (하위 폴더까지 모두 읽습니다)",
         )
-        st.caption(f"{month}월 데이터로 사용 중")
+        if has_snapshot:
+            st.caption(f"🔒 {month}월 데이터 고정됨 ({google_snapshot.frozen_at(month)} 기준)")
+        else:
+            st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
         with st.expander("읽은 파일 보기"):
             st.markdown("\n".join(f"- `{name}`" for name in used_files))
+
+    # 다음 달로 넘어가기 전에 미리 확정해 두고 싶을 때를 위한 수동 고정 — 최신 달에도
+    # 쓸 수 있다. 항상 "지금 라이브 상태"를 기준으로 얼리므로, 이미 고정된 달이라도
+    # 다시 누르면 그 시점 값으로 재고정된다.
+    if dropbox_source.configured() or Path(google_folder).exists():
+        freeze_label = "지금 시점으로 다시 고정" if has_snapshot else "지금 시점으로 고정"
+        if st.button(freeze_label, key="google_freeze", width="stretch"):
+            try:
+                google_snapshot.save(month, google_folder)
+                st.cache_data.clear()
+                st.rerun()
+            except OSError as error:
+                st.error(f"고정 실패: {error}")
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
 # 옮긴다 — 성공적으로 읽었을 때만 채워진다(실패·데이터 없음은 아래 경고로 바로 보여준다).
