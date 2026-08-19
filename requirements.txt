@@ -1,0 +1,8 @@
+streamlit==1.60.0
+pandas==3.0.5
+numpy==2.5.1
+plotly==6.9.0
+streamlit-quill==0.0.3
+dropbox==12.2.1
+google-api-python-client==2.198.0
+google-auth==2.56.2
