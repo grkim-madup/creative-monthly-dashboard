@@ -726,10 +726,9 @@ def _google(folder: str, markup: float) -> pd.DataFrame:
     return load_google_ads_folder(folder, cost_markup=markup)
 
 
-# 리포트 히스토리 보존: 최신 달(진행 중)은 항상 라이브 폴더를 보고, 최신이 아닌 달은
-# 스냅샷이 있으면 무조건 스냅샷만 본다 — 담당자가 드롭박스 폴더를 다음 달 파일로
-# 덮어써도 이미 지나간 달의 숫자는 바뀌지 않는다.
-is_latest_month = bool(months) and month == months[-1]
+# 리포트 히스토리 보존: 스냅샷이 있는 달은 무조건 스냅샷만 본다 — 담당자가 드롭박스
+# 폴더를 다음 달 파일로 덮어써도 이미 고정해 둔 달의 숫자는 바뀌지 않는다. 자동 고정은
+# 하지 않는다(사용자 결정) — 오직 아래 "지금 시점으로 고정" 버튼을 눌렀을 때만 얼린다.
 has_snapshot = google_snapshot.exists(month)
 google_source_dir = str(google_snapshot.path(month)) if has_snapshot else google_folder
 
@@ -744,16 +743,6 @@ google = pd.DataFrame()
 if not google_all.empty:
     google_all = google_all[google_all["month"] == month]
     google = creative_assets(google_all)
-
-# 스냅샷이 아직 없는 지난 달을 처음 열면, 지금 라이브에 남아있는 값으로 바로 고정한다
-# (월이 지나면 자동으로 고정되는 것처럼 동작하는 지연 평가 방식). 라이브에 이미 그 달
-# 데이터가 없으면(다음 달 파일로 덮어써짐) 고정할 게 없으니 건너뛴다.
-if not is_latest_month and not has_snapshot and not google_error and not google_all.empty:
-    try:
-        google_snapshot.save(month, google_folder)
-        has_snapshot = True
-    except OSError:
-        pass  # 스냅샷 저장 실패는 화면 표시를 막을 이유가 아니다 — 조용히 넘어간다
 
 # 사이드바에 '이번 달 실제로 읽은 파일'을 채운다(위에서 자리만 잡아둔 곳).
 with google_files_slot:
