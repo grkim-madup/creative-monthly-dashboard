@@ -48,7 +48,11 @@ def require_password() -> None:
            flex 형제 요소로 폭을 조금 뺏어가는 바람에 살짝 오른쪽으로 치우쳐 보였다.
            뷰포트 기준으로 강제 고정하면 사이드바 잔여 요소와 무관하게 항상 정중앙이다. */
         [data-testid="stMainBlockContainer"] {
-            max-width: 480px !important;
+            /* 제목 한 줄("네이버웹툰 대만 · 먼슬리 크리에이티브 리포트")이 nowrap으로
+               강제된 채 이 컨테이너의 실제 콘텐츠 폭(패딩 제외 320px)보다 넓어서
+               (실측 scrollWidth 357px) 오른쪽으로 넘쳤다. 패딩(좌우 80px씩)까지 감안해
+               560px로 넉넉히 잡아 어떤 폰트 렌더링에서도 한 줄 안에 다 들어오게 한다. */
+            max-width: 560px !important;
             position: fixed !important; left: 50% !important; top: 12vh !important;
             transform: translateX(-50%) !important;
         }
