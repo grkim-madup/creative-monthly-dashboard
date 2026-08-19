@@ -64,6 +64,12 @@ def require_password() -> None:
             background-color: var(--brand-deep, #00A94C) !important;
             border-color: var(--brand-deep, #00A94C) !important;
         }
+        /* Streamlit이 입력칸 안에 "Press Enter to submit form" 안내를 겹쳐서 그리는데,
+           이 폭에서는 눈(비밀번호 표시) 아이콘과 자리가 겹쳐 텍스트 정렬이 깨지고 아이콘
+           클릭도 막힌다. 아래에 이미 제출 버튼이 보이니 이 안내는 없어도 된다. */
+        [data-testid="stTextInput"] [data-testid="InputInstructions"] {
+            display: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
