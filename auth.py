@@ -17,6 +17,8 @@ import hmac
 
 import streamlit as st
 
+from ui import logo_data_uri
+
 SESSION_KEY = "_authed"
 
 
@@ -34,22 +36,26 @@ def require_password() -> None:
         return
 
     # 컨테이너 폭 축소는 테스트 대상 Streamlit 버전 기준 실제 testid로 잡는다(구버전 문서의
-    # ".main .block-container" 셀렉터는 여기서 매치되지 않는다). 폼 버튼은 kind="primary"를
-    # 줘도 이 앱 전역 CSS(.stButton 스코프)가 st.form_submit_button까지는 안 덮어써서
-    # 브랜드 그린을 이 폼 key로 한정해 직접 입힌다.
-    # 폼 제출 버튼은 kind="primary"가 아니라 "primaryFormSubmit"로 렌더된다(st.form_submit_button
-    # 전용 kind) — 일반 st.button용 전역 CSS(.stButton 스코프, kind="primary")가 여기엔
-    # 안 걸려서 이 kind를 직접 지정해 브랜드 그린을 입힌다. 사이드바가 남아 있으면 폭 제한만으론
-    # 안 가운데로 보여서 margin:auto로 확실히 중앙 정렬한다.
+    # ".main .block-container" 셀렉터는 여기서 매치되지 않는다). 480px로 넉넉히 잡아 제목이
+    # 세 줄로 접히지 않게 한다("네이버웹툰 대만 · 먼슬리 크리에이티브 리포트"가 380px에서는
+    # 어색하게 줄바꿈됐다). 폼 제출 버튼은 kind="primary"가 아니라 "primaryFormSubmit"로
+    # 렌더된다(st.form_submit_button 전용 kind) — 일반 st.button용 전역 CSS(.stButton 스코프,
+    # kind="primary")가 여기엔 안 걸려서 이 kind를 직접 지정해 브랜드 그린을 입힌다.
     st.markdown(
         """
         <style>
         [data-testid="stMainBlockContainer"] {
-            max-width: 380px !important; margin: 16vh auto 0 auto !important;
+            max-width: 480px !important; margin: 12vh auto 0 auto !important;
         }
         /* 로그인 전에는 본문 사이드바가 의미 없다 — 접힌 채로 남아 있으면 남은 폭 기준
            중앙 정렬이라 화면 전체로 보면 살짝 오른쪽으로 치우쳐 보인다. 아예 숨긴다. */
         [data-testid="stSidebar"] { display: none; }
+        .auth-logo { display: flex; justify-content: center; margin-bottom: 18px; }
+        .auth-logo img { height: 40px; }
+        .auth-title { text-align: center; font-size: 19px; font-weight: 700;
+            margin-bottom: 6px; white-space: nowrap; }
+        .auth-caption { text-align: center; color: var(--ink-2, #4b5563);
+            font-size: 13px; margin-bottom: 18px; }
         button[data-testid="stBaseButton-primaryFormSubmit"] {
             background-color: var(--brand, #00DC64) !important;
             border-color: var(--brand, #00DC64) !important;
@@ -62,8 +68,14 @@ def require_password() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.markdown("#### 네이버웹툰 대만 · 먼슬리 크리에이티브 리포트")
-    st.caption("내부 공유용 대시보드입니다. 비밀번호를 입력하세요.")
+    logo = logo_data_uri()
+    if logo:
+        st.markdown(f'<div class="auth-logo"><img src="{logo}" alt=""></div>',
+                    unsafe_allow_html=True)
+    st.markdown('<div class="auth-title">네이버웹툰 대만 · 먼슬리 크리에이티브 리포트</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="auth-caption">내부 공유용 대시보드입니다. 비밀번호를 입력하세요.</div>',
+                unsafe_allow_html=True)
     with st.form("auth_gate_form", border=True):
         entered = st.text_input("비밀번호", type="password", label_visibility="collapsed",
                                  placeholder="비밀번호")
