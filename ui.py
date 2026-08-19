@@ -508,7 +508,19 @@ section[data-testid="stSidebar"] h2 {
 .st-key-sb_data input, .st-key-sb_data [data-testid="stExpander"] summary p {
   font-size: 12px !important;
 }
-.st-key-sb_data .stButton button { font-size: 12px !important; min-height: 30px !important; }
+/* "다시 불러오기" 류 — 사이드바에서 항상 눈에 띄어야 하는 필터·모드 토글과 달리
+   가끔 누르는 보조 동작이라, 검은 글씨의 진한 기본 버튼 대신 옆 입력창과 같은 옅은
+   회색 배경 + 중간톤 글자로 조용하게 앉힌다. 호버 시에만 브랜드 그린으로 살아난다
+   (전역 .stButton button:hover 규칙 그대로 사용). */
+.st-key-sb_data .stButton button {
+  font-size: 12px !important; font-weight: 600 !important; min-height: 30px !important;
+  background: var(--line-soft) !important; border-color: var(--line-soft) !important;
+  color: var(--muted) !important;
+}
+.st-key-sb_data .stButton button:hover {
+  background: #fff !important; border-color: var(--brand) !important;
+  color: var(--brand-deep) !important;
+}
 /* 메인 필터 셀렉트만 크고 또렷하게 (Streamlit이 key로 붙여주는 st-key-* 클래스로 지정) */
 .st-key-report_month .react-aria-ComboBox > div {
   border: 1.5px solid var(--brand) !important;
