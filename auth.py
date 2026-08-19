@@ -44,12 +44,16 @@ def require_password() -> None:
     st.markdown(
         """
         <style>
+        /* margin:auto는 사이드바를 숨겨도 그 접기 화살표(collapsedControl)가 옆에 남아
+           flex 형제 요소로 폭을 조금 뺏어가는 바람에 살짝 오른쪽으로 치우쳐 보였다.
+           뷰포트 기준으로 강제 고정하면 사이드바 잔여 요소와 무관하게 항상 정중앙이다. */
         [data-testid="stMainBlockContainer"] {
-            max-width: 480px !important; margin: 12vh auto 0 auto !important;
+            max-width: 480px !important;
+            position: fixed !important; left: 50% !important; top: 12vh !important;
+            transform: translateX(-50%) !important;
         }
-        /* 로그인 전에는 본문 사이드바가 의미 없다 — 접힌 채로 남아 있으면 남은 폭 기준
-           중앙 정렬이라 화면 전체로 보면 살짝 오른쪽으로 치우쳐 보인다. 아예 숨긴다. */
-        [data-testid="stSidebar"] { display: none; }
+        /* 로그인 전에는 본문 사이드바가 의미 없다 — 아예 숨긴다(접기 화살표까지 포함). */
+        [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
         .auth-logo { display: flex; justify-content: center; margin-bottom: 18px; }
         .auth-logo img { height: 40px; }
         .auth-title { text-align: center; font-size: 19px; font-weight: 700;
@@ -66,8 +70,10 @@ def require_password() -> None:
         }
         /* Streamlit이 입력칸 안에 "Press Enter to submit form" 안내를 겹쳐서 그리는데,
            이 폭에서는 눈(비밀번호 표시) 아이콘과 자리가 겹쳐 텍스트 정렬이 깨지고 아이콘
-           클릭도 막힌다. 아래에 이미 제출 버튼이 보이니 이 안내는 없어도 된다. */
-        [data-testid="stTextInput"] [data-testid="InputInstructions"] {
+           클릭도 막힌다. 아래에 이미 제출 버튼이 보이니 이 안내는 없어도 된다. 부모 스코프를
+           좁게 잡았다가 안 먹힌 적이 있어(중첩 구조가 버전에 따라 달라짐) 테스트id 하나로 넓게
+           잡는다. */
+        div[data-testid="InputInstructions"] {
             display: none !important;
         }
         </style>
