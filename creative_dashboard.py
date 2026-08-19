@@ -726,40 +726,65 @@ def _google(folder: str, markup: float) -> pd.DataFrame:
     return load_google_ads_folder(folder, cost_markup=markup)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _snapshot_exists(month: int) -> bool:
+    # 구글시트 백엔드일 때 exists()가 매 rerun마다 실제 API 호출을 하는데, 캐시가 없으면
+    # 위젯 하나 건드릴 때마다 눈에 띄게 느려진다(실측 수 초). 고정/재고정 버튼이
+    # st.cache_data.clear()를 부르므로 새로 고정한 직후에는 바로 반영된다.
+    return google_snapshot.exists(month)
+
+
+@st.cache_data(ttl=3600, show_spinner="구글 스냅샷 읽는 중…")
+def _load_snapshot(month: int, markup: float) -> pd.DataFrame:
+    return google_snapshot.load(month, markup)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _snapshot_frozen_at(month: int) -> str | None:
+    return google_snapshot.frozen_at(month)
+
+
 # 리포트 히스토리 보존: 스냅샷이 있는 달은 무조건 스냅샷만 본다 — 담당자가 드롭박스
 # 폴더를 다음 달 파일로 덮어써도 이미 고정해 둔 달의 숫자는 바뀌지 않는다. 자동 고정은
 # 하지 않는다(사용자 결정) — 오직 아래 "지금 시점으로 고정" 버튼을 눌렀을 때만 얼린다.
-has_snapshot = google_snapshot.exists(month)
-google_source_dir = str(google_snapshot.path(month)) if has_snapshot else google_folder
+# 스냅샷은 구글시트 전용 탭(설정돼 있으면) 또는 로컬 폴더 복사(폴백)로 저장된다 —
+# google_snapshot이 어느 쪽인지 알아서 고른다.
+has_snapshot = _snapshot_exists(month)
+google_source_label = google_snapshot.source_label(month) if has_snapshot else google_folder
 
 google_all = pd.DataFrame()
 google_error = None
 try:
-    google_all = _google(google_source_dir, cost_markup)
+    if has_snapshot:
+        google_all = _load_snapshot(month, cost_markup)
+    else:
+        google_all = _google(google_folder, cost_markup)
+        if not google_all.empty:
+            google_all = google_all[google_all["month"] == month]
 except Exception as error:
     google_error = str(error)
 
 google = pd.DataFrame()
 if not google_all.empty:
-    google_all = google_all[google_all["month"] == month]
     google = creative_assets(google_all)
 
 # 사이드바에 '이번 달 실제로 읽은 파일'을 채운다(위에서 자리만 잡아둔 곳).
 with google_files_slot:
     if google_error:
-        st.metric("애셋 보고서 파일", "읽기 실패", help=f"폴더: {google_source_dir}")
+        st.metric("애셋 보고서 파일", "읽기 실패", help=f"출처: {google_source_label}")
         st.caption(google_error[:120])
     elif google_all.empty:
-        st.metric("애셋 보고서 파일", "0개", help=f"폴더: {google_source_dir}")
+        st.metric("애셋 보고서 파일", "0개", help=f"출처: {google_source_label}")
         st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
     else:
         used_files = sorted(google_all["source_file"].dropna().unique())
+        source_detail = "" if has_snapshot else " (하위 폴더까지 모두 읽습니다)"
         st.metric(
             "애셋 보고서 파일", f"{len(used_files)}개",
-            help=f"폴더: {google_source_dir} (하위 폴더까지 모두 읽습니다)",
+            help=f"출처: {google_source_label}{source_detail}",
         )
         if has_snapshot:
-            st.caption(f"🔒 {month}월 데이터 고정됨 ({google_snapshot.frozen_at(month)} 기준)")
+            st.caption(f"🔒 {month}월 데이터 고정됨 ({_snapshot_frozen_at(month)} 기준)")
         else:
             st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
         with st.expander("읽은 파일 보기"):
@@ -775,7 +800,7 @@ with google_files_slot:
                 google_snapshot.save(month, google_folder)
                 st.cache_data.clear()
                 st.rerun()
-            except OSError as error:
+            except Exception as error:  # noqa: BLE001 - 구글시트 API 오류까지 폭넓게 화면에 보여준다
                 st.error(f"고정 실패: {error}")
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
@@ -783,8 +808,8 @@ with google_files_slot:
 google_read_hint = None
 if not google_error and not google.empty:
     google_read_hint = (
-        "구글 광고 애셋 보고서를 직접 읽었습니다.\n"
-        f"{google_folder} · 원가에 마크업 ×{cost_markup:.4f} 적용 · "
+        ("이 달은 고정된 스냅샷입니다.\n" if has_snapshot else "구글 광고 애셋 보고서를 직접 읽었습니다.\n")
+        + f"{google_source_label} · 원가에 마크업 ×{cost_markup:.4f} 적용 · "
         f"캠페인 {google['source_file'].nunique()}개 파일"
     )
 
