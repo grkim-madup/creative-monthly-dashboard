@@ -70,7 +70,9 @@ def require_password() -> None:
         submitted = st.form_submit_button("입장", type="primary", width="stretch")
 
     if submitted:
-        if hmac.compare_digest(entered, password):
+        # compare_digest는 str끼리 비교할 때 ASCII만 허용한다 — 한글 비밀번호를 쓰면
+        # TypeError로 죽는다. bytes로 인코딩해서 비교하면 어떤 문자든 안전하다.
+        if hmac.compare_digest(entered.encode("utf-8"), password.encode("utf-8")):
             st.session_state[SESSION_KEY] = True
             st.rerun()
         else:
