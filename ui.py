@@ -469,8 +469,9 @@ section[data-testid="stSidebar"] h2 {
   background: #f7f9fa; border: 1px solid var(--line-soft) !important;
   border-radius: 6px; padding: 12px 12px 4px 12px !important; margin-bottom: 10px;
 }
-/* 모드 토글이 카드 맨 아래 붙어 답답해 보였다 — 아래 여백을 준다 */
+/* 카드 맨 아래 요소(모드 토글 / 고정 CTA 블록)가 테두리에 붙어 답답해 보였다 */
 .st-key-sb_controls { padding-bottom: 14px !important; }
+.st-key-sb_data { padding-bottom: 14px !important; }
 .st-key-sb_controls [data-testid="stVerticalBlock"],
 .st-key-sb_data [data-testid="stVerticalBlock"] { gap: 4px !important; }
 /* 카드 안의 입력은 흰색으로 띄워 배경과 구분한다 */
