@@ -603,21 +603,31 @@ section[data-testid="stSidebar"] h2 {
 [class*="st-key-blockmenu_"] .stButton button:hover {
   border-color: var(--brand) !important; color: var(--brand-deep) !important;
 }
-/* 편집하기 — 유일한 주요 동작이라 테두리를 벗고 초록 글자로 링크처럼 */
-[class*="st-key-edit_"] button {
-  border-color: transparent !important; background: transparent !important;
-  color: var(--brand-deep) !important; padding: 1px 4px !important;
+/* 편집하기 — 이 블록의 주요 동작이라 브랜드 그린으로 칠한다.
+   앞선 `[class*="st-key-blockmenu_"] .stButton button` 규칙과 특정도가 같아야 이기므로
+   (둘 다 !important) 반드시 blockmenu 스코프를 함께 쓴다. */
+[class*="st-key-blockmenu_"] [class*="st-key-edit_"] button {
+  background: #e7f9f0 !important; border-color: #a8e8c8 !important;
+  color: var(--brand-deep) !important; padding: 1px 10px !important;
 }
-[class*="st-key-edit_"] button p { font-weight: 700 !important; }
-[class*="st-key-edit_"] button:hover { background: #e7f9f0 !important; }
-/* 이동·삭제 — 글자 대신 기호만 담는 정사각 버튼 */
-[class*="st-key-up_"] button, [class*="st-key-down_"] button,
+[class*="st-key-blockmenu_"] [class*="st-key-edit_"] button p { font-weight: 700 !important; }
+[class*="st-key-blockmenu_"] [class*="st-key-edit_"] button:hover {
+  background: var(--brand) !important; border-color: var(--brand) !important;
+  color: #04331b !important;
+}
+/* 삭제 — 되돌릴 수 없는 동작이라 붉은 톤으로 칠해 다른 버튼과 구분한다 */
 [class*="st-key-blockmenu_"] [class*="st-key-del_"] button {
-  width: 24px !important; padding: 0 !important;
+  background: #fdf1f1 !important; border-color: #eec4c1 !important;
+  color: #b4453f !important; padding: 1px 10px !important;
 }
-/* 삭제는 되돌리기 어려운 동작이라 호버에서만 붉게 — 평소엔 다른 아이콘과 같은 무게 */
+[class*="st-key-blockmenu_"] [class*="st-key-del_"] button p { font-weight: 700 !important; }
 [class*="st-key-blockmenu_"] [class*="st-key-del_"] button:hover {
-  border-color: #d98b86 !important; color: #b4453f !important;
+  background: #f7dedc !important; border-color: #d98b86 !important;
+}
+/* 이동 — 순서만 바꾸는 보조 동작이라 색 없이 기호만 담는 정사각 버튼 */
+[class*="st-key-blockmenu_"] [class*="st-key-up_"] button,
+[class*="st-key-blockmenu_"] [class*="st-key-down_"] button {
+  width: 24px !important; padding: 0 !important;
 }
 /* 삭제 확인 줄 — 안내는 작게, 확정 버튼만 붉게 */
 [class*="st-key-blockdelconfirm_"] { flex: 0 0 auto !important; }

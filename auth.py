@@ -5,10 +5,14 @@ Streamlit Community Cloud 무료 요금제는 계정당 프라이빗 앱을 1개
 사람이라면 로그인 화면까지는 보게 되므로, 그 뒤에서 고객사 실데이터를 막는 최소한의 장치다.
 
 비밀번호는 절대 코드에 넣지 않는다 — Streamlit Cloud의 앱별 Secrets(비공개, 저장소에
-커밋되지 않음)에만 `DASHBOARD_PASSWORD`로 등록한다. 로컬 개발 시에는
-`.streamlit/secrets.toml`(gitignore 대상)에 같은 키를 넣으면 된다. Secrets가 아예
-설정되지 않은 환경(예: 최초 로컬 셋업)에서는 게이트를 건너뛴다 — 그 상태에서는 배포된 게
-아니라 개발자 본인 PC일 뿐이라는 뜻이다.
+커밋되지 않음)에만 `DASHBOARD_PASSWORD`로 등록한다.
+
+혼자 쓰는 로컬 개발에서는 매번 비밀번호를 넣는 게 번거로우니 `.streamlit/secrets.toml`
+(gitignore 대상)에 `DASHBOARD_NO_AUTH = true`를 넣어 게이트를 끌 수 있다.
+
+**둘 다 없으면 통과시키지 않고 막는다(fail-closed).** 예전에는 비밀번호가 없으면 그냥
+통과시켰는데, 그러면 배포판 Secrets에서 비밀번호가 실수로 지워지는 순간 고객사 실데이터가
+그대로 공개된다. 게이트를 끄는 건 반드시 명시적인 선언(DASHBOARD_NO_AUTH)이어야 한다.
 """
 
 from __future__ import annotations
@@ -22,18 +26,46 @@ from ui import logo_data_uri
 SESSION_KEY = "_authed"
 
 
+def _secret(name: str):
+    """secrets.toml이 아예 없는 환경에서도 조용히 None을 돌려준다."""
+    try:
+        return st.secrets.get(name)
+    except Exception:  # noqa: BLE001 - secrets 파일 자체가 없으면 접근에서 예외가 난다
+        return None
+
+
 def _configured_password() -> str | None:
-    value = st.secrets.get("DASHBOARD_PASSWORD")
+    value = _secret("DASHBOARD_PASSWORD")
     return str(value) if value else None
 
 
+def _auth_disabled() -> bool:
+    """게이트를 끄겠다고 명시적으로 선언했는지. 로컬 단독 사용 편의를 위한 장치다."""
+    value = _secret("DASHBOARD_NO_AUTH")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes"} if value is not None else False
+
+
 def require_password() -> None:
-    """비밀번호가 설정돼 있으면 인증 전까지 이후 코드를 실행하지 않는다."""
-    password = _configured_password()
-    if password is None:
-        return  # 로컬 개발 등 secrets 미설정 환경 — 게이트 없이 통과
+    """인증 전까지 이후 코드를 실행하지 않는다.
+
+    DASHBOARD_NO_AUTH가 켜져 있으면 게이트를 건너뛰고, 비밀번호가 없으면 통과가 아니라
+    차단한다 — 배포 환경에서 비밀번호가 빠졌을 때 데이터가 공개되는 걸 막기 위해서다.
+    """
+    if _auth_disabled():
+        return
     if st.session_state.get(SESSION_KEY):
         return
+
+    password = _configured_password()
+    if password is None:
+        st.error(
+            "비밀번호가 설정되지 않아 리포트를 열 수 없습니다. "
+            "Secrets에 DASHBOARD_PASSWORD를 등록하거나, 혼자 쓰는 로컬이라면 "
+            "DASHBOARD_NO_AUTH = true 를 넣어 주세요."
+        )
+        st.stop()
 
     # 컨테이너 폭 축소는 테스트 대상 Streamlit 버전 기준 실제 testid로 잡는다(구버전 문서의
     # ".main .block-container" 셀렉터는 여기서 매치되지 않는다). 480px로 넉넉히 잡아 제목이

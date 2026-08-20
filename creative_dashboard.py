@@ -1280,7 +1280,7 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
         if st.button("▼", key=f"down_{block_id}", help="아래로"):
             report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, 1))
             st.rerun()
-        if st.button("✕", key=f"del_{block_id}", help="삭제"):
+        if st.button("삭제", key=f"del_{block_id}"):
             st.session_state[confirm_key] = True
             st.rerun()
 
@@ -1437,13 +1437,15 @@ def match_conditions(conditions: dict) -> tuple[pd.DataFrame, int]:
     return scope_of_match, len(matched_ads)
 
 
-def condition_label(conditions: dict) -> str | None:
-    """조건을 'Extra Info = mix' 같은 한 줄로 요약한다. 조건이 없으면 None(배지 자체를 숨긴다).
+def condition_label(conditions: dict) -> str:
+    """조건을 'Extra Info = mix' 같은 한 줄로 요약한다.
 
-    블록 헤더 옆 배지와 조건 편집 패널 양쪽에서 같은 문구를 써야 어긋나지 않는다.
+    조건이 없을 때 배지를 아예 숨겼더니 "필터가 걸려 있었는데 표시가 사라졌다"고 읽혔다 —
+    비어 있다는 것도 정보라서 명시한다. 블록 헤더 옆 배지와 조건 편집 패널 양쪽에서
+    같은 문구를 써야 어긋나지 않는다.
     """
     if not conditions:
-        return None
+        return "조건 없음 · 전체 소재"
     return " · ".join(
         f"{PIVOT_FIELDS[f]} = {', '.join(map(str, v))}" for f, v in conditions.items()
     )
