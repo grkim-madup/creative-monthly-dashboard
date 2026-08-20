@@ -555,7 +555,8 @@ section[data-testid="stSidebar"] h2 {
   border: 1px solid var(--line) !important;
   background: var(--line-soft) !important;
   border-radius: 4px !important;
-  padding: 11px 14px 12px !important;
+  /* 두 줄뿐인 박스라 위아래를 넉넉히 — 설명 줄이 테두리에 붙어 답답해 보였다 */
+  padding: 13px 14px 15px !important;
 }
 .freeze-cta-title--muted { color: var(--muted) !important; }
 .freeze-cta-dot--muted { background: var(--faint) !important; }
@@ -565,7 +566,12 @@ section[data-testid="stSidebar"] h2 {
   font-size: 10.5px !important; color: var(--faint) !important;
 }
 .st-key-google_freeze_done .stButton button {
-  min-height: 26px !important; font-size: 10.5px !important; padding: 2px 8px !important;
+  min-height: 24px !important; padding: 1px 8px !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+}
+/* 라벨은 Streamlit이 button > p 로 감싸므로 폰트는 p에 직접 지정해야 먹는다 */
+.st-key-google_freeze_done .stButton button p {
+  font-size: 9.5px !important; line-height: 1.2 !important; white-space: nowrap !important;
 }
 /* 메인 필터 셀렉트만 크고 또렷하게 (Streamlit이 key로 붙여주는 st-key-* 클래스로 지정) */
 .st-key-report_month .react-aria-ComboBox > div {
