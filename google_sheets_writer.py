@@ -18,12 +18,17 @@ DataFrame을 월별 탭(`snapshot_<월>`)에 그대로 쓴다. 비용은 마크�
 그대로 월별 탭(`blocks_<월>`) A1 셀 하나에 넣는다. 배포판(Streamlit Community Cloud)의
 로컬 디스크는 재배포·리부트마다 초기화되므로, 로컬 파일(`notes/blocks_<월>.json`)만
 믿으면 배포판에서 남긴 코멘트가 그대로 휘발된다 — 이미 스냅샷용으로 격리해 둔 같은
-서비스 계정·시트를 재사용해 코멘트도 여기 영구 저장한다(이미지 파일 자체는 여전히
-로컬 디스크에 남아 있어 배포판 재배포 시 사라질 수 있다는 한계는 남아 있다).
+서비스 계정·시트를 재사용해 코멘트도 여기 영구 저장한다.
+
+저장 형식(이미지): NEXT STEP/분석 블록에 첨부한 레퍼런스 이미지를 `images_<월>` 탭에 청크
+단위로 저장한다. 구글시트 셀 하나는 약 5만자 제한이 있어 base64로 인코딩한 이미지 전체를
+셀 하나에 못 넣는 경우가 많으므로, `CHUNK_SIZE`자씩 잘라 (파일명, 순번, 조각) 행으로 여러 줄에
+나눠 쓰고 읽을 때 순번대로 이어 붙인다.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import os
@@ -190,3 +195,66 @@ def read_blocks(month: int) -> dict | None:
     except (json.JSONDecodeError, TypeError, IndexError):
         return None
     return data if isinstance(data, dict) else None
+
+
+# ----------------------------------------------------------------------------
+# 이미지 첨부 — 청크 단위 저장(셀당 약 5만자 제한 우회)
+
+CHUNK_SIZE = 40_000
+
+
+def _images_tab_name(month: int) -> str:
+    return f"images_{int(month)}"
+
+
+def write_image(month: int, stored_name: str, data: bytes) -> None:
+    """이미지를 base64로 인코딩해 청크로 나눠 이 달 이미지 탭에 추가한다(append)."""
+    service = _service()
+    tab = _images_tab_name(month)
+    _ensure_tab(service, tab)
+    encoded = base64.b64encode(data).decode("ascii")
+    chunks = [encoded[i : i + CHUNK_SIZE] for i in range(0, len(encoded), CHUNK_SIZE)] or [""]
+    rows = [[stored_name, str(seq), chunk] for seq, chunk in enumerate(chunks)]
+    service.spreadsheets().values().append(
+        spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+        valueInputOption="RAW", insertDataOption="INSERT_ROWS",
+        body={"values": rows},
+    ).execute()
+
+
+def read_image(month: int, stored_name: str) -> bytes | None:
+    """저장된 이미지를 청크 순서대로 이어 붙여 원본 바이트로 돌려준다. 없으면 None."""
+    service = _service()
+    tab = _images_tab_name(month)
+    if tab not in _existing_tabs(service):
+        return None
+    rows = service.spreadsheets().values().get(
+        spreadsheetId=_sheet_id(), range=tab
+    ).execute().get("values", [])
+    matched = [r for r in rows if len(r) >= 1 and r[0] == stored_name]
+    if not matched:
+        return None
+    try:
+        matched.sort(key=lambda r: int(r[1]) if len(r) > 1 else 0)
+        encoded = "".join(r[2] if len(r) > 2 else "" for r in matched)
+        return base64.b64decode(encoded) if encoded else b""
+    except (ValueError, TypeError):
+        return None
+
+
+def delete_image(month: int, stored_name: str) -> None:
+    """이미지 청크 행을 전부 지운다(다른 이미지 행은 그대로 다시 써 둔다)."""
+    service = _service()
+    tab = _images_tab_name(month)
+    if tab not in _existing_tabs(service):
+        return
+    rows = service.spreadsheets().values().get(
+        spreadsheetId=_sheet_id(), range=tab
+    ).execute().get("values", [])
+    remaining = [r for r in rows if not (len(r) >= 1 and r[0] == stored_name)]
+    service.spreadsheets().values().clear(spreadsheetId=_sheet_id(), range=tab).execute()
+    if remaining:
+        service.spreadsheets().values().update(
+            spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+            valueInputOption="RAW", body={"values": remaining},
+        ).execute()

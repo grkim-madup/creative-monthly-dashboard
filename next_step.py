@@ -3,7 +3,14 @@
 대시보드 안에서 직접 글을 쓰고, 레퍼런스 이미지를 붙이고, 표를 넣을 수 있게 한다.
 내용은 **월별로 디스크에 저장**한다 — 세션 상태에만 두면 새로고침이나 서버 재시작에 날아간다.
 
-저장 위치: `notes/next_step_<월>.json` (이미지는 `notes/images/`)
+저장 위치: `notes/next_step_<월>.json` (텍스트/표는 여전히 로컬 파일 — blocks.py가
+같은 내용을 시트에도 저장하므로 여기 로컬 파일은 레거시 이관용으로만 남아 있다).
+
+이미지는 `google_sheets_writer`(스냅샷·블록용 서비스 계정)가 설정돼 있으면 전용 구글시트의
+`images_<월>` 탭에, 아니면(로컬 개발 PC 등) `notes/images/` 로컬 파일로 저장한다 — 배포판은
+재배포·리부트마다 로컬 디스크가 초기화되므로 로컬 파일만 믿으면 첨부 이미지가 사라진다.
+`stored_name`은 항상 `{월}_{타임스탬프}_{원본파일명}` 형태라, 월을 받지 않는 함수
+(`image_data_uri`/`delete_image`)도 이름 앞부분에서 월을 그대로 복원해 시트 탭을 찾는다.
 """
 
 from __future__ import annotations
@@ -17,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+import google_sheets_writer
 
 NOTES_DIR = Path(__file__).resolve().parent / "notes"
 IMAGES_DIR = NOTES_DIR / "images"
@@ -69,11 +78,20 @@ def _safe_name(name: str) -> str:
 
 def save_image(month: int, filename: str, data: bytes) -> str:
     """업로드 이미지를 저장하고 저장된 파일명을 돌려준다."""
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")[:17]
     stored = f"{int(month)}_{stamp}_{_safe_name(filename)}"
+    if google_sheets_writer.configured():
+        google_sheets_writer.write_image(month, stored, data)
+        return stored
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     (IMAGES_DIR / stored).write_bytes(data)
     return stored
+
+
+def _month_from_stored(stored_name: str) -> int | None:
+    """`{월}_{타임스탬프}_{파일명}` 형태의 저장 이름에서 월을 복원한다."""
+    prefix = stored_name.split("_", 1)[0]
+    return int(prefix) if prefix.isdigit() else None
 
 
 def image_path(stored_name: str) -> Path:
@@ -81,6 +99,11 @@ def image_path(stored_name: str) -> Path:
 
 
 def delete_image(stored_name: str) -> None:
+    if google_sheets_writer.configured():
+        month = _month_from_stored(stored_name)
+        if month is not None:
+            google_sheets_writer.delete_image(month, stored_name)
+        return
     target = image_path(stored_name)
     if target.exists():
         target.unlink()
@@ -107,11 +130,19 @@ def to_preview_html(content: str) -> str:
 
 def image_data_uri(stored_name: str) -> str:
     """이미지를 data URI로 바꾼다. HTML로 직접 렌더해야 CSS(높이 상한)를 걸 수 있다."""
+    suffix = Path(stored_name).suffix.lower().lstrip(".") or "png"
+    mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix
+
+    if google_sheets_writer.configured():
+        month = _month_from_stored(stored_name)
+        data = google_sheets_writer.read_image(month, stored_name) if month is not None else None
+        if not data:
+            return ""
+        return f"data:image/{mime};base64,{base64.b64encode(data).decode()}"
+
     path = image_path(stored_name)
     if not path.exists():
         return ""
-    suffix = path.suffix.lower().lstrip(".") or "png"
-    mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix
     return f"data:image/{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
 
 

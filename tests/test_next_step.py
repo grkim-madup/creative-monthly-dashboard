@@ -5,6 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import google_sheets_writer  # noqa: E402
 import next_step  # noqa: E402
 
 
@@ -13,6 +14,9 @@ def _isolate(tmp_path, monkeypatch):
     """실제 notes/ 폴더를 건드리지 않도록 임시 경로로 갈아끼운다."""
     monkeypatch.setattr(next_step, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(next_step, "IMAGES_DIR", tmp_path / "notes" / "images")
+    # 로컬 개발 PC의 실제 secrets.toml에 서비스 계정이 설정돼 있어도, 이 파일의 테스트는
+    # 전부 로컬 파일 백엔드를 검증하는 것이므로 항상 폴더 모드로 격리한다.
+    monkeypatch.setattr(google_sheets_writer, "configured", lambda: False)
 
 
 def test_load_returns_empty_note_when_file_missing():
@@ -142,3 +146,56 @@ def test_image_data_uri_maps_jpg_to_jpeg_mime():
 
 def test_image_data_uri_missing_file_returns_empty():
     assert next_step.image_data_uri("없는파일.png") == ""
+
+
+# ----------------------------------------------------------------------------
+# 구글시트 백엔드 — google_sheets_writer가 configured()=True일 때 그쪽으로 위임하는지만
+# 확인한다. 실제 Google API 호출은 google_sheets_writer 자체 단위에서 다룬다.
+
+
+@pytest.fixture
+def sheet_mode(monkeypatch):
+    monkeypatch.setattr(google_sheets_writer, "configured", lambda: True)
+
+
+def test_save_image_writes_to_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+    captured = {}
+
+    def fake_write_image(month, stored_name, data):
+        captured["month"] = month
+        captured["stored_name"] = stored_name
+        captured["data"] = data
+
+    monkeypatch.setattr(google_sheets_writer, "write_image", fake_write_image)
+    stored = next_step.save_image(7, "레퍼런스.png", b"\x89PNG-data")
+
+    assert captured["month"] == 7
+    assert captured["stored_name"] == stored
+    assert captured["data"] == b"\x89PNG-data"
+    assert not next_step.image_path(stored).exists()  # 로컬 파일을 만들지 않는다
+
+
+def test_image_data_uri_reads_from_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+    def fake_read_image(month, stored_name):
+        assert month == 7
+        return b"\x89PNG-bytes"
+
+    monkeypatch.setattr(google_sheets_writer, "read_image", fake_read_image)
+    stored = "7_20260821000000000_ref.png"
+    assert next_step.image_data_uri(stored).startswith("data:image/png;base64,")
+
+
+def test_image_data_uri_missing_in_sheet_mode_returns_empty(sheet_mode, monkeypatch):
+    monkeypatch.setattr(google_sheets_writer, "read_image", lambda month, stored_name: None)
+    assert next_step.image_data_uri("7_20260821000000000_ref.png") == ""
+
+
+def test_delete_image_delegates_to_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        google_sheets_writer, "delete_image",
+        lambda month, stored_name: captured.update(month=month, stored_name=stored_name),
+    )
+    stored = "7_20260821000000000_ref.png"
+    next_step.delete_image(stored)
+    assert captured == {"month": 7, "stored_name": stored}
