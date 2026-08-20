@@ -729,22 +729,32 @@ def _google(folder: str, markup: float) -> pd.DataFrame:
     return load_google_ads_folder(folder, cost_markup=markup)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# 고정 여부·시각은 시트 메타데이터만 읽는 가벼운 호출이라 짧게만 캐시한다. 1시간을
+# 걸었다가, 다른 세션(또는 다른 사람 브라우저)에서 고정한 스냅샷을 이 세션이 최대 1시간
+# 동안 못 보고 "아직 고정 안 됨"을 계속 띄우는 문제가 실제로 났다 — st.cache_data.clear()는
+# 버튼을 누른 그 세션에만 듣기 때문이다.
+_SNAPSHOT_META_TTL = 60
+
+
+@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
 def _snapshot_exists(month: int) -> bool:
-    # 구글시트 백엔드일 때 exists()가 매 rerun마다 실제 API 호출을 하는데, 캐시가 없으면
-    # 위젯 하나 건드릴 때마다 눈에 띄게 느려진다(실측 수 초). 고정/재고정 버튼이
-    # st.cache_data.clear()를 부르므로 새로 고정한 직후에는 바로 반영된다.
+    # 캐시가 아예 없으면 위젯 하나 건드릴 때마다 API를 다시 불러 눈에 띄게 느려진다(실측 수 초).
     return google_snapshot.exists(month)
 
 
-@st.cache_data(ttl=3600, show_spinner="구글 스냅샷 읽는 중…")
-def _load_snapshot(month: int, markup: float) -> pd.DataFrame:
-    return google_snapshot.load(month, markup)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
 def _snapshot_frozen_at(month: int) -> str | None:
     return google_snapshot.frozen_at(month)
+
+
+@st.cache_data(ttl=3600, show_spinner="구글 스냅샷 읽는 중…")
+def _load_snapshot(month: int, markup: float, frozen_at: str | None) -> pd.DataFrame:
+    """스냅샷 행 전체를 읽는 무거운 호출이라 길게 캐시한다.
+
+    `frozen_at`은 함수 안에서 쓰지 않지만 캐시 키에 넣는다 — 재고정으로 값이 바뀌면
+    키가 달라져 자동으로 다시 읽는다(TTL을 기다리지 않고도 최신 스냅샷이 반영된다).
+    """
+    return google_snapshot.load(month, markup)
 
 
 # 리포트 히스토리 보존: 스냅샷이 있는 달은 무조건 스냅샷만 본다 — 담당자가 드롭박스
@@ -753,13 +763,14 @@ def _snapshot_frozen_at(month: int) -> str | None:
 # 스냅샷은 구글시트 전용 탭(설정돼 있으면) 또는 로컬 폴더 복사(폴백)로 저장된다 —
 # google_snapshot이 어느 쪽인지 알아서 고른다.
 has_snapshot = _snapshot_exists(month)
+snapshot_frozen_at = _snapshot_frozen_at(month) if has_snapshot else None
 google_source_label = google_snapshot.source_label(month) if has_snapshot else google_folder
 
 google_all = pd.DataFrame()
 google_error = None
 try:
     if has_snapshot:
-        google_all = _load_snapshot(month, cost_markup)
+        google_all = _load_snapshot(month, cost_markup, snapshot_frozen_at)
     else:
         google_all = _google(google_folder, cost_markup)
         if not google_all.empty:
@@ -800,7 +811,7 @@ with freeze_slot:
     if has_snapshot:
         with st.container(key="google_freeze_done"):
             done_cols = st.columns([3, 1.4], vertical_alignment="center")
-            done_cols[0].caption(f"🔒 {month}월 데이터 고정됨 · {_snapshot_frozen_at(month)}")
+            done_cols[0].caption(f"🔒 {month}월 데이터 고정됨 · {snapshot_frozen_at}")
             if live_source_available:
                 if done_cols[1].button("다시 고정", key="google_freeze", width="stretch"):
                     try:
