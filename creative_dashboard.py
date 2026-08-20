@@ -1154,11 +1154,17 @@ def editor_taken_over(block_id: str, month: int) -> bool:
 
 
 def lock_gate(
-    block_id: str, month: int, title: str, edit_mode: bool, info: str | None = None
+    block_id: str, month: int, title: str, edit_mode: bool, info: str | None = None,
+    menu=None,
 ) -> bool:
     """블록 헤더와 잠금 조작을 그리고, 편집 UI를 그려도 되는지 돌려준다.
 
     info는 잠금 상태와 무관하게 제목 옆에 항상 보여줄 중립 배지(예: 조건 요약)다.
+
+    menu는 조작 버튼(편집하기/위·아래/삭제)을 그리는 콜백이다. 제목 아래 별도 줄에
+    두면 제목과 표 사이가 벌어져 무슨 블록의 버튼인지 눈이 한 번 더 찾아야 해서,
+    제목과 같은 행 오른쪽에 붙인다. 경고·잠금 해제 UI는 좁은 컬럼에 넣으면 문구가
+    접히므로 그대로 전체 폭에 그린다.
 
     edit_mode가 꺼져 있으면 이 블록의 잠금이 내 것이든 남의 것이든 상관없이
     순수 리포트 헤더만 그리고 False를 돌려준다 — 배지·저장 버튼·잠금 해제 UI를
@@ -1168,8 +1174,18 @@ def lock_gate(
     owner = st.session_state["editor_token"]
     kind = f"block:{block_id}"
 
+    def header(badge: tuple[str, str] | None = None, with_menu: bool = False) -> None:
+        if not (with_menu and menu is not None):
+            note_header(title, badge, info=info)
+            return
+        left, right = st.columns([2.4, 1.6], vertical_alignment="center")
+        with left:
+            note_header(title, badge, info=info)
+        with right:
+            menu()
+
     if not edit_mode:
-        note_header(title, info=info)
+        header()
         return False
 
     state = locks.status(kind, month, owner)
@@ -1178,7 +1194,7 @@ def lock_gate(
         # 이 세션이 이 블록을 잡고 있다는 사실을 남겨둔다 — 나중에 잠금을 빼앗겼을 때
         # '원래 편집 중이던 사람'인지 구분하는 유일한 근거다.
         st.session_state[f"held_{block_id}"] = True
-        note_header(title, ("mine", "편집 중 · 나"), info=info)
+        header(("mine", "편집 중 · 나"))
         # 완료 버튼은 폼 맨 아래(저장 버튼과 합쳐서 하나)에 둔다 — 예전엔 여기 위에서
         # "작성 완료"를 먼저 누르면 저장 없이 잠금만 풀려서, 폼 아래 "저장"을 안 누르고
         # 나가면 방금 쓴 내용이 그대로 날아갔다. 완료 = 저장이 되도록 폼 쪽에서 처리한다.
@@ -1188,7 +1204,7 @@ def lock_gate(
     if st.session_state.get(f"held_{block_id}"):
         # 잠금을 빼앗긴 경우. 여기서 False를 돌려주면 작성 중이던 에디터가 통째로 사라져
         # 입력하던 글이 아무 말 없이 날아간다 — 저장만 막고 화면은 그대로 둔다.
-        note_header(title, ("other", "다른 사람이 이어받음"), info=info)
+        header(("other", "다른 사람이 이어받음"))
         st.error("다른 사람이 이 블록을 이어받았습니다. 작성 중이던 내용을 복사해 두세요.")
         if st.button("확인했습니다", key=f"ack_{block_id}"):
             clear_editor_state(block_id)
@@ -1196,9 +1212,7 @@ def lock_gate(
         return True
 
     if state.state == "other":
-        note_header(
-            title, ("other", f"다른 사람이 편집 중 · {int(state.held_minutes)}분째"), info=info
-        )
+        header(("other", f"다른 사람이 편집 중 · {int(state.held_minutes)}분째"), with_menu=True)
         if state.held_minutes >= locks.STEAL_AFTER_MINUTES:
             if st.session_state.get(f"steal_{block_id}"):
                 st.warning("다른 사람이 작성 중일 수 있습니다. 그래도 잠금을 해제할까요?")
@@ -1217,7 +1231,7 @@ def lock_gate(
             st.caption("편집이 끝나면 자동으로 열립니다. 15분간 저장이 없으면 잠금이 스스로 풀립니다.")
         return False
 
-    note_header(title, info=info)
+    header(with_menu=True)
     return False
 
 
@@ -1241,21 +1255,23 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
             st.rerun()
         return
 
-    cols = st.columns([1, 1, 1, 1, 4])
-    if cols[0].button("편집하기", key=f"edit_{block_id}"):
-        if locks.acquire(f"block:{block_id}", month, owner):
+    # 제목 옆 좁은 컬럼에 들어가므로 버튼 폭을 최소로 — 이동 버튼은 화살표만 남긴다.
+    with st.container(key=f"blockmenu_{block_id}"):
+        cols = st.columns([1.5, 0.8, 0.8, 1.1])
+        if cols[0].button("편집하기", key=f"edit_{block_id}", width="stretch"):
+            if locks.acquire(f"block:{block_id}", month, owner):
+                st.rerun()
+            else:
+                st.error("다른 사람이 방금 편집을 시작했습니다.")
+        if cols[1].button("▲", key=f"up_{block_id}", help="위로", width="stretch"):
+            report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, -1))
             st.rerun()
-        else:
-            st.error("다른 사람이 방금 편집을 시작했습니다.")
-    if cols[1].button("▲", key=f"up_{block_id}", help="위로"):
-        report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, -1))
-        st.rerun()
-    if cols[2].button("▼", key=f"down_{block_id}", help="아래로"):
-        report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, 1))
-        st.rerun()
-    if cols[3].button("삭제", key=f"del_{block_id}"):
-        st.session_state[confirm_key] = True
-        st.rerun()
+        if cols[2].button("▼", key=f"down_{block_id}", help="아래로", width="stretch"):
+            report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, 1))
+            st.rerun()
+        if cols[3].button("삭제", key=f"del_{block_id}", width="stretch"):
+            st.session_state[confirm_key] = True
+            st.rerun()
 
 
 def insert_block_row(slot: str, position: int, block_type: str, default_title: str) -> None:
@@ -1457,10 +1473,8 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     editing = lock_gate(
         block_id, month, block.get("title") or "제목 없는 블록", edit_mode,
         info=condition_label(saved_conditions),
+        menu=lambda: block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner),
     )
-
-    if edit_mode and not editing:
-        block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner)
 
     conditions = saved_conditions
     show_table = bool(block.get("show_table", True))
@@ -1584,10 +1598,10 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
     """
     block_id = block["id"]
     owner = st.session_state["editor_token"]
-    editing = lock_gate(block_id, month, block.get("title") or "노트", edit_mode)
-
-    if edit_mode and not editing:
-        block_menu(report_blocks.SLOT_NEXT_STEP, block_id, month, owner)
+    editing = lock_gate(
+        block_id, month, block.get("title") or "노트", edit_mode,
+        menu=lambda: block_menu(report_blocks.SLOT_NEXT_STEP, block_id, month, owner),
+    )
 
     if editing:
         # 업로더·텍스트영역은 rerun으로 비워지지 않는다. 저장에 성공할 때마다 키의 nonce를 올려

@@ -576,6 +576,20 @@ section[data-testid="stSidebar"] h2 {
   min-height: 24px !important; padding: 1px 8px !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
 }
+/* 블록 조작 버튼 — 제목과 같은 행 오른쪽에 붙으므로 제목보다 튀지 않게 낮춘다 */
+[class*="st-key-blockmenu_"] .stButton button {
+  min-height: 26px !important; padding: 1px 6px !important;
+  background: var(--line-soft) !important; border-color: var(--line-soft) !important;
+  color: var(--muted) !important;
+}
+[class*="st-key-blockmenu_"] .stButton button p {
+  font-size: 10.5px !important; white-space: nowrap !important;
+}
+[class*="st-key-blockmenu_"] .stButton button:hover {
+  background: #fff !important; border-color: var(--brand) !important;
+  color: var(--brand-deep) !important;
+}
+[class*="st-key-blockmenu_"] [data-testid="stHorizontalBlock"] { gap: 4px !important; }
 /* 라벨은 Streamlit이 button > p 로 감싸므로 폰트는 p에 직접 지정해야 먹는다 */
 .st-key-google_freeze_done .stButton button p {
   font-size: 9.5px !important; line-height: 1.2 !important; white-space: nowrap !important;
