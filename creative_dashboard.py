@@ -1243,33 +1243,44 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
     """
     confirm_key = f"confirm_del_{block_id}"
     if st.session_state.get(confirm_key):
-        cols = st.columns([2, 1, 1, 4])
-        cols[0].caption("이 블록을 삭제할까요? 코멘트·조건이 모두 사라집니다.")
-        if cols[1].button("삭제", key=f"del_yes_{block_id}"):
-            locks.force_release(f"block:{block_id}", month)
-            report_blocks.mutate(month, lambda d: report_blocks.remove_block(d, slot, block_id))
-            st.session_state.pop(confirm_key, None)
-            st.rerun()
-        if cols[2].button("취소", key=f"del_no_{block_id}"):
-            st.session_state[confirm_key] = False
-            st.rerun()
+        # 제목 옆 좁은 폭이라 컬럼으로 나누면 "삭 제"처럼 글자가 세로로 접힌다 —
+        # horizontal 컨테이너로 내용 폭만 쓰게 하고 오른쪽에 붙인다.
+        with st.container(
+            key=f"blockdelconfirm_{block_id}", horizontal=True,
+            horizontal_alignment="right", vertical_alignment="center", gap="small",
+        ):
+            st.caption("삭제하면 코멘트·조건이 모두 사라집니다.")
+            if st.button("삭제", key=f"del_yes_{block_id}"):
+                locks.force_release(f"block:{block_id}", month)
+                report_blocks.mutate(
+                    month, lambda d: report_blocks.remove_block(d, slot, block_id)
+                )
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+            if st.button("취소", key=f"del_no_{block_id}"):
+                st.session_state[confirm_key] = False
+                st.rerun()
         return
 
-    # 제목 옆 좁은 컬럼에 들어가므로 버튼 폭을 최소로 — 이동 버튼은 화살표만 남긴다.
-    with st.container(key=f"blockmenu_{block_id}"):
-        cols = st.columns([1.5, 0.8, 0.8, 1.1])
-        if cols[0].button("편집하기", key=f"edit_{block_id}", width="stretch"):
+    # 조건 배지(정보)와 성격이 갈리게: 편집은 텍스트 링크처럼, 이동·삭제는 정사각 아이콘
+    # 버튼으로 위계를 나눈다. 컬럼 대신 horizontal 컨테이너를 써서 버튼이 내용 폭만
+    # 차지하게 하고(컬럼은 남는 폭을 균등 분배해 버튼 사이가 벌어진다) 오른쪽에 붙인다.
+    with st.container(
+        key=f"blockmenu_{block_id}", horizontal=True,
+        horizontal_alignment="right", vertical_alignment="center", gap="small",
+    ):
+        if st.button("편집하기", key=f"edit_{block_id}"):
             if locks.acquire(f"block:{block_id}", month, owner):
                 st.rerun()
             else:
                 st.error("다른 사람이 방금 편집을 시작했습니다.")
-        if cols[1].button("▲", key=f"up_{block_id}", help="위로", width="stretch"):
+        if st.button("▲", key=f"up_{block_id}", help="위로"):
             report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, -1))
             st.rerun()
-        if cols[2].button("▼", key=f"down_{block_id}", help="아래로", width="stretch"):
+        if st.button("▼", key=f"down_{block_id}", help="아래로"):
             report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, 1))
             st.rerun()
-        if cols[3].button("삭제", key=f"del_{block_id}", width="stretch"):
+        if st.button("✕", key=f"del_{block_id}", help="삭제"):
             st.session_state[confirm_key] = True
             st.rerun()
 

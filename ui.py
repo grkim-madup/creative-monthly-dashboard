@@ -352,9 +352,21 @@ header[data-testid="stHeader"] { background: transparent; }
 .nh-t { font-size: 16.5px; font-weight: 600; color: var(--ink); letter-spacing: -.02em; }
 .nh-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .nh-badge { font-size: 11.5px; border-radius: 3px; padding: 3px 9px; white-space: nowrap; }
+/* 잠금 상태는 상태 색이 정보 전달의 핵심이라 칩 형태를 유지한다 */
 .nh-badge.is-mine { background: #e7f9f0; color: #0f6e56; }
 .nh-badge.is-other { background: #faeeda; color: #854f0b; }
-.nh-badge.is-info { background: var(--line-soft); color: var(--ink-2); }
+/* 조건 요약은 "읽는 정보"라 칩 배경을 벗기고 점 + 평문으로 낮춘다 — 옆의 조작 버튼
+   (테두리 있는 것)과 성격이 한눈에 갈려야 한다. 길어지면 말줄임으로 줄어들어
+   버튼을 밀어내지 않는다. */
+.nh-badge.is-info {
+  background: transparent; color: var(--muted); font-size: 11px; padding: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.nh-badge.is-info::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--faint); flex: 0 0 auto;
+}
 /* 첨부 삭제 버튼: 우측 레일이 좁아 기본 버튼은 글자가 세로로 접힌다 */
 [class*="st-key-del_img_"] button, [class*="st-key-del_tbl_"] button {
   white-space: nowrap !important; padding: 2px 6px !important;
@@ -576,20 +588,54 @@ section[data-testid="stSidebar"] h2 {
   min-height: 24px !important; padding: 1px 8px !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
 }
-/* 블록 조작 버튼 — 제목과 같은 행 오른쪽에 붙으므로 제목보다 튀지 않게 낮춘다 */
+/* 블록 조작 버튼 — 조건 배지(테두리 없는 평문)와 갈리도록 "누르는 것"은 전부 테두리를
+   가진다. 편집은 초록 텍스트 링크처럼, 이동·삭제는 정사각 아이콘 버튼으로 위계를 나눈다. */
+[class*="st-key-blockmenu_"] { flex: 0 0 auto !important; }
 [class*="st-key-blockmenu_"] .stButton button {
-  min-height: 26px !important; padding: 1px 6px !important;
-  background: var(--line-soft) !important; border-color: var(--line-soft) !important;
+  min-height: 24px !important; border-radius: 4px !important;
+  background: var(--surface) !important; border: 1px solid var(--line) !important;
   color: var(--muted) !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
 }
 [class*="st-key-blockmenu_"] .stButton button p {
-  font-size: 10.5px !important; white-space: nowrap !important;
+  font-size: 10.5px !important; line-height: 1 !important; white-space: nowrap !important;
 }
 [class*="st-key-blockmenu_"] .stButton button:hover {
-  background: #fff !important; border-color: var(--brand) !important;
-  color: var(--brand-deep) !important;
+  border-color: var(--brand) !important; color: var(--brand-deep) !important;
 }
-[class*="st-key-blockmenu_"] [data-testid="stHorizontalBlock"] { gap: 4px !important; }
+/* 편집하기 — 유일한 주요 동작이라 테두리를 벗고 초록 글자로 링크처럼 */
+[class*="st-key-edit_"] button {
+  border-color: transparent !important; background: transparent !important;
+  color: var(--brand-deep) !important; padding: 1px 4px !important;
+}
+[class*="st-key-edit_"] button p { font-weight: 700 !important; }
+[class*="st-key-edit_"] button:hover { background: #e7f9f0 !important; }
+/* 이동·삭제 — 글자 대신 기호만 담는 정사각 버튼 */
+[class*="st-key-up_"] button, [class*="st-key-down_"] button,
+[class*="st-key-blockmenu_"] [class*="st-key-del_"] button {
+  width: 24px !important; padding: 0 !important;
+}
+/* 삭제는 되돌리기 어려운 동작이라 호버에서만 붉게 — 평소엔 다른 아이콘과 같은 무게 */
+[class*="st-key-blockmenu_"] [class*="st-key-del_"] button:hover {
+  border-color: #d98b86 !important; color: #b4453f !important;
+}
+/* 삭제 확인 줄 — 안내는 작게, 확정 버튼만 붉게 */
+[class*="st-key-blockdelconfirm_"] { flex: 0 0 auto !important; }
+[class*="st-key-blockdelconfirm_"] [data-testid="stCaptionContainer"] p {
+  font-size: 10.5px !important; color: var(--muted) !important; white-space: nowrap;
+}
+[class*="st-key-blockdelconfirm_"] .stButton button {
+  min-height: 24px !important; padding: 1px 10px !important; border-radius: 4px !important;
+}
+[class*="st-key-blockdelconfirm_"] .stButton button p {
+  font-size: 10.5px !important; white-space: nowrap !important;
+}
+[class*="st-key-blockdelconfirm_"] [class*="st-key-del_yes_"] button {
+  border-color: #d98b86 !important; color: #b4453f !important;
+}
+[class*="st-key-blockdelconfirm_"] [class*="st-key-del_yes_"] button:hover {
+  background: #fdf1f1 !important;
+}
 /* 라벨은 Streamlit이 button > p 로 감싸므로 폰트는 p에 직접 지정해야 먹는다 */
 .st-key-google_freeze_done .stButton button p {
   font-size: 9.5px !important; line-height: 1.2 !important; white-space: nowrap !important;
