@@ -589,7 +589,21 @@ with data_card:
     )
     # 고정 여부에 따라 완전히 다른 톤(강조 vs 조용함)으로 그려야 해서, 데이터 카드
     # 맨 아래에 독립된 블록으로 뺀다 — 자리만 먼저 잡아두고 내용은 아래에서 채운다.
-    freeze_slot = st.container()
+    #
+    # container가 아니라 empty를 쓴다: 실제 내용은 구글 데이터(드롭박스 동기화 + 파싱)가
+    # 끝난 뒤에야 채워지는데, 콜드 스타트에서는 그게 리포트 본문보다 10초쯤 늦다(실측).
+    # 그 동안 이 자리가 비어 있으면 "블록이 아예 없다"로 읽혀서, 편집 모드를 눌러 캐시가
+    # 채워지면 갑자기 생기는 것처럼 보였다. empty는 나중에 내용을 덮어쓸 수 있어서
+    # 로딩 자리표시자를 먼저 띄웠다가 준비되면 교체할 수 있다.
+    freeze_slot = st.empty()
+    with freeze_slot.container(key="google_freeze_loading", border=True):
+        st.markdown(
+            '<div class="freeze-cta-title freeze-cta-title--muted">'
+            '<span class="freeze-cta-dot freeze-cta-dot--muted"></span>'
+            '구글 데이터 확인 중</div>'
+            '<div class="freeze-cta-body">고정 상태를 불러오고 있어요</div>',
+            unsafe_allow_html=True,
+        )
 
 google_folder = _synced_google_folder(st.session_state.get("_google_cache_bust", 0))
 
@@ -807,7 +821,8 @@ with google_files_slot:
 # 그 시점 값으로 재고정된다. 고정 전에는 놓치면 안 되는 일이라 눈에 띄게, 고정 후에는
 # 평소엔 신경 쓸 필요 없는 상태라 조용하게 — 언제 고정됐는지만 작게 남긴다.
 live_source_available = dropbox_source.configured() or Path(google_folder).exists()
-with freeze_slot:
+# empty에 다시 쓰면 위에서 띄운 로딩 자리표시자가 이 내용으로 교체된다.
+with freeze_slot.container():
     if has_snapshot:
         with st.container(key="google_freeze_done"):
             done_cols = st.columns([3, 1.4], vertical_alignment="center")

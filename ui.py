@@ -562,7 +562,8 @@ section[data-testid="stSidebar"] h2 {
   white-space: nowrap !important;  /* 버튼 글자가 짧은데도 두 줄로 접혀 어색했다 */
   font-weight: 700 !important;
 }
-/* 데이터 없음 안내 — 강조도, 경고도 아니라 중립 회색 톤으로 */
+/* 데이터 없음 안내 / 로딩 자리표시자 — 강조도, 경고도 아니라 중립 회색 톤으로 */
+.st-key-google_freeze_loading,
 .st-key-google_freeze_nodata {
   border: 1px solid var(--line) !important;
   background: var(--line-soft) !important;
@@ -579,6 +580,7 @@ section[data-testid="stSidebar"] h2 {
 }
 .freeze-cta-title--muted { color: var(--muted) !important; }
 .freeze-cta-dot--muted { background: var(--faint) !important; }
+.st-key-google_freeze_loading .freeze-cta-body,
 .st-key-google_freeze_nodata .freeze-cta-body { margin-bottom: 0; }
 .st-key-google_freeze_done { padding: 4px 2px 0; }
 .st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
@@ -621,8 +623,11 @@ section[data-testid="stSidebar"] h2 {
   color: #b4453f !important; padding: 1px 10px !important;
 }
 [class*="st-key-blockmenu_"] [class*="st-key-del_"] button p { font-weight: 700 !important; }
+/* 호버는 편집하기와 같은 문법으로 — 옅은 배경에서 진한 배경 + 어두운 글자로 바뀐다
+   (편집: 연한 그린 -> 브랜드 그린 / 삭제: 연한 레드 -> 진한 레드) */
 [class*="st-key-blockmenu_"] [class*="st-key-del_"] button:hover {
-  background: #f7dedc !important; border-color: #d98b86 !important;
+  background: #ef6f66 !important; border-color: #ef6f66 !important;
+  color: #3d0f0c !important;
 }
 /* 이동 — 순서만 바꾸는 보조 동작이라 색 없이 기호만 담는 정사각 버튼 */
 [class*="st-key-blockmenu_"] [class*="st-key-up_"] button,
