@@ -812,18 +812,30 @@ with freeze_slot:
     elif live_source_available and not google_all.empty:
         with st.container(key="google_freeze_pending", border=True):
             st.markdown(
-                '<div class="freeze-cta-title">이 달 데이터가 아직 고정되지 않았습니다</div>'
+                '<div class="freeze-cta-title">아직 고정되지 않았습니다</div>'
                 '<div class="freeze-cta-body">드롭박스 폴더가 다음 달 파일로 바뀌면 '
                 '지금 이 숫자는 사라집니다.</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("지금 시점으로 고정", key="google_freeze", type="primary", width="stretch"):
+            if st.button("지금 고정하기", key="google_freeze", type="primary", width="stretch"):
                 try:
                     google_snapshot.save(month, google_folder)
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
                     st.error(f"고정 실패: {error}")
+    else:
+        # 안 고정됐고 라이브에도 이 달 데이터가 없는 경우 — 담당자가 드롭박스 폴더를
+        # 이미 다른 달 파일로 덮어썼거나, 애초에 구글 데이터가 없는 달이다. 캡션 한 줄은
+        # 너무 눈에 안 띄어서 놓치기 쉬웠다 — 독립된 박스로 뺀다(강조는 아니고 중립 톤).
+        with st.container(key="google_freeze_nodata", border=True):
+            st.markdown(
+                '<div class="freeze-cta-title freeze-cta-title--muted">'
+                '<span class="freeze-cta-dot freeze-cta-dot--muted"></span>'
+                '이 달은 고정할 데이터 없음</div>'
+                '<div class="freeze-cta-body">구글 라이브 폴더에 이 달 파일이 없어요</div>',
+                unsafe_allow_html=True,
+            )
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
 # 옮긴다 — 성공적으로 읽었을 때만 채워진다(실패·데이터 없음은 아래 경고로 바로 보여준다).

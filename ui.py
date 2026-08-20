@@ -469,6 +469,8 @@ section[data-testid="stSidebar"] h2 {
   background: #f7f9fa; border: 1px solid var(--line-soft) !important;
   border-radius: 6px; padding: 12px 12px 4px 12px !important; margin-bottom: 10px;
 }
+/* 모드 토글이 카드 맨 아래 붙어 답답해 보였다 — 아래 여백을 준다 */
+.st-key-sb_controls { padding-bottom: 14px !important; }
 .st-key-sb_controls [data-testid="stVerticalBlock"],
 .st-key-sb_data [data-testid="stVerticalBlock"] { gap: 4px !important; }
 /* 카드 안의 입력은 흰색으로 띄워 배경과 구분한다 */
@@ -513,31 +515,50 @@ section[data-testid="stSidebar"] h2 {
    회색 배경 + 중간톤 글자로 조용하게 앉힌다. 호버 시에만 브랜드 그린으로 살아난다
    (전역 .stButton button:hover 규칙 그대로 사용). */
 .st-key-sb_data .stButton button {
-  font-size: 12px !important; font-weight: 600 !important; min-height: 30px !important;
+  font-size: 11px !important; font-weight: 600 !important; min-height: 28px !important;
   background: var(--line-soft) !important; border-color: var(--line-soft) !important;
   color: var(--muted) !important;
 }
+/* 보조 버튼 라벨은 사이드바 폭에서 두 줄로 접히지 않게 한 줄로 눌러 둔다 */
+.st-key-sb_data .stButton button p { white-space: nowrap !important; }
 .st-key-sb_data .stButton button:hover {
   background: #fff !important; border-color: var(--brand) !important;
   color: var(--brand-deep) !important;
 }
-/* 구글 데이터 고정 CTA — 고정 전엔 놓치면 안 되는 일이라 브랜드 톤 강조 박스로 눈에
-   띄게, 고정 후엔 평소엔 신경 쓸 필요 없는 상태라 옅은 캡션 한 줄로 조용하게 낮춘다. */
+/* 구글 데이터 고정 CTA — 박스(옅은 민트 배경 + 브랜드 테두리)는 사용자가 승인한
+   원래 톤 그대로 유지한다. 문제는 버튼 쪽이었다: 글자가 좁은 사이드바 폭에서
+   두 줄로 어색하게 접혔다 — 라벨을 짧게 줄이고 nowrap을 강제해 고친다. */
 .st-key-google_freeze_pending {
   border: 1.5px solid var(--brand) !important;
   background: #e7f9f0 !important;
   border-radius: 6px !important;
-  padding: 12px 14px 14px !important;
+  padding: 14px 14px 16px !important;
 }
 .freeze-cta-title {
-  font-size: 12.5px; font-weight: 700; color: var(--brand-deep); margin-bottom: 3px;
+  font-size: 12.5px; font-weight: 700; color: var(--brand-deep); margin-bottom: 5px;
+  white-space: nowrap;  /* 좁은 폭에서 마지막 글자만 다음 줄로 떨어지는 걸 막는다 */
 }
 .freeze-cta-body {
-  font-size: 11px; color: var(--ink-2); margin-bottom: 10px; line-height: 1.5;
+  font-size: 11px; color: var(--ink-2); margin-bottom: 16px; line-height: 1.5;
 }
 .st-key-google_freeze_pending .stButton button[kind="primary"] {
-  min-height: 34px !important; font-size: 12.5px !important;
+  min-height: 36px !important; font-size: 13px !important;
+  letter-spacing: -.01em !important; border-radius: 5px !important;
 }
+.st-key-google_freeze_pending .stButton button[kind="primary"] p {
+  white-space: nowrap !important;  /* 버튼 글자가 짧은데도 두 줄로 접혀 어색했다 */
+  font-weight: 700 !important;
+}
+/* 데이터 없음 안내 — 강조도, 경고도 아니라 중립 회색 톤으로 */
+.st-key-google_freeze_nodata {
+  border: 1px solid var(--line) !important;
+  background: var(--line-soft) !important;
+  border-radius: 4px !important;
+  padding: 11px 14px 12px !important;
+}
+.freeze-cta-title--muted { color: var(--muted) !important; }
+.freeze-cta-dot--muted { background: var(--faint) !important; }
+.st-key-google_freeze_nodata .freeze-cta-body { margin-bottom: 0; }
 .st-key-google_freeze_done { padding: 4px 2px 0; }
 .st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
   font-size: 10.5px !important; color: var(--faint) !important;
