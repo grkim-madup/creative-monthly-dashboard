@@ -812,7 +812,7 @@ with freeze_slot:
     elif live_source_available and not google_all.empty:
         with st.container(key="google_freeze_pending", border=True):
             st.markdown(
-                '<div class="freeze-cta-title">아직 고정되지 않았습니다</div>'
+                '<div class="freeze-cta-title">아직 고정 안 됨</div>'
                 '<div class="freeze-cta-body">드롭박스 폴더가 다음 달 파일로 바뀌면 '
                 '지금 이 숫자는 사라집니다.</div>',
                 unsafe_allow_html=True,

@@ -556,7 +556,14 @@ section[data-testid="stSidebar"] h2 {
   background: var(--line-soft) !important;
   border-radius: 4px !important;
   /* 두 줄뿐인 박스라 위아래를 넉넉히 — 설명 줄이 테두리에 붙어 답답해 보였다 */
-  padding: 13px 14px 15px !important;
+  padding: 14px !important;
+}
+/* Streamlit이 stMarkdownContainer에 margin-bottom: -16px(음수)를 걸어서, 박스에 준
+   padding-bottom이 그대로 먹혀 텍스트가 아래 테두리에 붙어 버린다(실측 확인).
+   두 CTA 박스 모두 이 음수 마진을 무효화해 위아래 여백이 대칭이 되게 한다. */
+.st-key-google_freeze_nodata [data-testid="stMarkdownContainer"],
+.st-key-google_freeze_pending [data-testid="stMarkdownContainer"] {
+  margin-bottom: 0 !important;
 }
 .freeze-cta-title--muted { color: var(--muted) !important; }
 .freeze-cta-dot--muted { background: var(--faint) !important; }
