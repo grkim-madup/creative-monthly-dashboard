@@ -1,4 +1,4 @@
-"""구글 애셋 리포트 월별 스냅샷을 전용 구글시트에 쓰고 읽는다.
+"""구글 애셋 리포트 월별 스냅샷과, 리포트 블록(코멘트·조건 등) 구성을 전용 구글시트에 쓰고 읽는다.
 
 이 파일은 프로젝트에서 유일하게 구글시트에 "쓰는" 코드다. `google_sheets_readonly.py`는
 Media_RAW를 읽기만 하는 원칙을 지키므로, 쓰기는 완전히 분리된 이 모듈에서만 일어난다.
@@ -8,16 +8,24 @@ Media_RAW를 읽기만 하는 원칙을 지키므로, 쓰기는 완전히 분리
 GOOGLE_SNAPSHOT_SHEET_ID로 지정된 시트 하나뿐이다 — Media_RAW를 포함해 다른 어떤 시트도
 이 서비스 계정에 공유되어 있지 않으면 아예 존재 자체를 모른다.
 
-저장 형식: `google_ads_report.load_google_ads_folder`가 만드는 것과 같은 스키마의
+저장 형식(스냅샷): `google_ads_report.load_google_ads_folder`가 만드는 것과 같은 스키마의
 DataFrame을 월별 탭(`snapshot_<월>`)에 그대로 쓴다. 비용은 마크업 적용 전 원가로
 저장하고(cost_markup=1.0 기준), 읽을 때 현재 마크업 배율을 곱해서 돌려준다 — 라이브
 경로와 똑같이 마크업 슬라이더에 반응하게 하기 위해서다(고정되는 건 원본 수치이지,
 그 시점의 마크업 계산 결과가 아니다). 고정 시각은 `_snapshot_meta` 탭에 월별로 남긴다.
+
+저장 형식(블록): `blocks.py`의 월별 블록 구성 전체(제목·코멘트·조건 등)를 JSON 문자열
+그대로 월별 탭(`blocks_<월>`) A1 셀 하나에 넣는다. 배포판(Streamlit Community Cloud)의
+로컬 디스크는 재배포·리부트마다 초기화되므로, 로컬 파일(`notes/blocks_<월>.json`)만
+믿으면 배포판에서 남긴 코멘트가 그대로 휘발된다 — 이미 스냅샷용으로 격리해 둔 같은
+서비스 계정·시트를 재사용해 코멘트도 여기 영구 저장한다(이미지 파일 자체는 여전히
+로컬 디스크에 남아 있어 배포판 재배포 시 사라질 수 있다는 한계는 남아 있다).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 
 import pandas as pd
@@ -148,3 +156,37 @@ def read_month(month: int) -> pd.DataFrame | None:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.replace("", pd.NA)
+
+
+def _blocks_tab_name(month: int) -> str:
+    return f"blocks_{int(month)}"
+
+
+def write_blocks(month: int, data: dict) -> None:
+    """블록 구성 전체를 JSON 문자열 하나로 이 달 탭에 통째로 쓴다(있으면 덮어쓴다)."""
+    service = _service()
+    tab = _blocks_tab_name(month)
+    _ensure_tab(service, tab)
+    payload = json.dumps(data, ensure_ascii=False)
+    service.spreadsheets().values().update(
+        spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+        valueInputOption="RAW", body={"values": [[payload]]},
+    ).execute()
+
+
+def read_blocks(month: int) -> dict | None:
+    """블록 구성을 읽는다. 탭이 없거나 비어 있으면 None."""
+    service = _service()
+    tab = _blocks_tab_name(month)
+    if tab not in _existing_tabs(service):
+        return None
+    rows = service.spreadsheets().values().get(
+        spreadsheetId=_sheet_id(), range=f"{tab}!A1"
+    ).execute().get("values", [])
+    if not rows or not rows[0]:
+        return None
+    try:
+        data = json.loads(rows[0][0])
+    except (json.JSONDecodeError, TypeError, IndexError):
+        return None
+    return data if isinstance(data, dict) else None

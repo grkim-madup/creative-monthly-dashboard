@@ -3,7 +3,13 @@
 5번(소재 찾아보기)과 7번(NEXT STEP)은 고정 섹션이 아니라 블록의 목록이다. 매달 분석 축이
 달라지므로 월별 파일로 나누고, 새 달은 빈 상태에서 시작한다.
 
-저장 위치: `notes/blocks_<월>.json`
+저장 위치: `google_sheets_writer`(스냅샷용 서비스 계정)가 설정돼 있으면 전용 구글시트의
+`blocks_<월>` 탭. 아니면(로컬 개발 PC 등) `notes/blocks_<월>.json` 로컬 파일.
+
+시트 백엔드가 필요한 이유: 배포판(Streamlit Community Cloud)은 재배포·리부트마다
+로컬 디스크가 초기화된다. 로컬 파일만 믿으면 배포판에서 남긴 코멘트가 재배포 시점에
+그대로 사라진다 — google_snapshot.py가 스냅샷을 시트에 영구 저장하는 것과 같은 이유로,
+블록(코멘트·조건 등)도 같은 시트에 영구 저장한다.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+import google_sheets_writer
 import next_step
 
 BLOCKS_DIR = Path(__file__).resolve().parent / "notes"
@@ -39,9 +46,12 @@ def empty_blocks() -> dict:
     return {SLOT_ANALYSIS: [], SLOT_NEXT_STEP: []}
 
 
-def save_blocks(month: int, data: dict) -> Path:
-    BLOCKS_DIR.mkdir(parents=True, exist_ok=True)
+def save_blocks(month: int, data: dict) -> Path | None:
     payload = {slot: list(data.get(slot, [])) for slot in SLOTS}
+    if google_sheets_writer.configured():
+        google_sheets_writer.write_blocks(month, payload)
+        return None
+    BLOCKS_DIR.mkdir(parents=True, exist_ok=True)
     path = blocks_path(month)
     # write_text는 먼저 파일을 잘라내기 때문에, 쓰는 도중 끊기면 한 달치 블록이 깨진 JSON으로
     # 남는다. 임시 파일에 다 쓴 뒤 os.replace로 갈아끼우면 교체가 원자적이라
@@ -78,8 +88,52 @@ def quarantine_corrupt(month: int) -> str | None:
     return str(target)
 
 
+def _normalize(data: dict) -> dict:
+    result = empty_blocks()
+    for slot in SLOTS:
+        value = data.get(slot)
+        if isinstance(value, list):
+            result[slot] = [b for b in value if isinstance(b, dict) and b.get("id")]
+    return result
+
+
+def _read_local_blocks_file(month: int) -> dict | None:
+    """로컬 `blocks_<월>.json`을 그대로 읽는다(격리 없이). 없거나 깨졌으면 None."""
+    path = blocks_path(month)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def load_blocks(month: int) -> dict:
-    """블록 구성을 읽는다. 파일이 없으면 예전 노트를 한 번 옮겨 온다."""
+    """블록 구성을 읽는다. 없으면 예전 노트를 한 번 옮겨 온다."""
+    if google_sheets_writer.configured():
+        data = google_sheets_writer.read_blocks(month)
+        if data is not None:
+            return _normalize(data)
+        # 시트 탭이 아직 없다 — 이 PC에 시트 백엔드를 켜기 전부터 쓰던
+        # `blocks_<월>.json`이 남아 있으면(예: 서비스 계정을 막 설정한 직후) 그 내용을
+        # 그대로 시트로 한 번 옮긴다. 안 그러면 시트가 비어 있다는 이유만으로
+        # 이미 써 둔 코멘트가 사라진 것처럼 보인다.
+        local = _read_local_blocks_file(month)
+        if local is not None and (local.get(SLOT_ANALYSIS) or local.get(SLOT_NEXT_STEP)):
+            normalized = _normalize(local)
+            save_blocks(month, normalized)
+            return normalized
+        migrated = migrate_legacy_notes(month)
+        if migrated is not None:
+            return migrated
+        empty = empty_blocks()
+        save_blocks(month, empty)
+        return empty
+    return _load_blocks_from_disk(month)
+
+
+def _load_blocks_from_disk(month: int) -> dict:
     path = blocks_path(month)
     if not path.exists():
         migrated = migrate_legacy_notes(month)
@@ -100,12 +154,7 @@ def load_blocks(month: int) -> dict:
         return empty_blocks()
     if not isinstance(data, dict):
         return empty_blocks()
-    result = empty_blocks()
-    for slot in SLOTS:
-        value = data.get(slot)
-        if isinstance(value, list):
-            result[slot] = [b for b in value if isinstance(b, dict) and b.get("id")]
-    return result
+    return _normalize(data)
 
 
 def mutate(month: int, fn) -> dict:

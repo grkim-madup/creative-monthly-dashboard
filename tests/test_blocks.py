@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import blocks  # noqa: E402
+import google_sheets_writer  # noqa: E402
 import next_step  # noqa: E402
 
 
@@ -14,6 +16,9 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(blocks, "BLOCKS_DIR", tmp_path / "notes")
     monkeypatch.setattr(next_step, "NOTES_DIR", tmp_path / "notes")
     monkeypatch.setattr(next_step, "IMAGES_DIR", tmp_path / "notes" / "images")
+    # 로컬 개발 PC의 실제 secrets.toml에 서비스 계정이 설정돼 있어도, 이 파일의 테스트는
+    # 전부 로컬 파일 백엔드를 검증하는 것이므로 항상 폴더 모드로 격리한다.
+    monkeypatch.setattr(google_sheets_writer, "configured", lambda: False)
 
 
 def test_load_returns_empty_slots_when_missing():
@@ -242,3 +247,94 @@ def test_migration_runs_only_once():
     blocks.load_blocks(7)
     blocks.load_blocks(7)
     assert len(blocks.load_blocks(7)[blocks.SLOT_ANALYSIS]) == 1
+
+
+# ----------------------------------------------------------------------------
+# 구글시트 백엔드 — google_sheets_writer가 configured()=True일 때 그쪽으로 위임하는지만
+# 확인한다. 실제 Google API 호출은 google_sheets_writer 자체 단위에서 다룬다.
+
+
+@pytest.fixture
+def sheet_mode(monkeypatch):
+    monkeypatch.setattr(google_sheets_writer, "configured", lambda: True)
+
+
+def test_save_blocks_writes_to_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+    captured = {}
+
+    def fake_write_blocks(month, data):
+        captured["month"] = month
+        captured["data"] = data
+
+    monkeypatch.setattr(google_sheets_writer, "write_blocks", fake_write_blocks)
+    data = blocks.empty_blocks()
+    blocks.add_block(data, blocks.SLOT_ANALYSIS, "creative_query", "시트 저장 확인")
+    blocks.save_blocks(7, data)
+
+    assert captured["month"] == 7
+    assert captured["data"][blocks.SLOT_ANALYSIS][0]["title"] == "시트 저장 확인"
+    # 시트 모드에서는 로컬 파일을 만들지 않는다
+    assert not blocks.blocks_path(7).exists()
+
+
+def test_load_blocks_reads_from_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+    stored = blocks.empty_blocks()
+    blocks.add_block(stored, blocks.SLOT_NEXT_STEP, "note", "배포판 코멘트")
+    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: stored)
+
+    data = blocks.load_blocks(7)
+    assert data[blocks.SLOT_NEXT_STEP][0]["title"] == "배포판 코멘트"
+
+
+def test_load_blocks_creates_empty_tab_when_sheet_has_none(sheet_mode, monkeypatch):
+    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
+    written = {}
+    monkeypatch.setattr(
+        google_sheets_writer, "write_blocks",
+        lambda month, data: written.setdefault(month, data),
+    )
+    data = blocks.load_blocks(7)
+    assert data == blocks.empty_blocks()
+    assert written[7] == blocks.empty_blocks()
+
+
+def test_load_blocks_migrates_legacy_local_notes_into_sheet(sheet_mode, monkeypatch):
+    """배포판이라도 예전에 로컬에 남아 있던 노트가 있으면 시트로 한 번 옮긴다."""
+    next_step.save_note(7, {"markdown": "<p>인사이트</p>"}, kind="insight")
+    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
+    written = {}
+    monkeypatch.setattr(
+        google_sheets_writer, "write_blocks",
+        lambda month, data: written.setdefault(month, data),
+    )
+    data = blocks.load_blocks(7)
+    assert data[blocks.SLOT_ANALYSIS][0]["comment"] == "<p>인사이트</p>"
+    assert written[7][blocks.SLOT_ANALYSIS][0]["comment"] == "<p>인사이트</p>"
+
+
+def test_load_blocks_ignores_malformed_sheet_rows(sheet_mode, monkeypatch):
+    monkeypatch.setattr(
+        google_sheets_writer, "read_blocks",
+        lambda m: {blocks.SLOT_ANALYSIS: [{"no_id": True}], blocks.SLOT_NEXT_STEP: "이상함"},
+    )
+    data = blocks.load_blocks(7)
+    assert data == blocks.empty_blocks()
+
+
+def test_load_blocks_carries_over_pre_existing_local_file_into_sheet(sheet_mode, monkeypatch):
+    """시트 백엔드를 막 켠 시점에 로컬 blocks_<월>.json에 남아 있던 코멘트를 잃으면 안 된다."""
+    local = blocks.empty_blocks()
+    blocks.add_block(local, blocks.SLOT_ANALYSIS, "creative_query", "시트 켜기 전 코멘트")
+    blocks.BLOCKS_DIR.mkdir(parents=True, exist_ok=True)
+    blocks.blocks_path(7).write_text(json.dumps(local, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
+    written = {}
+    monkeypatch.setattr(
+        google_sheets_writer, "write_blocks",
+        lambda month, data: written.setdefault(month, data),
+    )
+
+    data = blocks.load_blocks(7)
+    assert data[blocks.SLOT_ANALYSIS][0]["title"] == "시트 켜기 전 코멘트"
+    assert written[7][blocks.SLOT_ANALYSIS][0]["title"] == "시트 켜기 전 코멘트"
