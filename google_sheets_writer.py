@@ -163,6 +163,28 @@ def read_month(month: int) -> pd.DataFrame | None:
     return df.replace("", pd.NA)
 
 
+def diagnostics() -> dict:
+    """이 배포판이 실제로 어느 시트에 붙어 있는지 화면에서 바로 확인하기 위한 진단 정보.
+
+    자격증명 값 자체는 절대 돌려주지 않는다 — 시트 ID는 앞뒤 몇 글자만 마스킹해서 보여주고,
+    실제 접근 가능한 탭 목록으로 "설정은 됐는데 엉뚱한/빈 시트를 보고 있다"는 흔한 실패를
+    구분할 수 있게 한다.
+    """
+    info: dict = {"configured": configured()}
+    if not info["configured"]:
+        return info
+    sheet_id = _sheet_id()
+    info["sheet_id_masked"] = (
+        f"{sheet_id[:6]}...{sheet_id[-4:]}" if len(sheet_id) > 12 else "***"
+    )
+    try:
+        service = _service()
+        info["tabs"] = sorted(_existing_tabs(service))
+    except Exception as error:  # noqa: BLE001 - 화면에 원인을 그대로 보여주기 위해 잡는다
+        info["error"] = f"{type(error).__name__}: {error}"
+    return info
+
+
 def _blocks_tab_name(month: int) -> str:
     return f"blocks_{int(month)}"
 
