@@ -19,7 +19,6 @@ import streamlit as st
 import auth
 import blocks as report_blocks
 import dropbox_source
-import google_sheets_writer
 import google_snapshot
 import highlights
 import locks
@@ -542,13 +541,6 @@ with mode_slot:
              "보기는 고객사가 보는 화면 그대로입니다.",
     )
 edit_mode = mode_choice == "편집"
-
-if edit_mode:
-    # 임시 진단 패널 — 배포판이 코멘트/이미지/스냅샷용 구글시트에 실제로 붙어 있는지,
-    # 붙어 있다면 어느 시트·어떤 탭을 보고 있는지를 화면에서 바로 확인하기 위한 것.
-    # 원인 규명이 끝나면 지운다.
-    with st.sidebar.expander("🔧 구글시트 연결 진단(임시)"):
-        st.json(google_sheets_writer.diagnostics())
 
 # 아래 조건은 사이드바 위젯을 없애고 고정값으로 둔다(사용자 요청 — 사이드바를 비우기로 함).
 # 매체·Creative Format·Creative Type·Dimension은 1번 총괄 섹션 안에서 직접 고를 수 있고,
