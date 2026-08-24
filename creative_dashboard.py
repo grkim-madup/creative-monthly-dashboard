@@ -434,7 +434,7 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
             status_row("info", "동일 소재 중복 선정", note)
 
 
-@st.cache_data(ttl=3600, show_spinner="광고주 Drive에서 소재 목록 불러오는 중…")
+@st.cache_data(ttl=3600, show_spinner="소재 목록 불러오는 중…")
 def _drive_material_index():
     files = drive_materials.list_shared_drive_files()
     return drive_materials.build_index(files)
@@ -793,14 +793,6 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
         top[[c for c in DISPLAY_COLUMNS if c in top.columns]],
         metrics=[("CPI", False), ("D0 coin CVR", True)],
         link_materials=True,
-    )
-
-    benchmark = aggregate_by(
-        os_scope.assign(_all=f"{os_name} 전체 평균 (벤치마크)"), ["_all"]
-    ).rename(columns={"_all": "ad"})
-    render_table(
-        benchmark[[c for c in DISPLAY_COLUMNS if c in benchmark.columns]],
-        highlight_key=f"sec2_benchmark_{os_name}", month=month,
     )
 
 # OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 작게 남긴다.
