@@ -18,9 +18,15 @@
 from __future__ import annotations
 
 import base64
+import io
+import os
+import subprocess
+import tempfile
 import urllib.request
 
+import imageio_ffmpeg
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
 from google_sheets_readonly import get_credentials
 
@@ -107,12 +113,13 @@ def list_shared_drive_files() -> list[dict]:
     return files
 
 
-def fetch_thumbnail_data_uri(thumbnail_link: str) -> str:
-    """Drive의 thumbnailLink를 내려받아 data URI로 바꾼다.
+def fetch_default_thumbnail_data_uri(thumbnail_link: str) -> str:
+    """Drive가 자동 생성한 thumbnailLink를 내려받아 data URI로 바꾼다.
 
-    이 URL은 시간이 지나면 만료되므로 화면에 그대로 박아두지 않고, 매번 새로 받은 뒤
-    바이트를 직접 심는다(next_step.py의 첨부 이미지와 같은 방식) — 그래야 캐시된 결과를
-    나중에 다시 렌더링해도 깨지지 않는다.
+    Drive의 기본 썸네일은 영상 중간의 대표 프레임을 임의로 골라주는 것이라, 실제 재생
+    시작 화면과 다를 때가 많다 — `extract_first_frame_data_uri`가 실패했을 때만 쓰는
+    폴백이다. 이 URL 자체는 시간이 지나면 만료되므로 화면에 그대로 박아두지 않고, 매번
+    새로 받은 뒤 바이트를 직접 심는다(next_step.py의 첨부 이미지와 같은 방식).
     """
     if not thumbnail_link:
         return ""
@@ -123,3 +130,59 @@ def fetch_thumbnail_data_uri(thumbnail_link: str) -> str:
         return "data:image/jpeg;base64," + base64.b64encode(data).decode()
     except Exception:  # noqa: BLE001 - 썸네일 하나 실패했다고 카드 전체를 죽이지 않는다
         return ""
+
+
+def extract_first_frame_data_uri(file_id: str, file_name: str = "") -> str:
+    """영상을 실제로 내려받아 재생 시작 지점(첫 프레임)을 뽑아 data URI로 돌려준다.
+
+    Drive의 자동 썸네일은 대표 프레임을 임의로 골라서 실제 재생 화면과 다를 수 있다는
+    피드백을 받아 도입했다. `imageio-ffmpeg`가 받아오는 정적 ffmpeg 바이너리를 쓰므로
+    시스템에 ffmpeg를 따로 설치할 필요가 없다(배포판도 pip 설치만으로 동일하게 동작).
+
+    영상 하나를 통째로 내려받아야 해서(부분 다운로드로는 컨테이너의 moov atom 위치에
+    따라 디코딩이 실패할 수 있다) 하이라이트 카드 몇 개에만 쓰는 걸 전제로 한다 — 표
+    전체 소재에 걸면 안 된다. 실패하면 빈 문자열을 돌려주고, 호출부가 기본 썸네일로
+    폴백한다.
+    """
+    suffix = os.path.splitext(file_name)[1] or ".mp4"
+    video_path = frame_path = None
+    try:
+        creds = get_credentials()
+        service = build("drive", "v3", credentials=creds)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as video_file:
+            video_file.write(buffer.getvalue())
+            video_path = video_file.name
+        frame_path = video_path + ".jpg"
+
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        result = subprocess.run(
+            [ffmpeg_exe, "-y", "-i", video_path, "-vframes", "1", "-q:v", "2", frame_path],
+            capture_output=True, timeout=60,
+        )
+        if result.returncode != 0 or not os.path.exists(frame_path):
+            return ""
+
+        with open(frame_path, "rb") as f:
+            data = f.read()
+        return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    except Exception:  # noqa: BLE001 - 실패하면 기본 썸네일로 폴백한다
+        return ""
+    finally:
+        for path in (video_path, frame_path):
+            if path and os.path.exists(path):
+                os.remove(path)
+
+
+def material_thumbnail_data_uri(file: dict) -> str:
+    """카드용 썸네일 하나를 정한다 — 첫 프레임 추출을 우선하고, 실패하면 기본 썸네일."""
+    uri = extract_first_frame_data_uri(file.get("id", ""), file.get("name", ""))
+    if uri:
+        return uri
+    return fetch_default_thumbnail_data_uri(file.get("thumbnailLink", ""))

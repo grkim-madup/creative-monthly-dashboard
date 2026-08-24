@@ -441,8 +441,10 @@ def _drive_material_index():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _drive_material_thumbnail(thumbnail_link: str) -> str:
-    return drive_materials.fetch_thumbnail_data_uri(thumbnail_link)
+def _drive_material_thumbnail(file_id: str, file_name: str, thumbnail_link: str) -> str:
+    return drive_materials.material_thumbnail_data_uri(
+        {"id": file_id, "name": file_name, "thumbnailLink": thumbnail_link}
+    )
 
 
 def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
@@ -469,25 +471,30 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
             value_label = value_format.format(raw_value) if pd.notna(raw_value) else "-"
         except (TypeError, ValueError):
             value_label = html.escape(str(raw_value))
-        badge_label = html.escape(f"{'우수' if is_good else '저조'} · {COLUMN_LABELS.get(column, column)}")
+        metric_label = COLUMN_LABELS.get(column, column)
+        badge_label = html.escape(f"{'우수' if is_good else '저조'} · {metric_label}")
         badge_class = "is-good" if is_good else "is-bad"
+        # 값만 봐도 무슨 지표인지 알 수 있게, 배지와 별개로 값 앞에도 지표명을 붙인다.
+        value_line = html.escape(f"{metric_label} {value_label}")
 
         matches = drive_materials.find_matches(df.loc[idx, "ad"], exact, flat)
         meta = (
             f'<div class="mat-meta"><span class="mat-badge {badge_class}">{badge_label}</span>'
-            f'<span class="mat-value">{value_label}</span>'
+            f'<span class="mat-value">{value_line}</span>'
             f'<div class="mat-name">{ad_name}</div>'
         )
         if matches:
-            thumb_uri = _drive_material_thumbnail(matches[0].get("thumbnailLink", ""))
+            top_match = matches[0]
+            thumb_uri = _drive_material_thumbnail(
+                top_match.get("id", ""), top_match.get("name", ""),
+                top_match.get("thumbnailLink", ""),
+            )
             thumb = (f'<img src="{thumb_uri}" alt="">' if thumb_uri
                      else '<div class="mat-noimg">썸네일 없음</div>')
-            count = (f'<span class="mat-count">같은 이름 파일 {len(matches)}개</span>'
-                     if len(matches) > 1 else "")
-            url = html.escape(matches[0].get("webViewLink", ""), quote=True)
+            url = html.escape(top_match.get("webViewLink", ""), quote=True)
             cards.append(
                 f'<a class="mat-card" href="{url}" target="_blank" rel="noopener">'
-                f'<div class="mat-thumb">{thumb}</div>{meta}{count}</div></a>'
+                f'<div class="mat-thumb">{thumb}</div>{meta}</div></a>'
             )
         else:
             thumb = '<div class="mat-noimg">Drive에 없음</div>'

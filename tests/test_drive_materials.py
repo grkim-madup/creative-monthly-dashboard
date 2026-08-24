@@ -93,13 +93,36 @@ def test_find_matches_unmatchable_ad_name_returns_empty():
     assert dm.find_matches("too_few", exact, flat) == []
 
 
-def test_fetch_thumbnail_data_uri_empty_link_returns_empty_string():
-    assert dm.fetch_thumbnail_data_uri("") == ""
+def test_fetch_default_thumbnail_data_uri_empty_link_returns_empty_string():
+    assert dm.fetch_default_thumbnail_data_uri("") == ""
 
 
-def test_fetch_thumbnail_data_uri_swallows_network_errors(monkeypatch):
+def test_fetch_default_thumbnail_data_uri_swallows_network_errors(monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("network down")
 
     monkeypatch.setattr(dm.urllib.request, "urlopen", boom)
-    assert dm.fetch_thumbnail_data_uri("https://example.com/thumb.jpg") == ""
+    assert dm.fetch_default_thumbnail_data_uri("https://example.com/thumb.jpg") == ""
+
+
+def test_extract_first_frame_swallows_errors_and_returns_empty(monkeypatch):
+    """자격증명이나 다운로드가 실패해도 카드 전체를 죽이지 않고 빈 문자열을 돌려준다."""
+    def boom():
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(dm, "get_credentials", boom)
+    assert dm.extract_first_frame_data_uri("file123", "clip.mp4") == ""
+
+
+def test_material_thumbnail_prefers_first_frame(monkeypatch):
+    monkeypatch.setattr(dm, "extract_first_frame_data_uri", lambda fid, name: "data:image/jpeg;base64,FIRSTFRAME")
+    monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "data:image/jpeg;base64,DEFAULT")
+    result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": "https://x"})
+    assert result == "data:image/jpeg;base64,FIRSTFRAME"
+
+
+def test_material_thumbnail_falls_back_to_default_when_extraction_fails(monkeypatch):
+    monkeypatch.setattr(dm, "extract_first_frame_data_uri", lambda fid, name: "")
+    monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "data:image/jpeg;base64,DEFAULT")
+    result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": "https://x"})
+    assert result == "data:image/jpeg;base64,DEFAULT"

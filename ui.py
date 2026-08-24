@@ -294,7 +294,6 @@ header[data-testid="stHeader"] { background: transparent; }
 .mat-badge.is-bad { background: #fdf1f1; color: #9b2c2c; }
 .mat-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mat-name { font-size: 10px; color: var(--ink-2); line-height: 1.45; word-break: break-all; }
-.mat-count { font-size: 9.5px; color: var(--faint); }
 
 /* 소재 조회 조건 바 — 기본 위젯을 그대로 쌓으면 여백이 뜨고 라벨이 둔탁하다 */
 /* 블록 사이 삽입 자리 — 점선 박스로 "여기에 넣는다"를 분명히 한다. 아이콘만 옅게 두면
