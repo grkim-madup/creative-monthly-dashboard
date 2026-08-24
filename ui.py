@@ -266,6 +266,36 @@ header[data-testid="stHeader"] { background: transparent; }
   width: 38px; height: 38px; object-fit: cover;
   border-radius: 3px; border: 1px solid var(--line); display: block;
 }
+/* 하이라이트(우수·저조) 소재 카드 — 표 아래에서 실제 영상으로 이어주는 진입점.
+   표 자체(st.dataframe)는 셀 안에 링크를 못 심어서, 클릭 경로는 이 카드가 전담한다. */
+.mat-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px; margin: 10px 0 4px;
+}
+.mat-card {
+  display: flex; flex-direction: column; border: 1px solid var(--line);
+  border-radius: 4px; overflow: hidden; text-decoration: none; color: inherit;
+  background: var(--surface); transition: border-color .15s;
+}
+.mat-card:hover { border-color: var(--brand); }
+.mat-card.is-dead { opacity: .6; cursor: default; }
+.mat-thumb {
+  aspect-ratio: 16 / 10; background: var(--line-soft);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.mat-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mat-thumb .mat-noimg { font-size: 10.5px; color: var(--faint); }
+.mat-meta { padding: 8px 9px 10px; display: flex; flex-direction: column; gap: 4px; }
+.mat-badge {
+  align-self: flex-start; font-size: 10px; font-weight: 700;
+  padding: 2px 6px; border-radius: 3px;
+}
+.mat-badge.is-good { background: #e7f9f0; color: #0f6e56; }
+.mat-badge.is-bad { background: #fdf1f1; color: #9b2c2c; }
+.mat-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mat-name { font-size: 10px; color: var(--ink-2); line-height: 1.45; word-break: break-all; }
+.mat-count { font-size: 9.5px; color: var(--faint); }
+
 /* 소재 조회 조건 바 — 기본 위젯을 그대로 쌓으면 여백이 뜨고 라벨이 둔탁하다 */
 /* 블록 사이 삽입 자리 — 점선 박스로 "여기에 넣는다"를 분명히 한다. 아이콘만 옅게 두면
    섹션 구분선에 붙어 잘린 것처럼 보였다(실제 피드백). 위아래 여백으로 블록과 떼어 놓는다. */

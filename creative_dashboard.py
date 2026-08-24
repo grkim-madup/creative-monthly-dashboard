@@ -9,6 +9,7 @@ TOP 소재 / 소재 속성별 성과 / 작품별 성과를 매달 같은 절차�
 from __future__ import annotations
 
 import datetime as dt
+import html
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ import streamlit as st
 
 import auth
 import blocks as report_blocks
+import drive_materials
 import dropbox_source
 import google_snapshot
 import highlights
@@ -432,8 +434,77 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
             status_row("info", "동일 소재 중복 선정", note)
 
 
-def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]]):
-    """지표별 히트맵 대신, 우수 2행·저조 2행만 행 전체를 색칠한다(시트 컨벤션)."""
+@st.cache_data(ttl=3600, show_spinner="광고주 Drive에서 소재 목록 불러오는 중…")
+def _drive_material_index():
+    files = drive_materials.list_shared_drive_files()
+    return drive_materials.build_index(files)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _drive_material_thumbnail(thumbnail_link: str) -> str:
+    return drive_materials.fetch_thumbnail_data_uri(thumbnail_link)
+
+
+def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
+    """우수·저조 하이라이트 소재를 광고주 Drive의 실제 영상 링크·썸네일 카드로 잇는다.
+
+    표(st.dataframe)는 셀 안에 커스텀 링크를 못 심으므로, 클릭해서 영상으로 넘어가는
+    진입점은 표가 아니라 이 카드가 전담한다(2026-08-24 도입).
+    """
+    if not best and not worst:
+        return
+    try:
+        exact, flat = _drive_material_index()
+    except Exception as error:  # noqa: BLE001 - Drive 조회 실패로 리포트 전체를 막지 않는다
+        status_row("warn", "Drive 소재 조회 실패", f"카드 없이 표만 표시합니다: {error}")
+        return
+
+    cards = []
+    for idx, column in list(best.items()) + list(worst.items()):
+        is_good = idx in best
+        ad_name = html.escape(str(df.loc[idx, "ad"]))
+        raw_value = df.loc[idx, column]
+        value_format = FORMATS.get(column, "{}")
+        try:
+            value_label = value_format.format(raw_value) if pd.notna(raw_value) else "-"
+        except (TypeError, ValueError):
+            value_label = html.escape(str(raw_value))
+        badge_label = html.escape(f"{'우수' if is_good else '저조'} · {COLUMN_LABELS.get(column, column)}")
+        badge_class = "is-good" if is_good else "is-bad"
+
+        matches = drive_materials.find_matches(df.loc[idx, "ad"], exact, flat)
+        meta = (
+            f'<div class="mat-meta"><span class="mat-badge {badge_class}">{badge_label}</span>'
+            f'<span class="mat-value">{value_label}</span>'
+            f'<div class="mat-name">{ad_name}</div>'
+        )
+        if matches:
+            thumb_uri = _drive_material_thumbnail(matches[0].get("thumbnailLink", ""))
+            thumb = (f'<img src="{thumb_uri}" alt="">' if thumb_uri
+                     else '<div class="mat-noimg">썸네일 없음</div>')
+            count = (f'<span class="mat-count">같은 이름 파일 {len(matches)}개</span>'
+                     if len(matches) > 1 else "")
+            url = html.escape(matches[0].get("webViewLink", ""), quote=True)
+            cards.append(
+                f'<a class="mat-card" href="{url}" target="_blank" rel="noopener">'
+                f'<div class="mat-thumb">{thumb}</div>{meta}{count}</div></a>'
+            )
+        else:
+            thumb = '<div class="mat-noimg">Drive에 없음</div>'
+            cards.append(
+                f'<div class="mat-card is-dead">'
+                f'<div class="mat-thumb">{thumb}</div>{meta}</div></div>'
+            )
+
+    st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False):
+    """지표별 히트맵 대신, 우수 2행·저조 2행만 행 전체를 색칠한다(시트 컨벤션).
+
+    link_materials=True면 하이라이트된 소재를 광고주 Drive 영상과 잇는 카드를 표 아래에 붙인다
+    (2번 메타/틱톡 전용 — 3번 구글은 소재 식별자가 URL이라 이 네이밍 매칭이 원리적으로 안 된다).
+    """
     best, worst = pick_best_worst(df, metrics)
     renamed = df.rename(columns=COLUMN_LABELS)
     present = [c for c in renamed.columns if c in FORMATS]
@@ -448,6 +519,9 @@ def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]]):
 
     styler = styler.apply(paint, axis=1)
     st.dataframe(styler, width="stretch", hide_index=True)
+
+    if link_materials:
+        render_material_cards(df, best, worst)
 
     # 우수/저조 기준 설명은 OS(AOS/iOS)마다 똑같은 문구가 반복돼 눈이 피로하다는 피드백을
     # 받아, 이 함수에서는 더 이상 찍지 않는다 — 호출부(섹션 2)가 맨 아래에 한 번만 보여준다.
@@ -718,6 +792,7 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
     render_table_best_worst(
         top[[c for c in DISPLAY_COLUMNS if c in top.columns]],
         metrics=[("CPI", False), ("D0 coin CVR", True)],
+        link_materials=True,
     )
 
     benchmark = aggregate_by(
