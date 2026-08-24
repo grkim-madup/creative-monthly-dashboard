@@ -126,3 +126,57 @@ def test_material_thumbnail_falls_back_to_default_when_extraction_fails(monkeypa
     monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "data:image/jpeg;base64,DEFAULT")
     result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": "https://x"})
     assert result == "data:image/jpeg;base64,DEFAULT"
+
+
+def test_material_thumbnails_returns_empty_dict_for_no_specs():
+    assert dm.material_thumbnails([]) == {}
+
+
+def test_material_thumbnails_maps_each_file_id(monkeypatch):
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri",
+                        lambda f: "uri:" + f["id"])
+    result = dm.material_thumbnails([("a", "a.mp4", "l1"), ("b", "b.mp4", "l2")])
+    assert result == {"a": "uri:a", "b": "uri:b"}
+
+
+def test_material_thumbnails_isolates_one_failure(monkeypatch):
+    """한 건이 터져도 나머지 카드 썸네일은 살아야 한다."""
+    def flaky(f):
+        if f["id"] == "bad":
+            raise RuntimeError("download blew up")
+        return "uri:" + f["id"]
+
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", flaky)
+    result = dm.material_thumbnails([("good", "g.mp4", ""), ("bad", "b.mp4", "")])
+    assert result == {"good": "uri:good", "bad": ""}
+
+
+def test_extract_first_frame_returns_empty_for_blank_file_id():
+    assert dm.extract_first_frame_data_uri("", "x.mp4") == ""
+
+
+def test_extract_first_frame_uses_partial_download_when_it_decodes(monkeypatch):
+    """앞부분만 받아 디코딩되면 전체 다운로드는 하지 않아야 한다(속도 최적화의 핵심)."""
+    monkeypatch.setattr(dm, "get_credentials", lambda: object())
+
+    class FakeResponse:
+        status_code = 206
+        content = b"partial-bytes"
+
+    class FakeSession:
+        def __init__(self, creds):
+            pass
+
+        def get(self, url, headers=None, timeout=None):
+            assert headers and "Range" in headers  # 부분 요청이어야 한다
+            return FakeResponse()
+
+    monkeypatch.setattr(dm.google.auth.transport.requests, "AuthorizedSession", FakeSession)
+    monkeypatch.setattr(dm, "_frame_from_video_bytes",
+                        lambda data, suffix: "data:image/jpeg;base64,PARTIAL")
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("부분 다운로드가 성공했으면 전체를 받지 않아야 한다")
+
+    monkeypatch.setattr(dm, "build", must_not_run)
+    assert dm.extract_first_frame_data_uri("fid", "clip.mp4") == "data:image/jpeg;base64,PARTIAL"

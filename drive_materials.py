@@ -23,7 +23,9 @@ import os
 import subprocess
 import tempfile
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
+import google.auth.transport.requests
 import imageio_ffmpeg
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -132,32 +134,22 @@ def fetch_default_thumbnail_data_uri(thumbnail_link: str) -> str:
         return ""
 
 
-def extract_first_frame_data_uri(file_id: str, file_name: str = "") -> str:
-    """영상을 실제로 내려받아 재생 시작 지점(첫 프레임)을 뽑아 data URI로 돌려준다.
+# 첫 프레임만 필요하니 파일 앞부분만 받아본다. 실측(2026-08-24, 34~53MB 영상 3개)에서 앞 1MB로
+# 뽑은 JPG가 전체를 받아 뽑은 것과 **바이트 단위로 동일**했고, 개당 6~7초 → 3~4초로 줄었다.
+# moov atom이 뒤에 있는(faststart 아닌) 파일은 이걸로 디코딩이 안 되므로 전체 다운로드로 폴백한다.
+_PARTIAL_PROBE_BYTES = 1024 * 1024
 
-    Drive의 자동 썸네일은 대표 프레임을 임의로 골라서 실제 재생 화면과 다를 수 있다는
-    피드백을 받아 도입했다. `imageio-ffmpeg`가 받아오는 정적 ffmpeg 바이너리를 쓰므로
-    시스템에 ffmpeg를 따로 설치할 필요가 없다(배포판도 pip 설치만으로 동일하게 동작).
+# 카드가 4~8개씩 붙어서, 순차로 돌리면 지연(latency)이 그대로 누적된다. 실측에서 4개 병렬이
+# 49초 → 16초로 줄었다. 광고주 Drive에 부담을 주지 않는 선으로 동시 실행 수를 묶어둔다.
+_MAX_PARALLEL_THUMBNAILS = 8
 
-    영상 하나를 통째로 내려받아야 해서(부분 다운로드로는 컨테이너의 moov atom 위치에
-    따라 디코딩이 실패할 수 있다) 하이라이트 카드 몇 개에만 쓰는 걸 전제로 한다 — 표
-    전체 소재에 걸면 안 된다. 실패하면 빈 문자열을 돌려주고, 호출부가 기본 썸네일로
-    폴백한다.
-    """
-    suffix = os.path.splitext(file_name)[1] or ".mp4"
+
+def _frame_from_video_bytes(data: bytes, suffix: str) -> str:
+    """영상 바이트에서 첫 프레임을 뽑아 data URI로 만든다. 못 뽑으면 빈 문자열."""
     video_path = frame_path = None
     try:
-        creds = get_credentials()
-        service = build("drive", "v3", credentials=creds)
-        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as video_file:
-            video_file.write(buffer.getvalue())
+            video_file.write(data)
             video_path = video_file.name
         frame_path = video_path + ".jpg"
 
@@ -168,16 +160,57 @@ def extract_first_frame_data_uri(file_id: str, file_name: str = "") -> str:
         )
         if result.returncode != 0 or not os.path.exists(frame_path):
             return ""
+        if os.path.getsize(frame_path) == 0:
+            return ""
 
         with open(frame_path, "rb") as f:
-            data = f.read()
-        return "data:image/jpeg;base64," + base64.b64encode(data).decode()
-    except Exception:  # noqa: BLE001 - 실패하면 기본 썸네일로 폴백한다
+            return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+    except Exception:  # noqa: BLE001 - 폴백 경로가 있으니 여기서 죽이지 않는다
         return ""
     finally:
         for path in (video_path, frame_path):
             if path and os.path.exists(path):
                 os.remove(path)
+
+
+def extract_first_frame_data_uri(file_id: str, file_name: str = "") -> str:
+    """영상의 재생 시작 지점(첫 프레임)을 뽑아 data URI로 돌려준다.
+
+    Drive의 자동 썸네일은 대표 프레임을 임의로 골라서 실제 재생 화면과 다를 수 있다는
+    피드백을 받아 도입했다. `imageio-ffmpeg`가 받아오는 정적 ffmpeg 바이너리를 쓰므로
+    시스템에 ffmpeg를 따로 설치할 필요가 없다(배포판도 pip 설치만으로 동일하게 동작).
+
+    먼저 앞부분만 받아 시도하고(대부분 성공), 안 되면 전체를 받는다. 실패하면 빈 문자열을
+    돌려주고 호출부가 Drive 기본 썸네일로 폴백한다.
+    """
+    if not file_id:
+        return ""
+    suffix = os.path.splitext(file_name)[1] or ".mp4"
+    try:
+        creds = get_credentials()
+
+        session = google.auth.transport.requests.AuthorizedSession(creds)
+        url = (f"https://www.googleapis.com/drive/v3/files/{file_id}"
+               "?alt=media&supportsAllDrives=true")
+        response = session.get(
+            url, headers={"Range": f"bytes=0-{_PARTIAL_PROBE_BYTES - 1}"}, timeout=60
+        )
+        if response.status_code in (200, 206):
+            uri = _frame_from_video_bytes(response.content, suffix)
+            if uri:
+                return uri
+
+        # 앞부분만으로는 디코딩이 안 되는 컨테이너 — 통째로 받아 다시 시도한다.
+        service = build("drive", "v3", credentials=creds)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return _frame_from_video_bytes(buffer.getvalue(), suffix)
+    except Exception:  # noqa: BLE001 - 실패하면 기본 썸네일로 폴백한다
+        return ""
 
 
 def material_thumbnail_data_uri(file: dict) -> str:
@@ -186,3 +219,27 @@ def material_thumbnail_data_uri(file: dict) -> str:
     if uri:
         return uri
     return fetch_default_thumbnail_data_uri(file.get("thumbnailLink", ""))
+
+
+def material_thumbnails(specs: list[tuple[str, str, str]]) -> dict[str, str]:
+    """여러 소재의 썸네일을 병렬로 만든다.
+
+    specs: [(file_id, file_name, thumbnail_link)] — 결과는 {file_id: data URI}.
+    한 건이 실패해도 나머지는 그대로 살린다(그 카드만 썸네일 없이 렌더된다).
+    """
+    if not specs:
+        return {}
+
+    def one(spec: tuple[str, str, str]) -> tuple[str, str]:
+        file_id, file_name, thumbnail_link = spec
+        try:
+            uri = material_thumbnail_data_uri(
+                {"id": file_id, "name": file_name, "thumbnailLink": thumbnail_link}
+            )
+        except Exception:  # noqa: BLE001 - 한 건 실패가 전체를 막지 않는다
+            uri = ""
+        return file_id, uri
+
+    workers = min(_MAX_PARALLEL_THUMBNAILS, len(specs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(pool.map(one, specs))

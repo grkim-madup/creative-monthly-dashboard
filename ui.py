@@ -267,25 +267,29 @@ header[data-testid="stHeader"] { background: transparent; }
   border-radius: 3px; border: 1px solid var(--line); display: block;
 }
 /* 하이라이트(우수·저조) 소재 카드 — 표 아래에서 실제 영상으로 이어주는 진입점.
-   표 자체(st.dataframe)는 셀 안에 링크를 못 심어서, 클릭 경로는 이 카드가 전담한다. */
+   표 자체(st.dataframe)는 셀 안에 링크를 못 심어서, 클릭 경로는 이 카드가 전담한다.
+   이미지 왼쪽 + 정보 오른쪽 가로 배치 — 세로형(9:16) 소재가 대부분이라, 위아래로
+   쌓고 폭에 맞춰 자르면(16:10 crop) 정작 중요한 장면이 잘려 나갔다(실제 피드백).
+   가로 배치 + object-fit: contain으로 잘리는 부분 없이 이미지 전체가 다 보이게 한다. */
 .mat-cards {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 10px; margin: 10px 0 4px;
 }
 .mat-card {
-  display: flex; flex-direction: column; border: 1px solid var(--line);
-  border-radius: 4px; overflow: hidden; text-decoration: none; color: inherit;
-  background: var(--surface); transition: border-color .15s;
+  display: flex; flex-direction: row; align-items: stretch;
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
+  text-decoration: none; color: inherit; background: var(--surface);
+  transition: border-color .15s;
 }
 .mat-card:hover { border-color: var(--brand); }
 .mat-card.is-dead { opacity: .6; cursor: default; }
 .mat-thumb {
-  aspect-ratio: 16 / 10; background: var(--line-soft);
+  flex: 0 0 96px; width: 96px; background: var(--line-soft);
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
-.mat-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.mat-thumb .mat-noimg { font-size: 10.5px; color: var(--faint); }
-.mat-meta { padding: 8px 9px 10px; display: flex; flex-direction: column; gap: 4px; }
+.mat-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.mat-thumb .mat-noimg { font-size: 10.5px; color: var(--faint); text-align: center; padding: 4px; }
+.mat-meta { flex: 1 1 auto; min-width: 0; padding: 8px 9px 10px; display: flex; flex-direction: column; gap: 4px; }
 .mat-badge {
   align-self: flex-start; font-size: 10px; font-weight: 700;
   padding: 2px 6px; border-radius: 3px;
