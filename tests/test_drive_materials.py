@@ -180,3 +180,48 @@ def test_extract_first_frame_uses_partial_download_when_it_decodes(monkeypatch):
 
     monkeypatch.setattr(dm, "build", must_not_run)
     assert dm.extract_first_frame_data_uri("fid", "clip.mp4") == "data:image/jpeg;base64,PARTIAL"
+
+
+# ----------------------------------------------------------------------------
+# 규격 ALL 폴백 — 집행 데이터의 ALL 소재는 Drive에 9X16 이름으로 올라가 있다.
+
+
+def test_substitute_all_dimension_replaces_the_all_token():
+    assert dm.substitute_all_dimension("6405_vid_webtoon-vs_votrailer_all_1-kr") == (
+        "6405_vid_webtoon-vs_votrailer_9x16_1-kr"
+    )
+
+
+def test_substitute_all_dimension_returns_none_without_all():
+    assert dm.substitute_all_dimension("6405_vid_webtoon-vs_votrailer_9x16_1-kr") is None
+
+
+def test_substitute_all_dimension_leaves_partial_words_alone():
+    """'all'이 토큰 전체일 때만 바꾼다 — 'ballad', 'all-in' 같은 값은 건드리지 않는다."""
+    assert dm.substitute_all_dimension("1_vid_a_b_1x1_ballad") is None
+    assert dm.substitute_all_dimension("1_vid_a_b_1x1_all-in") is None
+
+
+def test_find_matches_falls_back_to_9x16_for_all_dimension():
+    """RAW가 ALL이면 Drive의 9X16 파일을 찾아야 한다(실제 실패 사례)."""
+    files = [{"id": "a", "name": "6405_青梅竹馬情結_VID_Webtoon-VS_VoTrailer_9X16_1-KR"}]
+    exact, flat = dm.build_index(files)
+    result = dm.find_matches("6405_青梅竹馬情結_VID_Webtoon-VS_VoTrailer_ALL_1-KR", exact, flat)
+    assert [f["id"] for f in result] == ["a"]
+
+
+def test_all_fallback_does_not_override_a_real_match():
+    """원래 이름으로 찾은 결과가 있으면 치환 결과가 그걸 밀어내면 안 된다."""
+    files = [
+        {"id": "literal", "name": "1_TitleA_VID_X_Y_ALL_Z"},
+        {"id": "vertical", "name": "1_TitleA_VID_X_Y_9X16_Z"},
+    ]
+    exact, flat = dm.build_index(files)
+    result = dm.find_matches("1_TitleB_VID_X_Y_ALL_Z", exact, flat)
+    assert [f["id"] for f in result] == ["literal"]
+
+
+def test_all_fallback_still_returns_empty_when_nothing_matches():
+    files = [{"id": "a", "name": "9_Other_VID_X_Y_9X16_Z"}]
+    exact, flat = dm.build_index(files)
+    assert dm.find_matches("1_TitleB_VID_X_Y_ALL_Z", exact, flat) == []
