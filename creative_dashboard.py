@@ -476,12 +476,13 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
             value_label = str(raw_value)
         metric_label = COLUMN_LABELS.get(column, column)
         matches = drive_materials.find_matches(df.loc[idx, "ad"], exact, flat)
+        title_kr = str(df.loc[idx, "title_kr"]) if "title_kr" in df.columns else ""
         entries.append({
             "ad_name": str(df.loc[idx, "ad"]),
-            "badge_label": f"{'우수' if is_good else '저조'} · {metric_label}",
-            "badge_class": "is-good" if is_good else "is-bad",
-            # 값만 봐도 무슨 지표인지 알 수 있게, 배지와 별개로 값 앞에도 지표명을 붙인다.
-            "value_line": f"{metric_label} {value_label}",
+            "title_kr": title_kr if title_kr and title_kr != "nan" else "",
+            "is_good": is_good,
+            "metric_label": metric_label,
+            "value_label": value_label,
             "match": matches[0] if matches else None,
         })
 
@@ -495,12 +496,19 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
 
     cards = []
     for entry in entries:
+        state_class = "is-good" if entry["is_good"] else "is-bad"
+        cap_word = "우수" if entry["is_good"] else "저조"
+        title_html = (
+            f'<div class="mat-title">{html.escape(entry["title_kr"])}</div>'
+            if entry["title_kr"] else ""
+        )
         meta = (
             f'<div class="mat-meta">'
-            f'<span class="mat-badge {entry["badge_class"]}">'
-            f'{html.escape(entry["badge_label"])}</span>'
-            f'<span class="mat-value">{html.escape(entry["value_line"])}</span>'
+            f'<div class="mat-cap"><b>{cap_word}</b> · {html.escape(entry["metric_label"])}</div>'
+            f'<div class="mat-value">{html.escape(entry["value_label"])}</div>'
+            f'{title_html}'
             f'<div class="mat-name">{html.escape(entry["ad_name"])}</div>'
+            f'</div>'
         )
         match = entry["match"]
         if match:
@@ -509,14 +517,15 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
                      else '<div class="mat-noimg">썸네일 없음</div>')
             url = html.escape(match.get("webViewLink", ""), quote=True)
             cards.append(
-                f'<a class="mat-card" href="{url}" target="_blank" rel="noopener">'
-                f'<div class="mat-thumb">{thumb}</div>{meta}</div></a>'
+                f'<a class="mat-card {state_class}" href="{url}" target="_blank" rel="noopener">'
+                f'<span class="mat-ext" aria-hidden="true">&#8599;</span>'
+                f'<div class="mat-thumb">{thumb}</div>{meta}</a>'
             )
         else:
             cards.append(
-                f'<div class="mat-card is-dead">'
+                f'<div class="mat-card {state_class} is-dead">'
                 f'<div class="mat-thumb"><div class="mat-noimg">Drive에 없음</div></div>'
-                f'{meta}</div></div>'
+                f'{meta}</div>'
             )
 
     st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
@@ -529,7 +538,10 @@ def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]], l
     (2번 메타/틱톡 전용 — 3번 구글은 소재 식별자가 URL이라 이 네이밍 매칭이 원리적으로 안 된다).
     """
     best, worst = pick_best_worst(df, metrics)
-    renamed = df.rename(columns=COLUMN_LABELS)
+    # 표에는 지표 컬럼만 보여준다 — title_kr처럼 카드 전용으로 딸려온 컬럼은 여기서 뺀다
+    # (소재명 컬럼과 내용이 겹쳐 표를 어지럽힌다).
+    display_df = df[[c for c in DISPLAY_COLUMNS if c in df.columns]]
+    renamed = display_df.rename(columns=COLUMN_LABELS)
     present = [c for c in renamed.columns if c in FORMATS]
     styler = renamed.style.format({c: FORMATS[c] for c in present}, na_rep="-")
 
@@ -794,7 +806,8 @@ render_table(by_media_os, color_columns=["CPI"], highlight_key="media_os", month
 meta_tiktok = overview[overview["media"].isin(["Meta", "TikTok"])]
 
 section(
-    "2", "메타/틱톡 TOP 소재 성과", "*앱스플라이어 코호트 데이터 기준",
+    "2", "메타/틱톡 TOP 소재 성과",
+    note="*앱스플라이어 코호트 데이터 기준",
     badge=f"소재 {meta_tiktok['ad'].nunique():,}개",
 )
 
@@ -813,16 +826,22 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
 
     table_title(f"{os_name} — {RANK_METRICS[rank_metric]} 기준 TOP {int(top_n)}")
     render_table_best_worst(
-        top[[c for c in DISPLAY_COLUMNS if c in top.columns]],
+        top,
         metrics=[("CPI", False), ("D0 coin CVR", True)],
         link_materials=True,
     )
 
-# OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 작게 남긴다.
-st.caption(
-    f"녹색 = 우수 / 붉은색 = 저조 · 매체별 소진 볼륨 하위 50% 제외 후 "
-    f"{METRIC_LABELS.get('CPI', 'CPI')} · {METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR')} "
-    f"기준으로 우수·저조 각 1개씩 선정 · 최소 소진 ₩{min_cost:,.0f} 이상"
+# OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 남긴다.
+# st.caption 기본 크기가 리포트 톤(정보 위계 절제)에 비해 도드라져 보인다는 피드백을 받아,
+# 우측 구석에 붙는 옅은 각주 한 줄로 낮춘다 — 굳이 안 읽어도 되는 보조 정보로 취급.
+st.markdown(
+    '<div class="sec-legend">'
+    f"녹색 = 우수 · 붉은색 = 저조 — 매체별 소진 볼륨 하위 50% 제외 후 "
+    f"{html.escape(METRIC_LABELS.get('CPI', 'CPI'))} · "
+    f"{html.escape(METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR'))} "
+    f"기준 각 1개씩 선정 · 최소 소진 ₩{min_cost:,.0f} 이상"
+    "</div>",
+    unsafe_allow_html=True,
 )
 
 # --------------------------------------------------------------------------- 3. 구글
@@ -965,8 +984,8 @@ if not google_error and not google.empty:
 
 section(
     "3", "구글 TOP 소재 성과",
-    "영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.\n"
-    "*매체 대시보드 데이터 기준",
+    "영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.",
+    note="*매체 대시보드 데이터 기준",
     badge=f"소재 {len(google):,}개" if not google.empty else "데이터 없음",
     extra_hint=google_read_hint,
 )

@@ -359,7 +359,17 @@ def top_creatives(
         return agg
     if min_cost > 0:
         agg = agg[agg["cost"].fillna(0) >= min_cost]
-    return agg.sort_values(rank_metric, ascending=False).head(limit).reset_index(drop=True)
+    top = agg.sort_values(rank_metric, ascending=False).head(limit).reset_index(drop=True)
+    # 하이라이트 카드에 원어(국문) 작품명을 보여주려면 title_kr이 필요하다 — 집계 키에
+    # 넣으면 소재×매체 단위가 쪼개지므로, 집계 후 소재별 대표값(최빈값)으로 붙인다.
+    if "title_kr" in df.columns:
+        title_map = (
+            df[df["title_kr"].astype(bool)]
+            .groupby("ad")["title_kr"]
+            .agg(lambda s: s.mode().iat[0] if not s.mode().empty else "")
+        )
+        top["title_kr"] = top["ad"].map(title_map).fillna("")
+    return top
 
 
 EXTRA_INFO_NONE = "없음"

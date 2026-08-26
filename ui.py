@@ -141,6 +141,12 @@ header[data-testid="stHeader"] { background: transparent; }
   flex: 0 0 auto; font-size: 11.5px; font-weight: 600; color: var(--ink-2);
   background: var(--line-soft); border-radius: 3px; padding: 4px 10px;
 }
+/* "*OO 기준" 같은 데이터 출처 각주 — 예전엔 sec-d로 제목 아래 한 줄 통째로 차지해
+   내용에 비해 공간을 너무 썼다(실제 피드백). 제목 옆에 작게 붙여 안내 문구처럼 낮춘다. */
+.sec-note {
+  font-size: 10.5px; font-weight: 400; color: var(--faint);
+  margin-left: -4px; white-space: nowrap;
+}
 .sec-d {
   font-size: 12.5px; color: var(--muted); line-height: 1.65;
   margin: 0 0 16px 0; max-width: 96ch;
@@ -275,29 +281,73 @@ header[data-testid="stHeader"] { background: transparent; }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 10px; margin: 10px 0 4px;
 }
-.mat-card {
-  display: flex; flex-direction: row; align-items: stretch;
-  border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
-  text-decoration: none; color: inherit; background: var(--surface);
-  transition: border-color .15s;
+/* 카드 전체가 클릭 진입점이다 — 별도 "영상 보기" 문구 없이, 좌측 색 레일(우수=그린/
+   저조=레드) + hover 시 테두리·배경 변화 + 우상단 화살표만으로 클릭 가능함을 알린다.
+   앵커 기본 스타일(파란 글자·밑줄)이 값·소재명에 그대로 상속돼 "검색 결과 스니펫"처럼
+   보이던 문제가 있었다(실제 피드백) — 그런데 차단을 `.mat-card *`에 걸면 이 안의 캡션
+   그린·소재명 회색처럼 의도적으로 준 색까지 전부 지워버린다(실제로 한 번 이렇게 깨졌다).
+   Streamlit의 `a` 색 규칙을 이기기만 하면 되므로 앵커 자신에게만 !important를 걸고,
+   자식 요소들의 색은 상속이 아니라 각자 명시적으로 지정해 자연스럽게 이기게 둔다. */
+.mat-card, .mat-card:visited {
+  text-decoration: none !important; color: var(--ink) !important;
 }
-.mat-card:hover { border-color: var(--brand); }
-.mat-card.is-dead { opacity: .6; cursor: default; }
+.mat-card {
+  position: relative; display: flex; flex-direction: row; align-items: stretch;
+  border: 1px solid var(--line); border-left: 3px solid var(--brand-deep);
+  border-radius: 4px; overflow: hidden; background: var(--surface);
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.mat-card.is-bad { border-left-color: #a32d2d; }
+.mat-card:hover { border-color: var(--brand-deep); background: #f6fdfa; }
+.mat-card.is-bad:hover { border-color: #a32d2d; background: #fdf6f6; }
+.mat-card.is-dead {
+  cursor: default; border-left-color: var(--line);
+}
+.mat-card.is-dead:hover { border-color: var(--line); background: var(--surface); }
+.mat-ext {
+  position: absolute; top: 7px; right: 8px; font-size: 12px; color: var(--faint);
+  line-height: 1; transition: color .15s;
+}
+.mat-card:hover .mat-ext { color: var(--brand-deep); }
+.mat-card.is-bad:hover .mat-ext { color: #a32d2d; }
 .mat-thumb {
   flex: 0 0 96px; width: 96px; background: var(--line-soft);
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 .mat-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .mat-thumb .mat-noimg { font-size: 10.5px; color: var(--faint); text-align: center; padding: 4px; }
-.mat-meta { flex: 1 1 auto; min-width: 0; padding: 8px 9px 10px; display: flex; flex-direction: column; gap: 4px; }
-.mat-badge {
-  align-self: flex-start; font-size: 10px; font-weight: 700;
-  padding: 2px 6px; border-radius: 3px;
+.mat-meta {
+  flex: 1 1 auto; min-width: 0; padding: 9px 24px 10px 11px;
+  display: flex; flex-direction: column;
 }
-.mat-badge.is-good { background: #e7f9f0; color: #0f6e56; }
-.mat-badge.is-bad { background: #fdf1f1; color: #9b2c2c; }
-.mat-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.mat-name { font-size: 10px; color: var(--ink-2); line-height: 1.45; word-break: break-all; }
+/* 지표명은 캡션으로 낮추고, 우수/저조만 색을 준다 — 배지 칩을 없애서 카드가 조용해진다 */
+.mat-cap {
+  font-size: 10px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--faint);
+}
+.mat-cap b { font-weight: 600; color: var(--brand-deep); }
+.mat-card.is-bad .mat-cap b { color: #a32d2d; }
+.mat-value {
+  font-size: 19px; font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums; line-height: 1.2; margin-top: 1px;
+}
+/* 작품명(국문) — 작품 단위 매칭 안 되는 소재는 이 줄 없이 소재명만 보인다 */
+.mat-title {
+  font-size: 12.5px; font-weight: 600; color: var(--ink); margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 소재명은 통째로 넣는다(구분자 태그로 쪼개지 않음) — 두 줄까지 자연스럽게 접힌다.
+   썸네일이 세로형(9:16)이라 카드 높이가 이미 넉넉해, 두 줄이 돼도 카드 높이는 안 늘어난다. */
+.mat-name {
+  font-size: 10.5px; color: var(--muted); line-height: 1.5; margin-top: 3px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+/* 우수/저조 선정 기준 안내 — 표·카드 아래 매번 반복되는 보조 설명이라, 본문과 같은
+   비중으로 두면 화면이 산만해진다(실제 피드백). 박스 없이 우측 구석에 붙는 옅은 각주로 낮춘다. */
+.sec-legend {
+  text-align: right; font-size: 10.5px; color: var(--faint);
+  margin: 6px 0 2px; line-height: 1.5;
+}
 
 /* 소재 조회 조건 바 — 기본 위젯을 그대로 쌓으면 여백이 뜨고 라벨이 둔탁하다 */
 /* 블록 사이 삽입 자리 — 점선 박스로 "여기에 넣는다"를 분명히 한다. 아이콘만 옅게 두면
@@ -820,7 +870,7 @@ def _hint_icon(text: str) -> str:
 
 def section(
     number: str, title: str, description: str = "", badge: str | None = None,
-    hint: bool = False, extra_hint: str | None = None,
+    hint: bool = False, extra_hint: str | None = None, note: str | None = None,
 ) -> None:
     """섹션 헤더. description은 기본적으로 제목 아래 한 줄로 풀어 보여준다.
 
@@ -830,14 +880,19 @@ def section(
     extra_hint는 description과 별개로, 항상 아이콘 형태로만 붙는 두 번째 참고 정보다
     (예: "이 데이터를 어디서 읽었는지" 같은 진단용 정보 — 매번 보일 필요는 없지만
     본문 설명과 섞으면 안 되는 것).
+
+    note는 "*앱스플라이어 코호트 데이터 기준" 같은 짧은 데이터 출처 각주 전용이다.
+    description과 달리 별도 줄을 차지하지 않고 제목 옆에 작게 붙는다 — 본문 설명이
+    아니라 "이 표가 어느 데이터를 쓰는지"만 알려주는 티 안 나는 안내이기 때문.
     """
     chip = f'<span class="sec-badge">{_e(badge)}</span>' if badge else ""
     tip = _hint_icon(description) if description and hint else ""
     tip2 = _hint_icon(extra_hint) if extra_hint else ""
+    note_html = f'<span class="sec-note">{_e(note)}</span>' if note else ""
     st.markdown(
         f'<div class="sec"><div class="sec-l">'
         f'<span class="sec-n">{_e(number)}</span>'
-        f'<span class="sec-t">{_e(title)}</span>{tip}{tip2}</div>{chip}</div>',
+        f'<span class="sec-t">{_e(title)}</span>{note_html}{tip}{tip2}</div>{chip}</div>',
         unsafe_allow_html=True,
     )
     if description and not hint:
