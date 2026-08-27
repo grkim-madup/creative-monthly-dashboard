@@ -13,7 +13,11 @@ import pandas as pd
 
 from creative_data import RAW_SHEET_NAME, attach_creative_attributes, parse_raw_values
 from google_data import load_google_creatives
-from google_sheets_readonly import fetch_sheet_values, get_credentials
+from google_sheets_readonly import (
+    fetch_sheet_values,
+    fetch_sheet_values_parallel,
+    get_credentials,
+)
 from googleapiclient.discovery import build
 from ios_cohort import IOS_COHORT_SHEET_NAME, apply_ios_cohort, parse_ios_cohort
 
@@ -44,7 +48,9 @@ def load_media_raw(sheet_id: str, refresh: bool = False) -> pd.DataFrame:
         return pd.read_parquet(cache)
 
     credentials = get_credentials()
-    values = fetch_sheet_values(sheet_id, RAW_SHEET_NAME, credentials)
+    # Media_RAW는 12만 행대라 한 번에 받으면 36초가 걸린다(실측) — 행 구간을 쪼개
+    # 병렬로 받는다. 작은 탭은 이 함수가 알아서 단일 요청으로 넘긴다.
+    values = fetch_sheet_values_parallel(sheet_id, RAW_SHEET_NAME, credentials)
     df = attach_creative_attributes(parse_raw_values(values))
 
     try:
