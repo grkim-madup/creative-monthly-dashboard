@@ -668,6 +668,27 @@ section[data-testid="stSidebar"] h2 {
 .freeze-cta-dot--muted { background: var(--faint) !important; }
 .st-key-google_freeze_loading .freeze-cta-body,
 .st-key-google_freeze_nodata .freeze-cta-body { margin-bottom: 0; }
+/* 로딩 인디케이터 — 박스 하단 2px 인디터미네이트 바. 아이콘 대신 선을 쓴 이유는
+   고객사 리포트 톤에서 회전 스피너가 과하게 읽혀서다(디자인 비교 후 선택).
+   액센트는 브랜드 그린 하나만 쓰고 트랙은 중성 회색이다. */
+.st-key-google_freeze_loading .freeze-cta-body { margin-bottom: 10px; }
+.freeze-cta-bar {
+  position: relative; height: 2px; border-radius: 2px;
+  background: #e9ecef; overflow: hidden;
+}
+.freeze-cta-bar i {
+  position: absolute; top: 0; height: 2px; width: 40%;
+  background: var(--brand-deep);
+  animation: freeze-cta-sweep 1.15s ease-in-out infinite;
+}
+@keyframes freeze-cta-sweep {
+  from { left: -40%; }
+  to   { left: 100%; }
+}
+/* 모션을 줄이도록 설정한 사용자에게는 흐르지 않는 정적 바로 보여준다 */
+@media (prefers-reduced-motion: reduce) {
+  .freeze-cta-bar i { animation: none; left: 0; width: 100%; opacity: .45; }
+}
 .st-key-google_freeze_done { padding: 4px 2px 0; }
 .st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
   font-size: 10.5px !important; color: var(--faint) !important;

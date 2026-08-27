@@ -710,7 +710,8 @@ with data_card:
             '<div class="freeze-cta-title freeze-cta-title--muted">'
             '<span class="freeze-cta-dot freeze-cta-dot--muted"></span>'
             '구글 데이터 확인 중</div>'
-            '<div class="freeze-cta-body">고정 상태를 불러오고 있어요</div>',
+            '<div class="freeze-cta-body">고정 상태를 불러오고 있어요</div>'
+            '<div class="freeze-cta-bar" aria-hidden="true"><i></i></div>',
             unsafe_allow_html=True,
         )
 
