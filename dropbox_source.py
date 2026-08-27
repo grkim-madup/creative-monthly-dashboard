@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import dropbox
@@ -22,6 +24,10 @@ from dropbox.common import PathRoot
 CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "google_ads_dropbox"
 
 _KEYS = ("DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "DROPBOX_REFRESH_TOKEN", "DROPBOX_FOLDER_PATH")
+
+# 파일 43개 기준으로 8이면 왕복 지연이 충분히 겹친다. 더 올려도 이득이 크지 않고
+# Dropbox 쪽 rate limit(429)을 건드릴 위험만 커진다.
+_MAX_WORKERS = 8
 
 
 def _secret(name: str) -> str | None:
@@ -53,7 +59,12 @@ def sync_google_folder(dest_dir: Path | str = CACHE_DIR) -> Path:
 
     폴더 구조(하위 폴더 포함)를 그대로 복제한다 — `google_ads_report.py`가
     폴더명(AOS/iOS, ACa/ACi)에서 메타데이터를 유도하기 때문에 구조 보존이 필수다.
-    매번 전체를 새로 받는다(수십~수백 KB대 CSV 43개 수준이라 증분 동기화가 필요 없다).
+    매번 전체를 새로 받는다(CSV 43개 합쳐 0.6MB 수준이라 증분 동기화가 필요 없다).
+
+    다만 **순차로 받으면 안 된다.** 용량은 없는데 파일 수가 많아서, 병목이 전송량이
+    아니라 요청당 왕복 지연이다(2026-08-27 실측: 파일당 평균 1.47초 × 43개 = 63초,
+    전체 용량은 0.6MB). 스레드풀로 병렬화하면 같은 폴더가 10초 안쪽으로 떨어진다 —
+    하이라이트 썸네일 추출에서 이미 검증한 방식(49초 → 16초)과 같다.
     """
     config = _config()
     if config is None:
@@ -79,7 +90,8 @@ def sync_google_folder(dest_dir: Path | str = CACHE_DIR) -> Path:
     client = client.with_path_root(PathRoot.root(root_namespace_id))
     root = config["DROPBOX_FOLDER_PATH"].rstrip("/")
 
-    downloaded = 0
+    # 먼저 받을 목록을 전부 모은다(목록 조회는 페이지당 1회라 병렬화 이득이 없다).
+    targets: list[tuple[str, Path]] = []
     result = client.files_list_folder(root, recursive=True)
     while True:
         for entry in result.entries:
@@ -89,12 +101,40 @@ def sync_google_folder(dest_dir: Path | str = CACHE_DIR) -> Path:
                 continue
             relative = entry.path_display[len(root) :].lstrip("/")
             local_path = dest / relative
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            client.files_download_to_file(str(local_path), entry.path_lower)
-            downloaded += 1
+            targets.append((entry.path_lower, local_path))
         if not result.has_more:
             break
         result = client.files_list_folder_continue(result.cursor)
+
+    # 디렉터리 생성은 본 스레드에서 미리 끝낸다 — 워커들이 같은 부모를 동시에 만들려다
+    # 경쟁하는 상황을 아예 없앤다.
+    for _, local_path in targets:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Dropbox 클라이언트는 내부에 requests 세션을 들고 있어 스레드 간 공유가 안전하다고
+    # 보장되지 않는다 — 워커 스레드마다 자기 클라이언트를 하나씩 만들어 쓴다.
+    local = threading.local()
+
+    def _client() -> dropbox.Dropbox:
+        if not hasattr(local, "client"):
+            local.client = dropbox.Dropbox(
+                oauth2_refresh_token=config["DROPBOX_REFRESH_TOKEN"],
+                app_key=config["DROPBOX_APP_KEY"],
+                app_secret=config["DROPBOX_APP_SECRET"],
+            ).with_path_root(PathRoot.root(root_namespace_id))
+        return local.client
+
+    def _download(job: tuple[str, Path]) -> None:
+        remote, local_path = job
+        _client().files_download_to_file(str(local_path), remote)
+
+    downloaded = 0
+    if targets:
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+            # list()로 감싸 예외를 그대로 올린다 — 일부만 받힌 폴더로 조용히 넘어가면
+            # 그 달 구글 숫자가 소리 없이 빠진다(이 프로젝트에서 가장 위험한 실패 방식).
+            list(pool.map(_download, targets))
+        downloaded = len(targets)
 
     if downloaded == 0:
         raise RuntimeError(f"Dropbox 폴더에서 CSV를 하나도 받지 못했습니다: {root}")
