@@ -656,7 +656,10 @@ section[data-testid="stSidebar"] h2 {
 }
 /* Streamlit이 stMarkdownContainer에 margin-bottom: -16px(음수)를 걸어서, 박스에 준
    padding-bottom이 그대로 먹혀 텍스트가 아래 테두리에 붙어 버린다(실측 확인).
-   두 CTA 박스 모두 이 음수 마진을 무효화해 위아래 여백이 대칭이 되게 한다. */
+   세 CTA 박스 모두 이 음수 마진을 무효화해 위아래 여백이 대칭이 되게 한다.
+   로딩 자리표시자(_loading)가 이 목록에서 빠져 있어서 글자가 박스 아래쪽으로
+   쏠려 보였다(실제 피드백) — 같은 규칙에 넣어 가운데로 돌려놓는다. */
+.st-key-google_freeze_loading [data-testid="stMarkdownContainer"],
 .st-key-google_freeze_nodata [data-testid="stMarkdownContainer"],
 .st-key-google_freeze_pending [data-testid="stMarkdownContainer"] {
   margin-bottom: 0 !important;
