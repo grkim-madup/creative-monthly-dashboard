@@ -22,6 +22,7 @@ import io
 import os
 import subprocess
 import tempfile
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -179,6 +180,52 @@ _PARTIAL_PROBE_BYTES = 1024 * 1024
 # 49초 → 16초로 줄었다. 광고주 Drive에 부담을 주지 않는 선으로 동시 실행 수를 묶어둔다.
 _MAX_PARALLEL_THUMBNAILS = 8
 
+# 소재 하나당(=Drive 파일 id당) 뽑아둔 썸네일을 프로세스 안에 들고 있는다.
+#
+# 왜 필요한가: 예전에는 Streamlit 쪽에서 "한 표의 하이라이트 4개 묶음" 전체를 캐시 키로
+# 썼다. 그러면 정렬 기준이나 표시 개수를 바꿔 **4개 중 1개만 달라져도 키가 달라져서 4개를
+# 전부 다시 뽑았다**(실측 사용자 피드백: 기준 바꿀 때마다 오래 걸림). 뽑는 비용은 소재
+# 단위인데 캐시는 묶음 단위였던 게 원인이라, 캐시 단위를 소재로 내린다.
+#
+# 실패(빈 문자열)는 담지 않는다 — 일시적인 네트워크 오류를 영구히 굳혀버리면 그 카드가
+# 세션 내내 썸네일 없이 남는다.
+_THUMBNAIL_CACHE: dict[str, str] = {}
+_THUMBNAIL_CACHE_LOCK = threading.Lock()
+# 한 세션에서 여러 달·여러 정렬을 오래 만지면 계속 쌓이므로 상한을 둔다(오래된 것부터 버림).
+# 항목당 수십 KB 수준이라 256개면 십수 MB 안쪽이다.
+_THUMBNAIL_CACHE_MAX = 256
+
+
+def thumbnail_cache_stats() -> dict[str, int]:
+    """캐시 상태(항목 수/상한). 진단용 — 동작에는 영향이 없다."""
+    with _THUMBNAIL_CACHE_LOCK:
+        return {"size": len(_THUMBNAIL_CACHE), "max": _THUMBNAIL_CACHE_MAX}
+
+
+def has_thumbnail(file_id: str) -> bool:
+    """이미 뽑아둔 썸네일이 있는지. 스피너에 '몇 개 새로 받는지' 띄우는 데 쓴다."""
+    return _cache_get(file_id) is not None
+
+
+def clear_thumbnail_cache() -> None:
+    """캐시를 비운다. '다시 불러오기'처럼 강제 갱신이 필요할 때만 부른다."""
+    with _THUMBNAIL_CACHE_LOCK:
+        _THUMBNAIL_CACHE.clear()
+
+
+def _cache_get(file_id: str) -> str | None:
+    with _THUMBNAIL_CACHE_LOCK:
+        return _THUMBNAIL_CACHE.get(file_id)
+
+
+def _cache_put(file_id: str, uri: str) -> None:
+    if not uri:
+        return
+    with _THUMBNAIL_CACHE_LOCK:
+        _THUMBNAIL_CACHE[file_id] = uri
+        while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_MAX:
+            _THUMBNAIL_CACHE.pop(next(iter(_THUMBNAIL_CACHE)))
+
 
 def _frame_from_video_bytes(data: bytes, suffix: str) -> str:
     """영상 바이트에서 첫 프레임을 뽑아 data URI로 만든다. 못 뽑으면 빈 문자열."""
@@ -266,6 +313,25 @@ def material_thumbnails(specs: list[tuple[str, str, str]]) -> dict[str, str]:
     if not specs:
         return {}
 
+    # 이미 뽑아둔 건 그대로 쓰고, 없는 것만 받는다 — 정렬 기준을 바꿔 소재 한둘만
+    # 갈렸을 때 나머지를 다시 뽑지 않게 하는 것이 이 함수의 핵심이다.
+    result: dict[str, str] = {}
+    pending: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for spec in specs:
+        file_id = spec[0]
+        if file_id in seen:
+            continue
+        seen.add(file_id)
+        cached = _cache_get(file_id)
+        if cached is not None:
+            result[file_id] = cached
+        else:
+            pending.append(spec)
+
+    if not pending:
+        return result
+
     def one(spec: tuple[str, str, str]) -> tuple[str, str]:
         file_id, file_name, thumbnail_link = spec
         try:
@@ -276,6 +342,9 @@ def material_thumbnails(specs: list[tuple[str, str, str]]) -> dict[str, str]:
             uri = ""
         return file_id, uri
 
-    workers = min(_MAX_PARALLEL_THUMBNAILS, len(specs))
+    workers = min(_MAX_PARALLEL_THUMBNAILS, len(pending))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return dict(pool.map(one, specs))
+        for file_id, uri in pool.map(one, pending):
+            _cache_put(file_id, uri)
+            result[file_id] = uri
+    return result

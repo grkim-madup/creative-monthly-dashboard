@@ -440,14 +440,19 @@ def _drive_material_index():
     return drive_materials.build_index(files)
 
 
-@st.cache_data(ttl=3600, show_spinner="소재 썸네일 만드는 중…")
 def _drive_material_thumbnails(specs: tuple[tuple[str, str, str], ...]) -> dict[str, str]:
-    """카드에 쓸 썸네일을 한 번에(병렬로) 만든다.
+    """카드에 쓸 썸네일을 만든다 — 아직 없는 것만 병렬로 받는다.
 
-    카드마다 따로 호출하면 다운로드 지연이 그대로 누적된다 — 한 표의 하이라이트 4개를
-    묶어 병렬로 처리해야 체감 속도가 확 달라진다(실측 49초 → 16초).
+    카드마다 따로 호출하면 다운로드 지연이 그대로 누적되므로 묶어서 병렬 처리한다
+    (실측 49초 → 16초). 캐시는 `drive_materials` 안에서 **소재(파일 id) 단위**로
+    걸린다 — 여기에 `st.cache_data`를 묶음 단위로 걸면 정렬 기준을 바꿔 4개 중 1개만
+    달라져도 4개를 전부 다시 뽑는다(실제로 그래서 느렸다).
     """
-    return drive_materials.material_thumbnails(list(specs))
+    missing = sum(1 for spec in specs if not drive_materials.has_thumbnail(spec[0]))
+    if not missing:
+        return drive_materials.material_thumbnails(list(specs))
+    with st.spinner(f"소재 썸네일 만드는 중… ({missing}개)"):
+        return drive_materials.material_thumbnails(list(specs))
 
 
 def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
@@ -597,6 +602,9 @@ except ValueError as error:
 with data_card:
     if st.button("시트에서 다시 불러오기", width="stretch"):
         st.cache_data.clear()
+        # 썸네일 캐시는 st.cache_data가 아니라 모듈 안에 있어서 따로 비워야 한다 —
+        # '다시 불러오기'를 눌렀으면 사용자는 전부 새로 받길 기대한다.
+        drive_materials.clear_thumbnail_cache()
         load_media_raw(sheet_id, refresh=True)
         st.rerun()
 

@@ -225,3 +225,89 @@ def test_all_fallback_still_returns_empty_when_nothing_matches():
     files = [{"id": "a", "name": "9_Other_VID_X_Y_9X16_Z"}]
     exact, flat = dm.build_index(files)
     assert dm.find_matches("1_TitleB_VID_X_Y_ALL_Z", exact, flat) == []
+
+
+# ---------------------------------------------------------------------------
+# 썸네일 캐시 단위 — 정렬 기준을 바꿔 하이라이트 4개 중 1개만 갈렸을 때, 나머지 3개를
+# 다시 뽑지 않아야 한다. 예전에는 캐시 키가 "묶음 전체"라 4개를 통째로 다시 뽑았다.
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def clean_thumbnail_cache():
+    dm.clear_thumbnail_cache()
+    yield
+    dm.clear_thumbnail_cache()
+
+
+def _counting_extractor(calls):
+    def fake(match):
+        calls.append(match["id"])
+        return f"data:image/jpeg;base64,{match['id']}"
+    return fake
+
+
+def test_thumbnail_is_extracted_once_per_material(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", _counting_extractor(calls))
+    specs = [("a", "a.mp4", ""), ("b", "b.mp4", "")]
+
+    first = dm.material_thumbnails(specs)
+    second = dm.material_thumbnails(specs)
+
+    assert first == second
+    assert calls == ["a", "b"]  # 두 번째 호출은 한 건도 다시 뽑지 않는다
+
+
+def test_changing_one_pick_only_fetches_the_new_material(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", _counting_extractor(calls))
+    dm.material_thumbnails([("a", "a.mp4", ""), ("b", "b.mp4", ""), ("c", "c.mp4", "")])
+    calls.clear()
+
+    # 정렬 기준을 바꿔 c가 d로 갈린 상황
+    result = dm.material_thumbnails([("a", "a.mp4", ""), ("b", "b.mp4", ""), ("d", "d.mp4", "")])
+
+    assert calls == ["d"]
+    assert set(result) == {"a", "b", "d"}
+
+
+def test_failed_thumbnail_is_not_cached(monkeypatch):
+    attempts = []
+
+    def flaky(match):
+        attempts.append(match["id"])
+        if len(attempts) == 1:
+            raise RuntimeError("일시적 네트워크 오류")
+        return "data:image/jpeg;base64,ok"
+
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", flaky)
+    assert dm.material_thumbnails([("a", "a.mp4", "")]) == {"a": ""}
+    # 실패를 굳혀버리면 그 카드가 세션 내내 썸네일 없이 남는다 — 다시 시도해야 한다
+    assert dm.material_thumbnails([("a", "a.mp4", "")]) == {"a": "data:image/jpeg;base64,ok"}
+    assert attempts == ["a", "a"]
+
+
+def test_duplicate_specs_are_fetched_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", _counting_extractor(calls))
+    dm.material_thumbnails([("a", "a.mp4", ""), ("a", "a.mp4", "")])
+    assert calls == ["a"]
+
+
+def test_cache_is_bounded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", _counting_extractor(calls))
+    monkeypatch.setattr(dm, "_THUMBNAIL_CACHE_MAX", 3)
+    for i in range(5):
+        dm.material_thumbnails([(f"id{i}", f"{i}.mp4", "")])
+    assert dm.thumbnail_cache_stats()["size"] <= 3
+
+
+def test_has_thumbnail_reports_cache_state(monkeypatch):
+    monkeypatch.setattr(dm, "material_thumbnail_data_uri", _counting_extractor([]))
+    assert dm.has_thumbnail("a") is False
+    dm.material_thumbnails([("a", "a.mp4", "")])
+    assert dm.has_thumbnail("a") is True
