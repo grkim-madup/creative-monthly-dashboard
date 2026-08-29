@@ -605,6 +605,18 @@ def store_row_numbers(read: StoreRead, header: list[str], key: str) -> list[int]
     return [number for number, _record in _matches(read, header, key)]
 
 
+def _ensure_header(service, tab: str, header: list[str]) -> None:
+    """빈 탭에 헤더 줄만 놓는다.
+
+    여러 명이 동시에 놓아도 내용이 같아 무해하고, 이미 붙은 데이터 행(2행 이하)은
+    건드리지 않는다 — A1 한 줄만 쓰기 때문이다.
+    """
+    service.spreadsheets().values().update(
+        spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+        valueInputOption="RAW", body={"values": [header]},
+    ).execute(num_retries=API_RETRIES)
+
+
 def store_upsert(
     tab: str, header: list[str], values: dict, expected_rev: int | None = None,
     known_read: "StoreRead | None" = None,
@@ -640,13 +652,11 @@ def store_upsert(
         service = _service()
         _ensure_tab(service, tab)
         if not read.ok:
-            # 탭이 완전히 비어 있다 — 헤더부터 놓는다.
-            service.spreadsheets().values().update(
-                spreadsheetId=_sheet_id(), range=f"{tab}!A1",
-                valueInputOption="RAW", body={"values": [header, row]},
-            ).execute(num_retries=API_RETRIES)
-            return True, None
-        numbers = store_row_numbers(read, header, key)
+            # 탭이 완전히 비어 있다 — **헤더만** 놓고 행은 아래 append 경로로 붙인다.
+            # 예전에는 여기서 [헤더, 내 행]을 A1에 통째로 썼다. 그러면 여섯 명이 동시에
+            # 첫 저장을 할 때 서로의 행을 덮어써 하나만 남는다(실측 6명 → 1명).
+            _ensure_header(service, tab, header)
+        numbers = store_row_numbers(read, header, key) if read.ok else []
         if not numbers:
             service.spreadsheets().values().append(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
@@ -702,17 +712,10 @@ def store_upsert_many(
         service = _service()
         _ensure_tab(service, tab)
         if not read.ok:
-            # 탭이 비어 있으면 헤더부터 놓고 전부 새로 붙인다.
-            body = [header]
-            for values in rows:
-                row = [str(values.get(col, "")) for col in header]
-                row[header.index(REV_COLUMN)] = "1"
-                body.append(row)
-            service.spreadsheets().values().update(
-                spreadsheetId=_sheet_id(), range=f"{tab}!A1",
-                valueInputOption="RAW", body={"values": body},
-            ).execute(num_retries=API_RETRIES)
-            return True, None
+            # 탭이 비어 있으면 **헤더만** 놓는다. 행은 아래 공통 경로에서 append 된다 —
+            # 여기서 [헤더, 행들]을 A1에 통째로 쓰면 동시에 첫 저장하는 사람들끼리
+            # 서로를 덮어쓴다.
+            _ensure_header(service, tab, header)
 
         updates = []
         appends = []
@@ -723,7 +726,7 @@ def store_upsert_many(
             current_rev = _as_int(current.get(REV_COLUMN)) if current else 0
             row = [str(values.get(col, "")) for col in header]
             row[header.index(REV_COLUMN)] = str(current_rev + 1)
-            numbers = store_row_numbers(read, header, key)
+            numbers = store_row_numbers(read, header, key) if read.ok else []
             if numbers:
                 updates.append({"range": f"{tab}!A{numbers[0]}", "values": [row]})
                 # 중복 줄은 스스로 정리한다. 단 **여기서 바로 지우면 안 된다** — 행을

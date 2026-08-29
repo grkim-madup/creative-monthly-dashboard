@@ -296,3 +296,36 @@ def test_collapsing_a_duplicate_row_does_not_shift_another_key(book):
 
     rows = {r[0]: r[2] for r in writer.store_rows(writer.store_read("t"), header)}
     assert rows == {"a": "a-새값", "b": "b-새값"}
+
+
+def test_first_save_on_an_empty_tab_does_not_overwrite_others(book):
+    """빈 탭에 여러 명이 동시에 첫 저장 — 예전에는 마지막 한 명만 남았다.
+
+    실측(수동 분류, 6명 동시): 6개 중 5개가 사라졌다. 원인은 "탭이 비어 있으면
+    [헤더, 내 행]을 A1에 통째로 쓴다"였다. 지금은 헤더만 놓고 행은 append 한다.
+    """
+    header = ["k", writer.REV_COLUMN, "v"]
+    seen_empty = writer.store_read("새탭")          # 전원이 들고 있는 "비어 있다"
+
+    for key in ("a", "b", "c"):
+        ok, _ = writer.store_upsert(
+            "새탭", header, {"k": key, "rev": "", "v": f"{key}값"},
+            known_read=seen_empty,                  # 남이 이미 썼는지 모르는 상태
+        )
+        assert ok
+
+    rows = {r[0]: r[2] for r in writer.store_rows(writer.store_read("새탭"), header)}
+    assert rows == {"a": "a값", "b": "b값", "c": "c값"}
+
+
+def test_first_batch_save_on_an_empty_tab_keeps_earlier_rows(book):
+    header = ["k", writer.REV_COLUMN, "v"]
+    seen_empty = writer.store_read("새탭2")
+    writer.store_upsert_many(
+        "새탭2", header, [{"k": "a", "rev": "", "v": "a값"}], known_read=seen_empty
+    )
+    writer.store_upsert_many(
+        "새탭2", header, [{"k": "b", "rev": "", "v": "b값"}], known_read=seen_empty
+    )
+    rows = {r[0]: r[2] for r in writer.store_rows(writer.store_read("새탭2"), header)}
+    assert rows == {"a": "a값", "b": "b값"}
