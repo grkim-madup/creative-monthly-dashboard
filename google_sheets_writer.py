@@ -31,6 +31,8 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import threading
+import time
 import os
 from dataclasses import dataclass, field as dataclass_field
 
@@ -71,20 +73,51 @@ def _sheet_id() -> str:
     return str(_secret("GOOGLE_SNAPSHOT_SHEET_ID"))
 
 
+# googleapiclient의 클라이언트는 내부 http 객체를 들고 있어 스레드 간 공유가 안전하다고
+# 보장되지 않는다 — Streamlit은 세션마다 스레드가 다르므로 스레드별로 하나씩 만들어 재사용한다.
+# 예전에는 호출할 때마다 새로 만들었고, 그때마다 서비스 계정 인증이 다시 일어나 리런 한 번에
+# 수 초가 날아갔다(2026-08-28 실측: 첫 호출 2.8초, 이후에도 매번 0.5초).
+_local = threading.local()
+
+
 def _service():
-    creds = service_account.Credentials.from_service_account_info(
-        _service_account_info(), scopes=SCOPES
-    )
-    return build("sheets", "v4", credentials=creds)
+    if not hasattr(_local, "service"):
+        creds = service_account.Credentials.from_service_account_info(
+            _service_account_info(), scopes=SCOPES
+        )
+        _local.service = build("sheets", "v4", credentials=creds)
+    return _local.service
 
 
 def _tab_name(month: int) -> str:
     return f"snapshot_{int(month)}"
 
 
+# 탭 목록 조회는 500ms짜리 API 호출인데, store_read가 매번 이걸 먼저 부른다.
+# 리런 한 번에 다섯 번 읽으면 그것만 2.5초다. 탭이 새로 생기는 건 우리가 _ensure_tab을
+# 부를 때뿐이라 짧게 캐시해도 안전하다 — 만들 때 직접 비운다.
+_TABS_TTL = 60.0
+_tabs_cache: tuple[float, set[str]] | None = None
+_tabs_lock = threading.Lock()
+
+
+def _clear_tabs_cache() -> None:
+    global _tabs_cache
+    with _tabs_lock:
+        _tabs_cache = None
+
+
 def _existing_tabs(service) -> set[str]:
+    global _tabs_cache
+    with _tabs_lock:
+        cached = _tabs_cache
+    if cached and (time.monotonic() - cached[0]) < _TABS_TTL:
+        return cached[1]
     meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute()
-    return {s["properties"]["title"] for s in meta.get("sheets", [])}
+    tabs = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    with _tabs_lock:
+        _tabs_cache = (time.monotonic(), tabs)
+    return tabs
 
 
 def _ensure_tab(service, title: str) -> None:
@@ -94,6 +127,7 @@ def _ensure_tab(service, title: str) -> None:
         spreadsheetId=_sheet_id(),
         body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
     ).execute()
+    _clear_tabs_cache()
 
 
 def month_exists(month: int) -> bool:
@@ -421,7 +455,8 @@ def store_row_numbers(read: StoreRead, header: list[str], key: str) -> list[int]
 
 
 def store_upsert(
-    tab: str, header: list[str], values: dict, expected_rev: int | None = None
+    tab: str, header: list[str], values: dict, expected_rev: int | None = None,
+    known_read: "StoreRead | None" = None,
 ) -> tuple[bool, str | None]:
     """키(첫 컬럼) 하나에 해당하는 그 행만 갱신한다. 없으면 새 행으로 붙인다.
 
@@ -431,7 +466,11 @@ def store_upsert(
     돌려주는 값: (성공 여부, 실패 이유). 성공하면 이유는 None.
     """
     key = str(values[header[0]])
-    read = store_read(tab)
+    # 방금 같은 탭을 읽은 호출자는 그 결과를 넘길 수 있다 — 저장할 때마다 같은 탭을
+    # 한 번 더 읽는 왕복(0.45초)을 없앤다. 넘기지 않으면 종전대로 여기서 읽는다.
+    # 주의: 넘긴 값이 낡았으면 rev 비교가 그만큼 낡은 기준으로 이뤄진다. 그래서
+    # expected_rev를 쓰는(동시 편집을 막아야 하는) 호출에는 넘기지 않는다.
+    read = known_read if (known_read is not None and expected_rev is None) else store_read(tab)
     if read.failed:
         return False, read.reason
 
@@ -614,11 +653,16 @@ LOCKS_TAB = "locks_state"
 
 def _json_store_read(tab: str, header: list[str]) -> tuple[str, dict, str | None]:
     """{키: 파싱된 JSON} 형태로 읽는다. (상태, 값, 실패 이유)."""
-    read = store_read(tab)
+    return _json_store_parse(store_read(tab), header)[:3]
+
+
+def _json_store_parse(read: StoreRead, header: list[str]) -> tuple[str, dict, str | None, StoreRead]:
+    """이미 읽어둔 StoreRead를 파싱한다. 원본도 함께 돌려준다 — 저장할 때 재사용해
+    같은 탭을 두 번 읽지 않기 위해서다(2026-08-29)."""
     if read.failed:
-        return "error", {}, read.reason
+        return "error", {}, read.reason, read
     if not read.ok:
-        return "empty", {}, None
+        return "empty", {}, None, read
     out: dict = {}
     for row in store_rows(read, header):
         record = dict(zip(header, row))
@@ -629,8 +673,8 @@ def _json_store_read(tab: str, header: list[str]) -> tuple[str, dict, str | None
         except (json.JSONDecodeError, TypeError):
             continue  # 값 하나가 깨진 것으로 나머지를 못 읽게 만들지는 않는다
     if not out and not has_migration_mark(read, header):
-        return "empty", {}, None
-    return "ok", out, None
+        return "empty", {}, None, read
+    return "ok", out, None, read
 
 
 def read_overrides(month: int) -> tuple[str, dict, str | None]:
@@ -652,11 +696,22 @@ def read_highlights(month: int) -> tuple[str, dict, str | None]:
     return _json_store_read(f"highlights_{int(month)}", HIGHLIGHT_HEADER)
 
 
-def write_highlight(month: int, table_key: str, cells: list) -> tuple[bool, str | None]:
+def read_highlights_with_raw(month: int) -> tuple[str, dict, str | None, StoreRead]:
+    """강조를 읽되 원본(StoreRead)까지 함께 돌려준다.
+
+    저장할 때 이 원본을 그대로 넘기면 같은 탭을 두 번 읽지 않는다(왕복 0.45초 절약).
+    """
+    return _json_store_parse(store_read(f"highlights_{int(month)}"), HIGHLIGHT_HEADER)
+
+
+def write_highlight(
+    month: int, table_key: str, cells: list, known_read: "StoreRead | None" = None,
+) -> tuple[bool, str | None]:
     return store_upsert(
         f"highlights_{int(month)}", HIGHLIGHT_HEADER,
         {"table_key": table_key, REV_COLUMN: "",
          "json": json.dumps(cells, ensure_ascii=False)},
+        known_read=known_read,
     )
 
 

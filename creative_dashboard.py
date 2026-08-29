@@ -141,9 +141,19 @@ GROUP_START_COLUMNS = {"소진액", "CTR"}
 
 
 def format_cell(label: str, value) -> str:
-    """표 셀 하나를 문자열로. 서식은 FORMATS(한글 라벨 키까지 등록돼 있음)를 따른다."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    """표 셀 하나를 문자열로. 서식은 FORMATS(한글 라벨 키까지 등록돼 있음)를 따른다.
+
+    빈 값은 "-"로 찍는다. 예전에는 float만 검사해서 pandas의 pd.NA가 그대로 통과했고,
+    pd.NA는 어떤 서식 지정자를 줘도 "<NA>"를 돌려주기 때문에 화면에 "₩<NA>"가 나왔다
+    (2026-08-29 구글 표 인앱 CPA에서 발견). 스칼라면 종류를 가리지 않고 검사한다.
+    """
+    if value is None:
         return "-"
+    try:
+        if pd.isna(value):
+            return "-"
+    except (TypeError, ValueError):
+        pass  # 배열 등 스칼라가 아닌 값은 아래에서 문자열로 처리한다
     fmt = FORMATS.get(label)
     if fmt:
         try:
@@ -282,7 +292,73 @@ def style_table(df: pd.DataFrame, color_columns: list[str] | None = None):
     return styler
 
 
+# 편집 모드(st.dataframe)용. 캔버스라 Styler의 border가 무시돼 배경색으로 표시할 수밖에 없다.
 HIGHLIGHT_STYLE = "background-color: #ffd93d; font-weight: 700;"
+
+# 보기 모드(HTML 표)용 — 원래 하려던 "굵은 테두리" 표시다(2026-08-29).
+#
+# outline이 아니라 border를 쓴다. outline은 셀마다 따로 그려져 강조 셀이 나란히 붙으면
+# 경계에 선이 두 줄로 겹친다. 표가 border-collapse: collapse라 border는 맞닿은 변이
+# 한 줄로 합쳐진다.
+#
+# 나아가 **붙어 있는 강조 셀들은 하나의 사각형으로 보여야 한다**(사용자 요청) — 칸마다
+# 네모가 그려지면 무엇을 묶어서 강조했는지가 안 읽힌다. 그래서 이웃도 강조돼 있는 변은
+# 아예 지운다. 지울 때는 0이 아니라 `hidden`을 쓴다: collapse 표에서 인접 셀의 1px
+# 행 구분선과 충돌하면 굵은 쪽이 이기는데, `hidden`만이 그 규칙을 이기고 선을 없앤다.
+HIGHLIGHT_BORDER = "2px solid #00A94C"
+
+
+def highlight_cell_style(saved_cells: set, headers: list[str], position: int, column: str) -> str:
+    """강조 셀 하나의 테두리 스타일. 이웃한 강조 셀과는 변을 공유해 한 덩어리로 보인다."""
+    def on(row_offset: int, column_offset: int) -> bool:
+        index = headers.index(column) + column_offset
+        if not 0 <= index < len(headers):
+            return False
+        return (position + row_offset, headers[index]) in saved_cells
+
+    sides = {
+        "top": "hidden" if on(-1, 0) else HIGHLIGHT_BORDER,
+        "bottom": "hidden" if on(1, 0) else HIGHLIGHT_BORDER,
+        "left": "hidden" if on(0, -1) else HIGHLIGHT_BORDER,
+        "right": "hidden" if on(0, 1) else HIGHLIGHT_BORDER,
+    }
+    parts = [f"border-{side}: {value};" for side, value in sides.items()]
+    return " ".join(parts) + " font-weight: 700;"
+
+
+def render_html_table(
+    renamed: pd.DataFrame, color_columns: list[str], saved_cells: set,
+) -> None:
+    """보기 모드용 HTML 표. 히트맵과 저장된 셀 강조를 그대로 옮겨 칠한다."""
+    headers = list(renamed.columns)
+    rows = [
+        [format_cell(name, value) for name, value in zip(headers, record)]
+        for record in renamed.itertuples(index=False, name=None)
+    ]
+
+    styles: list[dict[str, str]] = [{} for _ in range(len(renamed))]
+    for column in color_columns:
+        if column not in renamed.columns:
+            continue
+        for position, style in enumerate(performance_colors(renamed[column])):
+            if style:
+                styles[position][column] = style
+    # 저장된 강조가 히트맵을 덮는다 — 사람이 일부러 칠한 셀이 우선이다.
+    # 히트맵 배경은 남기고 테두리만 얹어 "왜 칠했는지"와 "어떤 값인지"를 둘 다 보인다.
+    marked = {(int(p), c) for p, c in saved_cells}
+    for position, column in marked:
+        if 0 <= position < len(styles) and column in headers:
+            styles[position][column] = (
+                styles[position].get(column, "")
+                + highlight_cell_style(marked, headers, position, column)
+            )
+
+    report_table(
+        rows, headers,
+        left_columns=LEFT_ALIGNED_COLUMNS,
+        group_starts=GROUP_START_COLUMNS,
+        cell_styles=styles,
+    )
 
 
 def render_table(
@@ -304,6 +380,16 @@ def render_table(
         ordered = [c for c in column_order if c in renamed.columns]
         renamed = renamed[ordered + [c for c in renamed.columns if c not in ordered]]
     colors = [COLUMN_LABELS.get(c, c) for c in (color_columns or [])]
+
+    # 보기 모드에서는 HTML로 그린다 — st.dataframe은 헤더를 가운데 정렬하거나 굵게 할
+    # 수 없고 지표 묶음 구분선도 못 넣는다(2026-08-28). 대신 셀 클릭·드래그 강조는
+    # HTML에서 파이썬으로 이벤트를 돌려받을 방법이 없어 편집 모드에만 남긴다.
+    # 강조는 원래 편집 모드에서만 바꿀 수 있으므로 보기 모드에서 잃는 기능은 없다.
+    if not edit_mode:
+        saved = highlights.load(month, highlight_key) if (highlight_key and month) else set()
+        render_html_table(renamed, colors, saved)
+        return
+
     styler = style_table(renamed, colors)
 
     if not highlight_key or month is None:
@@ -313,53 +399,80 @@ def render_table(
         )
         return
 
-    saved_cells = highlights.load(month, highlight_key)
-
-    def paint_selected(row):
-        position = renamed.index.get_loc(row.name)
-        return [
-            HIGHLIGHT_STYLE if (position, col) in saved_cells else ""
-            for col in row.index
-        ]
-
-    styler = styler.apply(paint_selected, axis=1)
-
-    # 강조는 이 리포트를 보는 **모든 사람**에게 보이는 공유 상태다. 예전에는 뷰 모드에서도
-    # 셀을 드래그하는 순간 저장돼, 화면을 구경하던 사람이 고객사 리포트의 강조를 통째로
-    # 바꿀 수 있었다(소유자 개념도, 잠금도 없다). 편집 모드에서만 바꿀 수 있게 한다.
-    if st.session_state.get("mode_toggle") != "편집":
-        st.dataframe(
-            styler, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
-            column_config=column_help_config(renamed),
-        )
-        return
-
+    # 셀 강조 조작 방식(2026-08-29 확정)
+    #
+    # st.dataframe의 선택은 **이벤트가 아니라 상태**다. "같은 셀을 다시 눌러 해제"는 값이
+    # 그대로라 신호가 되지 않고, 프론트엔드 그리드의 선택 상태는 session_state를 지워도
+    # 남는다. 위젯 키를 매번 바꿔 강제로 새로 그려봤지만 리마운트 경합으로 더 심하게
+    # 씹혔다(피드백 두 번). 그래서 선택을 곧바로 저장으로 잇지 않는다.
+    #
+    # 저장은 사람이 누를 때만 일어난다. 처음엔 모달(st.dialog)로 물었는데 화면을 덮고
+    # 배경까지 어두워져 이 정도 조작에는 과했다 — 물음표 도움말처럼 **작게 떠 있는 칩**
+    # 하나로 줄였다. 선택이 있을 때만 표 오른쪽 아래에 얹힌다.
     widget_key = f"hl_table_{highlight_key}_{month}"
-    # 강조 목록은 항상 디스크가 기준이고, 프론트엔드 선택 상태는 "방금 드래그/클릭한
-    # 범위"를 알려주는 일회성 신호로만 쓴다 — 새로고침 시 프론트엔드가 빈 선택으로
-    # 시작하는 것 자체는 문제가 아니다(빈 값이면 그냥 아무 것도 안 한다). multi-cell이라
-    # 드래그로 여러 셀을 한 번에 잡을 수 있다. 방금 잡은 범위가 전부 이미 강조돼 있으면
-    # 그 범위를 전부 해제하고, 하나라도 강조가 안 돼 있으면 범위 전체를 강조한다 —
-    # 그래서 같은 범위를 다시 드래그하면 "취소"가 된다.
-    event = st.dataframe(
-        styler, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
-        column_config=column_help_config(renamed),
-        on_select="rerun", selection_mode="multi-cell", key=widget_key,
-    )
-    picked = [tuple(c) for c in event["selection"]["cells"]]
-    if picked:
-        cells = set(saved_cells)
-        if all(c in cells for c in picked):
-            cells.difference_update(picked)
-        else:
-            cells.update(picked)
-        highlights.save(month, highlight_key, list(cells))
-        # 위젯이 이미 이번 실행에서 그려진 뒤라 session_state에 새 값을 대입하면
-        # StreamlitAPIException이 난다("cannot be modified after the widget is
-        # instantiated") — 대신 키를 통째로 지운다. 다음 렌더에서 위젯이 빈 선택
-        # 상태로 다시 시작해, 방금 처리한 드래그가 또 처리되는 걸 막는다.
-        del st.session_state[widget_key]
-        st.rerun()
+
+    # 이 표만 fragment로 감싼다 — 셀을 눌러도 화면 전체가 아니라 이 표만 다시 돈다.
+    # 바깥에서 계산해 둔 renamed/colors는 클로저로 그대로 쓴다. 데이터 자체가 바뀌는
+    # 조작(월·필터·정렬 기준)은 fragment 밖이라 종전대로 전체가 다시 돈다.
+    @st.fragment
+    def _highlight_table() -> None:
+        saved = set(highlights.load(month, highlight_key))
+
+        def paint_selected(row):
+            position = renamed.index.get_loc(row.name)
+            return [
+                HIGHLIGHT_STYLE if (position, col) in saved else ""
+                for col in row.index
+            ]
+
+        # styler는 매번 새로 만든다 — 바깥에서 만든 것을 재사용하면 fragment가 다시 돌 때
+        # 이전 강조가 겹쳐 쌓인다(Styler는 apply를 누적한다).
+        painted = style_table(renamed, colors).apply(paint_selected, axis=1)
+        # 표와 칩을 같은 컨테이너에 넣는다 — 이 컨테이너가 칩의 좌표 기준점이다.
+        # 기준을 잡아주지 않으면 칩이 훨씬 위쪽 블록을 기준으로 삼아 엉뚱한 자리
+        # (섹션 필터 옆)에 뜬다(2026-08-29 실제 발생).
+        box = st.container(key=f"hlbox_{highlight_key}_{month}")
+        with box:
+            event = st.dataframe(
+                painted, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
+                column_config=column_help_config(renamed),
+                on_select="rerun", selection_mode="multi-cell", key=widget_key,
+            )
+
+        picked = {tuple(cell) for cell in event["selection"]["cells"]}
+        if not picked:
+            return
+
+        # 칩은 **표 제목 줄 오른쪽**에 띄운다(2026-08-29 확정).
+        #
+        # 처음엔 선택한 행 옆에 띄웠는데, 이 표들은 가로로 꽉 차 있어 어느 칸이든 반드시
+        # 데이터를 가렸다(실제로 D7 coin CVR 값이 칩에 덮였다). 제목 줄은 늘 비어 있어
+        # 무엇도 가리지 않고, 자리가 고정이라 눈으로 찾을 필요도 없다.
+        chip_key = f"hlchip_{highlight_key}_{month}"
+
+        # 선택한 칸이 이미 전부 강조돼 있으면 '해제'만, 하나도 없으면 '강조'만 띄운다.
+        show_on = not picked <= saved
+        show_off = bool(picked & saved)
+        with box, st.container(key=chip_key):
+            slots = st.columns(2 if (show_on and show_off) else 1)
+            index = 0
+            if show_on:
+                if slots[index].button(
+                    "강조", key=f"hl_on_{highlight_key}_{month}",
+                    help="선택한 셀을 강조합니다",
+                ):
+                    highlights.save(month, highlight_key, list(saved | picked))
+                    st.rerun(scope="fragment")
+                index += 1
+            if show_off:
+                if slots[index].button(
+                    "해제", key=f"hl_off_{highlight_key}_{month}",
+                    help="선택한 셀의 강조를 지웁니다",
+                ):
+                    highlights.save(month, highlight_key, list(saved - picked))
+                    st.rerun(scope="fragment")
+
+    _highlight_table()
 
 
 # 행 전체 강조용 색 (기존 시트의 파랑=우수 / 빨강=저조 컨벤션)
@@ -479,17 +592,6 @@ GOOGLE_LABELS = {
     "in_app_action": "인앱 액션",
 }
 
-GOOGLE_COLUMN_CONFIG = {
-    "소진액": {"format": "₩%,d"},
-    "노출": {"format": "%,d"},
-    "클릭": {"format": "%,d"},
-    "CTR": {"format": "%.2f%%"},
-    "CPC": {"format": "₩%,d"},
-    "설치": {"format": "%,d"},
-    "CPI": {"format": "₩%,d"},
-    "인앱 액션": {"format": "%,d"},
-    "인앱 CPA": {"format": "₩%,d"},
-}
 
 
 def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: bool = True):
@@ -500,46 +602,30 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
     """
     view = df[[c for c in GOOGLE_COLUMNS if c in df.columns]].copy()
     best, worst = pick_best_worst(view, [("CPI", False), ("인앱 CPA", False)]) if highlight else ({}, {})
-    # NumberColumn의 '%.2f%%'는 값을 그대로 찍으므로 비율을 퍼센트 포인트로 바꿔서 넘긴다.
-    if "CTR" in view.columns:
-        view["CTR"] = view["CTR"] * 100
+    # 예전에는 여기서 CTR에 100을 곱했다 — st.dataframe의 NumberColumn '%.2f%%'가 값을
+    # 그대로 찍기 때문이었다. HTML 렌더는 FORMATS의 '{:.2%}'를 쓰므로 비율 그대로 둔다.
+    # (곱한 채로 넘기면 3.01%가 301%로 나온다.)
 
     renamed = view.rename(columns={**COLUMN_LABELS, **GOOGLE_LABELS})
 
-    def paint(row):
-        if row.name in best:
-            return [ROW_GOOD] * len(row)
-        if row.name in worst:
-            return [ROW_BAD] * len(row)
-        return [""] * len(row)
-
-    # 다른 표와 같은 규칙으로 가운데 정렬한다. 숫자 컬럼은 서식이 있어 NumberColumn을
-    # 쓰고, 나머지(작품·캠페인 목적 등)는 기본 Column으로 정렬만 준다.
-    config = {
-        str(name): st.column_config.Column(
-            str(name),
-            help=COLUMN_HELP.get(str(name)),
-            alignment="left" if str(name) in LEFT_ALIGNED_COLUMNS else "center",
-        )
-        for name in renamed.columns
-    }
-    config.update({
-        name: st.column_config.NumberColumn(
-            name, help=COLUMN_HELP.get(name), alignment="center", **options,
-        )
-        for name, options in GOOGLE_COLUMN_CONFIG.items()
-        if name in renamed.columns
-    })
-    if link_column and "소재 링크" in renamed.columns:
-        config["소재 링크"] = st.column_config.LinkColumn(
-            "소재 링크", display_text="열기", alignment="left",
-        )
-
-    st.dataframe(
-        renamed.style.apply(paint, axis=1),
-        width="stretch",
-        hide_index=True,
-        column_config=config,
+    # 구글 표도 다른 표와 같은 HTML 렌더를 쓴다(2026-08-29) — st.dataframe으로는 헤더를
+    # 가운데 정렬하거나 굵게 할 수 없다. 이 표는 셀 클릭 강조를 쓰지 않아 잃는 게 없다.
+    # 소재 식별자가 URL이라 '소재 링크'만 실제 링크로 심는다.
+    headers = list(renamed.columns)
+    rows = [
+        [format_cell(name, value) for name, value in zip(headers, record)]
+        for record in renamed.itertuples(index=False, name=None)
+    ]
+    row_classes = [
+        "is-good" if idx in best else "is-bad" if idx in worst else ""
+        for idx in renamed.index
+    ]
+    report_table(
+        rows, headers,
+        left_columns=LEFT_ALIGNED_COLUMNS,
+        group_starts=GROUP_START_COLUMNS,
+        row_classes=row_classes,
+        link_columns={"소재 링크"} if link_column else None,
     )
     if highlight:
         note = shared_pick_note(view, best, worst, "asset", "objective")
@@ -1983,6 +2069,24 @@ else:
 # --------------------------------------------------------------------------- 7. NEXT STEP
 
 
+def render_pasted_table(table: pd.DataFrame) -> None:
+    """NEXT STEP에 붙여넣은 표를 다른 표와 같은 모양(HTML)으로 그린다.
+
+    값은 사용자가 붙여넣은 문자열 그대로 쓴다 — 지표 서식(FORMATS)을 적용하지 않는다.
+    머리글이 우연히 '소진액' 같은 이름이어도 이미 서식이 들어간 문자열이라 다시 포맷하면
+    깨진다. 첫 컬럼만 좌측 정렬한다(보통 소재명·항목명이 온다).
+    """
+    headers = [str(name) for name in table.columns]
+    rows = [
+        ["" if value is None else str(value) for value in record]
+        for record in table.itertuples(index=False, name=None)
+    ]
+    report_table(
+        rows, headers,
+        left_columns={headers[0]} if headers else set(),
+    )
+
+
 def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
     """자유 노트 블록 — 5번 분석 블록과 같은 잠금·조작 UI를 두르고, 본문은 기존 NEXT STEP의
     에디터/이미지/표 UI를 그대로 옮긴다. 위젯 키는 전부 block_id를 섞어 블록끼리 상태가
@@ -2164,10 +2268,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
         for raw_table in block.get("tables", []):
             table = parse_pasted_table(raw_table)
             if not table.empty:
-                st.dataframe(
-                    table, width="stretch", hide_index=True,
-                    column_config=column_help_config(table),
-                )
+                render_pasted_table(table)
 
 
 next_step_blocks = page_blocks[report_blocks.SLOT_NEXT_STEP]

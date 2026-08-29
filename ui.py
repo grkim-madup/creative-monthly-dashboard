@@ -244,13 +244,134 @@ header[data-testid="stHeader"] { background: transparent; }
 .kpi-d.is-up { color: #c0392b; }
 .kpi-d.is-down { color: #1f5fa8; }
 
+/* ------------------------------------------------- 셀 강조 조작 칩 */
+/* 편집 모드에서 셀을 고르면 **표 제목 줄 오른쪽**에 뜨는 작은 회색 캡슐(2026-08-29 확정).
+   - 왜 제목 줄인가: 표가 가로로 꽉 차 있어 표 위에 띄우면 반드시 데이터를 가린다.
+     실제로 선택 행 옆에 띄웠다가 오른쪽 컬럼 값이 덮였다.
+   - 색은 본문 회색(#4b5563). 데이터 색(그린=우수/적색=저조)과 겹치지 않아 "도구"로 읽힌다.
+   - 버튼에는 배경·테두리를 주지 않는다. 주면 캡슐 안에 알약이 또 들어앉아 따로 논다.
+   - position:absolute라 나타나고 사라져도 표가 위아래로 밀리지 않는다. */
+[class*="st-key-hlbox_"] { position: relative; }
+[class*="st-key-hlchip_"] {
+  position: absolute; top: -34px; right: 0; z-index: 5;
+  width: fit-content;
+  background: #4b5563;
+  border-radius: 999px !important;
+  padding: 2px !important;
+  box-shadow: 0 2px 8px rgba(20, 23, 26, .20);
+  overflow: hidden;
+}
+/* 두 버튼의 세로 기준선을 맞춘다. Streamlit 컬럼은 기본이 위쪽 정렬이라, 컬럼 높이가
+   조금만 달라도 라벨이 위로 붙어 보인다(2026-08-29 실제 발생). */
+[class*="st-key-hlchip_"] [data-testid="stHorizontalBlock"] {
+  gap: 0 !important; align-items: center !important;
+}
+[class*="st-key-hlchip_"] [data-testid="stColumn"] {
+  width: auto !important; flex: 0 0 auto !important; min-width: 0 !important;
+  display: flex !important; align-items: center !important;
+}
+[class*="st-key-hlchip_"] [data-testid="stColumn"] > div,
+[class*="st-key-hlchip_"] .stButton {
+  display: flex !important; align-items: center !important; margin: 0 !important;
+}
+[class*="st-key-hlchip_"] .stButton button {
+  display: inline-flex !important; align-items: center !important;
+  justify-content: center !important;
+}
+/* 두 번째 칸 앞에만 짧은 구분선 — 위아래를 띄워 캡슐을 가로지르지 않게 한다 */
+[class*="st-key-hlchip_"] [data-testid="stColumn"] + [data-testid="stColumn"] {
+  border-left: 1px solid rgba(255, 255, 255, .20);
+  margin: 4px 0;
+}
+[class*="st-key-hlchip_"] .stButton button {
+  min-height: 0 !important; height: auto !important;
+  padding: 3px 12px !important;
+  font-size: 10.5px !important; font-weight: 500 !important; line-height: 1.5 !important;
+  background: transparent !important; border: 0 !important; outline: 0 !important;
+  border-radius: 999px !important; color: #fff !important;
+  box-shadow: none !important;
+}
+[class*="st-key-hlchip_"] .stButton button:hover,
+[class*="st-key-hlchip_"] .stButton button:focus {
+  background: rgba(255, 255, 255, .16) !important; color: #fff !important;
+}
+/* 라벨 글자는 button이 아니라 그 안의 <p>가 자기 폰트를 갖는다 — button에만 지정하면
+   두 버튼의 굵기·크기가 서로 달라 보인다(2026-08-29 실제 발생). 안쪽까지 못 박는다. */
+[class*="st-key-hlchip_"] .stButton button * {
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.5 !important;
+  letter-spacing: 0 !important;
+  color: #fff !important;
+  margin: 0 !important;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------- 리런 중 깜빡임 억제 */
+/* Streamlit은 스크립트가 다시 도는 동안 (1) 우측 상단에 러너 아이콘을 띄우고
+   (2) 다시 그려질 요소를 흐리게 처리한다. 셀 강조처럼 눈 깜짝할 사이에 끝나는
+   조작에서도 화면이 한 번 흐려졌다 돌아와 "로딩 걸린다"는 인상을 준다
+   (2026-08-29 피드백). 고객사에 그대로 보여주는 리포트라 더 거슬린다.
+
+   실측으로 확인한 동작: 리런이 시작되면 stApp에 data-test-script-state가 붙고,
+   다시 그릴 요소에는 data-stale="true"와 흐린 버전의 emotion 클래스가 함께 걸린다.
+   클래스 이름은 배포마다 바뀌므로 data-stale 쪽을 잡아 덮는다. */
+[data-testid="stStatusWidget"] { display: none !important; }
+
+/* 대신 화면 최상단에 2px 진행 바를 띄운다(2026-08-29, A안).
+   브라우저가 페이지를 불러올 때 쓰는 관습이라 설명 없이 읽히고, 화면을 가리거나
+   레이아웃을 밀지 않는다. 구글 데이터 로딩 박스의 인디터미네이트 바와 같은 언어다.
+   리런이 시작되면 stApp에 data-test-script-state가 붙는 것을 실측으로 확인했다. */
+[data-testid="stApp"][data-test-script-state="running"]::before,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 2px;
+  background: var(--line-soft); z-index: 999999;
+}
+[data-testid="stApp"][data-test-script-state="running"]::after,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::after {
+  content: ""; position: fixed; top: 0; height: 2px; width: 35%;
+  background: var(--brand-deep); z-index: 1000000;
+  animation: rpt-topbar 1.1s ease-in-out infinite;
+}
+@keyframes rpt-topbar {
+  from { left: -35%; }
+  to   { left: 100%; }
+}
+/* 모션을 줄이도록 설정한 사용자에게는 흐르지 않는 정적 바로 */
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="stApp"][data-test-script-state="running"]::after,
+  [data-testid="stApp"][data-test-script-state="rerunRequested"]::after {
+    animation: none; left: 0; width: 100%; opacity: .5;
+  }
+}
+[data-testid="stElementContainer"][data-stale="true"],
+[data-stale="true"] {
+  opacity: 1 !important;
+  filter: none !important;
+  transition: none !important;
+}
+/* 리런 중 앱 전체에 걸리는 페이드도 끈다 */
+[data-test-script-state="running"] [data-testid="stElementContainer"],
+[data-test-script-state="rerunRequested"] [data-testid="stElementContainer"] {
+  opacity: 1 !important;
+}
+
 /* ------------------------------------------------- 리포트 표 (HTML 직접 렌더) */
 /* st.dataframe이 캔버스라 못 바꾸는 것들(헤더 정렬·굵기·그룹 구분선)을 위해 쓰는 표.
    행 높이는 st.dataframe 기본값(35px)과 비슷한 느낌으로 맞춰 두 종류 표가 나란히
    있어도 이질감이 없게 한다. */
+/* 테두리는 감싸는 상자에 준다. 표에 주면 스크롤할 때 테두리가 내용과 함께 밀려 올라가
+   바닥선이 안 보인다(2026-08-29 피드백). 상자에 주면 스크롤 중에도 틀이 그대로 남는다.
+   상자 안 마지막 행 아래에 보이던 띠는 빈 공간이 아니라 **가로 스크롤바**였다(실측:
+   내용과 상자 사이 여백 0px) — 얇게 처리해 눈에 덜 띄게 한다. */
 .rt-wrap {
-  overflow-x: auto; border: 1px solid var(--line); border-radius: 3px;
-  background: var(--surface); margin-bottom: 8px;
+  overflow: auto; margin-bottom: 8px;
+  scrollbar-width: thin;
+  border: 1px solid var(--line); border-radius: 3px;
+  background: var(--surface);
+  /* 행이 많은 표(속성별·소재 분석·작품별)가 화면을 한없이 밀어내지 않게 높이를 묶는다.
+     10행 남짓이면 그대로 다 보이고, 그보다 길면 표 안에서 스크롤된다. */
+  max-height: 420px;
 }
 .rt {
   width: 100%; border-collapse: collapse;
@@ -260,26 +381,43 @@ header[data-testid="stHeader"] { background: transparent; }
   background: #f1f4f6; color: #374151;
   font-size: 11px; font-weight: 700; letter-spacing: .01em;
   padding: 10px 10px; white-space: nowrap;
-  border-bottom: 1.5px solid var(--ink);  /* 섹션 제목의 검정 밑선과 같은 규칙 */
+  /* 스크롤해도 지표명이 남도록 헤더를 고정한다. border-collapse 표에서는 sticky 헤더의
+     테두리가 같이 스크롤돼 사라지므로, 밑선은 box-shadow로 그린다. */
+  position: sticky; top: 0; z-index: 2;
+  border-bottom: 0;
+  box-shadow: inset 0 -1.5px 0 var(--ink);
 }
 .rt td {
   padding: 8px 10px; white-space: nowrap;
   border-bottom: 1px solid var(--line-soft); color: var(--ink);
 }
-.rt tbody tr:last-child td { border-bottom: 0; }
+/* 마지막 행: 테두리를 아예 없애면 그 행만 1px 낮아지고, 투명으로 두면 이번엔 표
+   바닥선이 사라진다 — border-collapse 표에서는 셀 테두리가 표 자체 테두리를 이기기
+   때문이다(2026-08-29, 두 번의 피드백으로 확정). 높이도 유지하고 바닥선도 남도록
+   표 테두리와 같은 색으로 둔다. */
+/* 마지막 행: 테두리를 아예 없애면 그 행만 1px 낮아진다. 높이는 유지하되, 상자 테두리와
+   겹쳐 두 줄로 보이지 않게 투명으로 둔다(틀은 이제 상자가 그린다). */
+.rt tbody tr:last-child td { border-bottom-color: transparent; }
 .rt .c { text-align: center; }
 .rt .l { text-align: left; }
 /* 규모/효율처럼 성격이 다른 지표 묶음 사이에만 세로선 */
 .rt .gs { border-left: 1px solid var(--line); }
 .rt tbody tr:hover td { background: #fafbfc; }
+.rt-link { color: var(--brand-deep); text-decoration: none; font-weight: 500; }
+.rt-link:hover { text-decoration: underline; }
 /* 우수·저조: 행 전체를 굵게 물들이면 숫자가 읽히지 않아 배경만 옅게 깔고
    소재명에만 색을 준다(시트의 파랑=우수 / 빨강=저조 컨벤션 유지). */
 .rt tr.is-good td { background: #eefaf4; }
 .rt tr.is-bad td { background: #fdf3f3; }
 .rt tr.is-good:hover td { background: #e6f7ee; }
 .rt tr.is-bad:hover td { background: #fbebeb; }
-.rt tr.is-good td.l { color: #0b5c38; font-weight: 700; }
-.rt tr.is-bad td.l { color: #8c2b2b; font-weight: 700; }
+/* 우수/저조는 행 전체를 굵게 칠한다 — 예전 st.dataframe 렌더(ROW_GOOD/ROW_BAD)와 같은
+   규칙이고, 시트의 파랑=우수 / 빨강=저조 컨벤션을 그대로 잇는다. 소재명만 굵게 했더니
+   구글 표처럼 첫 컬럼이 링크인 표에서는 강조가 사라져 보였다(2026-08-29 피드백). */
+.rt tr.is-good td { color: #0b5c38; font-weight: 700; }
+.rt tr.is-bad td { color: #8c2b2b; font-weight: 700; }
+.rt tr.is-good td a.rt-link { color: #0b5c38; }
+.rt tr.is-bad td a.rt-link { color: #8c2b2b; }
 
 /* ------------------------------------------------------------ 상태 행 */
 .row {
@@ -1064,6 +1202,8 @@ def report_table(
     left_columns: set[str] | None = None,
     group_starts: set[str] | None = None,
     row_classes: list[str] | None = None,
+    cell_styles: list[dict[str, str]] | None = None,
+    link_columns: set[str] | None = None,
 ) -> None:
     """리포트용 HTML 표. `st.dataframe`으로 못 하는 것들을 하기 위해 직접 그린다.
 
@@ -1078,6 +1218,12 @@ def report_table(
     left_columns = left_columns or set()
     group_starts = group_starts or set()
     row_classes = row_classes or [""] * len(rows)
+    # cell_styles[행][컬럼명] = "background-color: ..." — CPI 히트맵과 저장된 셀 강조를
+    # 그대로 옮겨오기 위한 통로다. st.dataframe이 Styler로 하던 일을 여기서 대신한다.
+    cell_styles = cell_styles or [{} for _ in rows]
+    # 값이 URL인 컬럼만 링크로 심는다(구글 표의 소재 링크). 나머지 셀은 항상 이스케이프된
+    # 텍스트다 — 임의의 HTML이 표 안으로 들어오지 않게 한다.
+    link_columns = link_columns or set()
 
     def cell_class(name: str) -> str:
         classes = ["l" if name in left_columns else "c"]
@@ -1089,12 +1235,19 @@ def report_table(
         f'<th class="{cell_class(name)}">{_e(name)}</th>' for name in headers
     )
     body = []
-    for values, klass in zip(rows, row_classes):
-        cells = "".join(
-            f'<td class="{cell_class(name)}">{_e(value)}</td>'
-            for name, value in zip(headers, values)
-        )
-        body.append(f'<tr class="{klass}">{cells}</tr>')
+    for values, klass, styles in zip(rows, row_classes, cell_styles):
+        cells = []
+        for name, value in zip(headers, values):
+            style = styles.get(name, "")
+            attr = f' style="{_e(style)}"' if style else ""
+            text = _e(value)
+            if name in link_columns and str(value).startswith("http"):
+                text = (
+                    f'<a class="rt-link" href="{_e(value)}" target="_blank" '
+                    f'rel="noopener">열기</a>'
+                )
+            cells.append(f'<td class="{cell_class(name)}"{attr}>{text}</td>')
+        body.append(f'<tr class="{klass}">{"".join(cells)}</tr>')
     st.markdown(
         f'<div class="rt-wrap"><table class="rt">'
         f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody>"

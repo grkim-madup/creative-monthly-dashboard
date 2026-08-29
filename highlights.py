@@ -33,6 +33,8 @@ HIGHLIGHTS_DIR = Path(__file__).resolve().parent / "notes"
 
 _CACHE_TTL = 20.0
 _CACHE: dict[int, tuple[float, dict]] = {}
+# load()가 시트에서 받아온 원본(StoreRead). save()가 재읽기 없이 그대로 쓴다.
+_RAW_CACHE: dict[int, object] = {}
 
 
 def _path(month: int) -> Path:
@@ -71,7 +73,24 @@ def _write_local_all(month: int, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def clear_cache(month: int | None = None) -> None:
+def _update_cache(month: int, table_key: str, cells: list) -> None:
+    """방금 저장한 값을 캐시에 반영한다(시트를 다시 읽지 않기 위해).
+
+    캐시가 아직 없으면 아무것도 하지 않는다 — 다음 load()가 시트에서 통째로 읽는다.
+    남이 같은 달의 다른 표를 고친 것은 기존 TTL(_CACHE_TTL)이 지나면 반영된다.
+    """
+    cached = _CACHE.get(month)
+    if not cached:
+        return
+    data = dict(cached[1])
+    if cells:
+        data[table_key] = cells
+    else:
+        data.pop(table_key, None)
+    _CACHE[month] = (cached[0], data)
+
+
+def clear_cache(month: int | None = None) -> None:  # noqa: D401
     if month is None:
         _CACHE.clear()
     else:
@@ -88,7 +107,8 @@ def load_all(month: int) -> dict:
     if not google_sheets_writer.configured():
         data = _read_local_all(month)
     else:
-        status, data, _reason = google_sheets_writer.read_highlights(month)
+        status, data, _reason, raw = google_sheets_writer.read_highlights_with_raw(month)
+        _RAW_CACHE[month] = raw
         if status == "error":
             # 읽기 실패를 "강조 없음"으로 오인해 저장하면 전부 사라진다 — 쓰지 않는다.
             return {}
@@ -112,16 +132,35 @@ def load(month: int, table_key: str) -> list[tuple[int, str]]:
 
 
 def save(month: int, table_key: str, cells: list) -> None:
-    """이 표의 강조 셀을 통째로 덮어쓴다(빈 목록을 주면 강조를 전부 지운다)."""
+    """이 표의 강조 셀을 통째로 덮어쓴다(빈 목록을 주면 강조를 전부 지운다).
+
+    저장 직전에 같은 탭을 다시 읽지 않는다 — 이번 리런에서 load()가 이미 읽어둔
+    원본을 넘겨 왕복 한 번(0.45초)을 아낀다(2026-08-29). 강조는 표 단위로 통째
+    덮어쓰는 값이라 rev 비교 대상이 아니어서 안전하다.
+    """
+    month = int(month)
     normalized = [[int(r), str(c)] for r, c in cells]
-    clear_cache(month)
+    known = _RAW_CACHE.get(month)
 
     if google_sheets_writer.configured():
         if normalized:
-            google_sheets_writer.write_highlight(month, table_key, normalized)
+            ok, _reason = google_sheets_writer.write_highlight(
+                month, table_key, normalized, known_read=known
+            )
         else:
             google_sheets_writer.delete_highlight(month, table_key)
+            ok = True
+        # 방금 쓴 값을 이미 아는데 캐시를 비우면, 같은 리런에서 시트를 한 번 더 읽는다
+        # (실측 430ms). 성공했을 때만 캐시를 그 값으로 갱신한다 — 실패했는데 갱신하면
+        # 화면에는 저장된 것처럼 보이고 시트에는 없는, 이 프로젝트에서 가장 위험한
+        # 어긋남이 생긴다(2026-08-29).
+        if ok:
+            _update_cache(month, table_key, normalized)
+        else:
+            clear_cache(month)
         return
+
+    clear_cache(month)
 
     data = _read_local_all(month)
     if normalized:
