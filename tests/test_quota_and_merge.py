@@ -246,3 +246,53 @@ def test_quota_errors_are_recognised(reason):
 def test_other_errors_keep_their_original_text():
     assert writer.friendly_error("ValueError: 이상함") == "ValueError: 이상함"
     assert not writer.is_quota_error("ValueError: 이상함")
+
+
+def test_two_people_creating_the_same_tab_at_once(book, monkeypatch):
+    """새 달을 여러 명이 동시에 처음 열면 탭 생성이 겹친다 — 화면이 죽으면 안 된다."""
+    service = writer._service()
+
+    real_batch = service.spreadsheets().batchUpdate
+
+    def racing_batch(spreadsheetId=None, body=None, **kw):  # noqa: N803
+        # 내가 만들기 직전에 다른 사람이 같은 탭을 이미 만들어 둔 상황.
+        for request in (body or {}).get("requests", []):
+            title = request.get("addSheet", {}).get("properties", {}).get("title")
+            if title:
+                book.tabs.setdefault(title, [])
+                raise RuntimeError(
+                    'Invalid requests[0].addSheet: A sheet with the name '
+                    f'"{title}" already exists.'
+                )
+        return real_batch(spreadsheetId=spreadsheetId, body=body, **kw)
+
+    monkeypatch.setattr(
+        type(service.spreadsheets()), "batchUpdate", staticmethod(racing_batch)
+    )
+    writer._clear_tabs_cache()
+    writer._ensure_tab(service, writer.block_rows_tab(MONTH))  # 예외가 나면 실패다
+
+
+def test_collapsing_a_duplicate_row_does_not_shift_another_key(book):
+    """중복 줄을 지우면 그 아래 행 번호가 밀린다 — 같은 배치의 다른 키가 밀려선 안 된다.
+
+    동시 저장이 겹치면 같은 키가 두 줄이 될 수 있고(실측), 그 정리 과정에서 남의 행을
+    덮어쓰면 코멘트가 통째로 바뀐다.
+    """
+    header = ["k", writer.REV_COLUMN, "v"]
+    book.tabs["t"] = [
+        header,
+        ["a", "1", "a-원본"],
+        ["a", "1", "a-중복"],     # 3행: 중복 줄
+        ["b", "1", "b-원본"],     # 4행: 지우면 3행으로 밀린다
+    ]
+    writer._clear_tabs_cache()
+
+    ok, _ = writer.store_upsert_many(
+        "t", header, [{"k": "a", "rev": "", "v": "a-새값"},
+                      {"k": "b", "rev": "", "v": "b-새값"}]
+    )
+    assert ok
+
+    rows = {r[0]: r[2] for r in writer.store_rows(writer.store_read("t"), header)}
+    assert rows == {"a": "a-새값", "b": "b-새값"}

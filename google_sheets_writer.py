@@ -141,12 +141,27 @@ def _existing_tabs(service) -> set[str]:
 
 
 def _ensure_tab(service, title: str) -> None:
+    """탭이 없으면 만든다. **여러 명이 동시에 불러도 안전해야 한다.**
+
+    새 달을 여러 사람이 같은 순간에 처음 열면 전원이 "탭이 없다"를 보고 저마다
+    addSheet를 보낸다. 먼저 만든 한 명만 성공하고 나머지는 400(A sheet with the name
+    already exists)을 받는데, 예전에는 그게 그대로 예외로 올라가 화면이 죽었다
+    (2026-08-29 6명 동시 실측). 만들려던 것이 이미 있으면 그건 성공이다.
+    """
     if title in _existing_tabs(service):
         return
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=_sheet_id(),
-        body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
-    ).execute(num_retries=API_RETRIES)
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=_sheet_id(),
+            body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
+        ).execute(num_retries=API_RETRIES)
+    except Exception:  # noqa: BLE001
+        # 캐시가 낡아서 실패했을 수 있다 — 실제 목록을 다시 확인한다.
+        _clear_tabs_cache()
+        _clear_ids_cache()
+        if title in _existing_tabs(service):
+            return
+        raise
     _clear_tabs_cache()
     _clear_ids_cache()
 
@@ -626,6 +641,7 @@ def store_upsert_many(
 
         updates = []
         appends = []
+        stale_rows: list[int] = []   # 중복 줄 — 갱신을 다 보낸 뒤에 지운다
         for values in rows:
             key = str(values[key_column])
             current = store_get(read, header, key)
@@ -635,8 +651,10 @@ def store_upsert_many(
             numbers = store_row_numbers(read, header, key)
             if numbers:
                 updates.append({"range": f"{tab}!A{numbers[0]}", "values": [row]})
-                if len(numbers) > 1:
-                    _delete_rows(tab, numbers[1:])  # 중복 줄은 스스로 정리한다
+                # 중복 줄은 스스로 정리한다. 단 **여기서 바로 지우면 안 된다** — 행을
+                # 지우면 그 아래 행 번호가 밀려서, 이미 계산해 둔 다른 키의 갱신 범위가
+                # 엉뚱한 줄을 가리킨다(남의 행을 덮어쓴다). 갱신을 다 보낸 뒤에 지운다.
+                stale_rows.extend(numbers[1:])
             else:
                 appends.append(row)
 
@@ -646,11 +664,14 @@ def store_upsert_many(
                 body={"valueInputOption": "RAW", "data": updates},
             ).execute(num_retries=API_RETRIES)
         if appends:
+            # 덧붙이기는 맨 끝에 붙으므로 기존 행 번호를 밀지 않는다.
             service.spreadsheets().values().append(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
                 valueInputOption="RAW", insertDataOption="INSERT_ROWS",
                 body={"values": appends},
             ).execute(num_retries=API_RETRIES)
+        if stale_rows:
+            _delete_rows(tab, stale_rows)
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
