@@ -329,3 +329,44 @@ def test_first_batch_save_on_an_empty_tab_keeps_earlier_rows(book):
     )
     rows = {r[0]: r[2] for r in writer.store_rows(writer.store_read("새탭2"), header)}
     assert rows == {"a": "a값", "b": "b값"}
+
+
+def test_releasing_a_lock_does_not_remove_its_row(book):
+    """잠금 해제는 행을 지우지 않고 소유자만 비운다.
+
+    잠금은 6명이 쉬지 않고 넣고 푸는 가장 churn이 심한 탭이다. 행을 진짜로 지우면 그
+    아래 행 번호가 밀려, 그 순간 다른 사람이 보낸 저장이 엉뚱한 행에 떨어진다
+    (실측: 자기 키인데 획득 실패, 해제했는데 남는 행).
+    """
+    locks.acquire("block:a", MONTH, "나")
+    locks.acquire("block:b", MONTH, "너")
+    rows_before = len(writer.store_rows(writer.store_read(writer.LOCKS_TAB),
+                                        writer.LOCK_HEADER))
+
+    locks.release("block:a", MONTH, "나")
+
+    rows_after = len(writer.store_rows(writer.store_read(writer.LOCKS_TAB),
+                                       writer.LOCK_HEADER))
+    assert rows_after == rows_before, "해제하면서 행이 사라졌다(아래 행 번호가 밀린다)"
+
+    locks.reset_state()
+    assert locks.status("block:a", MONTH, "누구든").state == "free"
+    assert locks.status("block:b", MONTH, "누구든").state == "other"
+
+
+def test_a_freed_lock_can_be_taken_again(book):
+    locks.acquire("block:a", MONTH, "나")
+    locks.release("block:a", MONTH, "나")
+    locks.reset_state()
+    assert locks.acquire("block:a", MONTH, "다른사람") is True
+
+
+def test_unreadable_lock_store_never_reports_free(book, monkeypatch):
+    """잠금을 못 읽었을 때 '아무도 안 잡았다'로 답하면 두 사람이 같이 편집한다."""
+    locks.reset_state()
+    monkeypatch.setattr(
+        writer, "read_locks", lambda known_read=None: ("error", {}, "boom")
+    )
+    assert locks.acquire("block:x", MONTH, "나") is False
+    assert locks.status("block:x", MONTH, "나").state == "other"
+    assert locks.touch("block:x", MONTH, "나") is False

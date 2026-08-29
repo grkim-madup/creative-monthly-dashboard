@@ -805,8 +805,16 @@ def _delete_rows(tab: str, numbers: list[int]) -> None:
     """지정한 시트 행 번호들만 지운다(탭 clear 금지 — 다른 행을 건드리지 않는다).
 
     한 번의 batchUpdate로 보내되, 앞 행을 지우면 뒤 행 번호가 밀리므로 뒤에서 앞으로
-    지운다. 요청 하나로 묶여 있어 중간 상태(탭이 잠깐 비는 순간)가 생기지 않는다 —
-    이게 clear-then-rewrite 방식과의 결정적인 차이다.
+    지운다. 요청 하나로 묶여 있어 중간 상태(탭이 잠깐 비는 순간)가 생기지 않는다.
+
+    ⚠ **행을 정말로 없애면 그 아래 행 번호가 한 칸씩 밀린다.** 이 저장소의 쓰기는
+    "읽어서 행 번호를 찾고 → 그 번호에 update"라서, 지우기와 남의 저장이 겹치면 드물게
+    엉뚱한 행에 떨어질 수 있다. 그래서 **지우기가 잦은 곳은 아예 지우지 않도록** 만들었다
+    (잠금 해제는 행을 지우지 않고 소유자만 비운다 — locks.py 참고).
+
+    "행을 남기고 내용만 비우는" 방식도 시도했지만 더 나빴다(2026-08-29 실측):
+    빈 행이 생기면 `append`가 표의 끝을 그 빈 행으로 보고 **거기에 새 행을 끼워 넣어**
+    아래를 전부 밀어버린다. 지울 거면 진짜로 지워서 표를 이어진 상태로 두는 편이 낫다.
     """
     if not numbers:
         return
@@ -819,7 +827,7 @@ def _delete_rows(tab: str, numbers: list[int]) -> None:
             "sheetId": sheet_id, "dimension": "ROWS",
             "startIndex": n - 1, "endIndex": n,
         }}}
-        for n in sorted(numbers, reverse=True)
+        for n in sorted(set(numbers), reverse=True)
     ]
     service.spreadsheets().batchUpdate(
         spreadsheetId=_sheet_id(), body={"requests": requests}
@@ -1137,6 +1145,9 @@ def read_locks(known_read: "StoreRead | None" = None) -> tuple[str, dict, str | 
             "owner": record["owner"], "acquired_at": record["acquired_at"],
             "touched_at": record["touched_at"], "rev": _as_int(record[REV_COLUMN]),
         }
+    # 소유자가 빈 행은 "풀린 잠금"이다(행은 남기고 소유자만 비운다 — delete_lock 참고).
+    # **걸러내지 않고 그대로 돌려준다** — 그 행의 rev를 알아야 다음 획득이 rev 대조를
+    # 통과한다. 비어 있는지 판단하는 것은 locks.py의 몫이다.
     return "ok", out, None
 
 
@@ -1152,8 +1163,20 @@ def write_lock(
     )
 
 
-def delete_lock(key: str) -> None:
-    store_delete(LOCKS_TAB, LOCK_HEADER, key)
+def delete_lock(key: str) -> tuple[bool, str | None]:
+    """잠금을 푼다. **행은 지우지 않고 소유자만 비운다.**
+
+    잠금은 6명이 쉬지 않고 넣고 푸는, 이 시트에서 가장 churn이 심한 탭이다. 행을 진짜로
+    지우면 그 아래 행 번호가 밀려서, 그 순간 다른 사람이 보낸 저장이 엉뚱한 행에 떨어진다
+    (2026-08-29 실측: 자기 키인데 획득 실패, 해제했는데 남는 행). 소유자만 비우면 행 수가
+    변하지 않아 그 경합이 아예 없어진다. 읽는 쪽은 소유자가 빈 행을 "잠금 없음"으로 본다.
+
+    행은 블록 하나당 하나로 묶여 있어 무한정 늘지 않는다.
+    """
+    return store_upsert(
+        LOCKS_TAB, LOCK_HEADER,
+        {"key": key, REV_COLUMN: "", "owner": "", "acquired_at": "", "touched_at": ""},
+    )
 
 
 def ensure_block_rows_tab(month: int) -> None:

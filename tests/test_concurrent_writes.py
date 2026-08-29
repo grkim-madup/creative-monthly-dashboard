@@ -384,7 +384,9 @@ def test_next_save_collapses_duplicate_rows(book):
     ok, _ = blocks.mutate(7, lambda d: blocks.update_block(
         d, blocks.SLOT_ANALYSIS, "dup001", comment="정리 후 저장"))
     assert ok
-    rows = [r for r in book.tabs[tab][1:] if r[0] == "dup001"]
+    # 지우기는 행을 없애지 않고 **내용만 비운다**(행 번호가 밀리면 남의 행을 덮어쓰기
+    # 때문이다 — 2026-08-29). 그래서 빈 행을 걸러내고 센다.
+    rows = [r for r in book.tabs[tab][1:] if r and r[0] == "dup001"]
     assert len(rows) == 1  # 저장하면서 중복이 스스로 정리된다
     assert "정리 후 저장" in rows[0][-1]
 
@@ -397,4 +399,6 @@ def test_delete_removes_every_duplicate_row(book):
         ["소재-A", "2", '{"creative_type": "Trailer"}'],
     ]
     writer.delete_override(7, "소재-A")
-    assert [r for r in book.tabs[tab][1:] if r[0] == "소재-A"] == []
+    # 행 자체는 남고 내용만 비워진다 — 읽는 쪽(store_rows)이 빈 행을 건너뛴다.
+    assert [r for r in book.tabs[tab][1:] if r and r[0] == "소재-A"] == []
+    assert writer.store_rows(writer.store_read(tab), writer.OVERRIDE_HEADER) == []

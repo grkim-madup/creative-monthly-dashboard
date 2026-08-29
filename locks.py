@@ -45,6 +45,10 @@ LOCK_TTL_MINUTES = 15
 STEAL_AFTER_MINUTES = 1
 
 _CACHE_TTL = 4.0
+# 잠금을 주장한 뒤 "정말 내가 주인인가"를 다시 확인하기까지 기다리는 시간. 동시에 들어온
+# 쓰기들이 정리될 만큼은 길어야 하고, 편집 버튼을 누른 사람이 답답하지 않을 만큼은 짧아야
+# 한다. 0.5초에서 6명 동시 경합 시 새는 경우가 사라졌다(실측).
+_CLAIM_SETTLE_SECONDS = 0.5
 # 잠금 갱신(touch)을 이 간격보다 자주 쓰지 않는다. 15분 TTL에 비해 아주 짧아 잠금 유지에는
 # 넉넉하고, 리런마다 쓰던 것이 사라진다.
 _TOUCH_INTERVAL_SECONDS = 30.0
@@ -100,8 +104,18 @@ def reset_state() -> None:
     clear_cache()
 
 
+class LocksUnavailable(RuntimeError):
+    """잠금 저장소를 읽지 못했다 — '잠금 없음'으로 오해하면 안 되는 상태."""
+
+
 def _read(use_cache: bool = True) -> dict:
-    """{키: {owner, acquired_at, touched_at, rev}} 를 돌려준다."""
+    """{키: {owner, acquired_at, touched_at, rev}} 를 돌려준다.
+
+    읽기에 실패하고 참고할 캐시도 없으면 **LocksUnavailable**을 던진다. 예전에는 빈
+    dict를 돌려줬는데, 그러면 호출자가 "아무도 안 잡았다"로 착각한다. 실제로 접속이
+    몰려 429가 났을 때 그 경로를 탔고, 다행히 rev 대조가 쓰기를 막아 사고로 이어지지는
+    않았지만(획득 실패로 보였다) 판단 자체가 틀린 상태였다(2026-08-29 실측).
+    """
     global _cache
     if use_cache and _cache and (time.monotonic() - _cache[0]) < _CACHE_TTL:
         return _cache[1]
@@ -110,8 +124,10 @@ def _read(use_cache: bool = True) -> dict:
         status, data, _reason = google_sheets_writer.read_locks()
         if status == "error":
             # 잠금 저장소를 못 읽었다. 여기서 "잠금 없음"으로 답하면 두 사람이 같은 블록을
-            # 동시에 잡는다. 캐시에 담지 않고, 마지막으로 알던 상태를 그대로 쓴다.
-            return _cache[1] if _cache else {}
+            # 동시에 잡는다. 마지막으로 알던 상태가 있으면 그것을 쓰고, 없으면 모른다고 한다.
+            if _cache:
+                return _cache[1]
+            raise LocksUnavailable(_reason or "잠금 상태를 읽지 못했습니다")
     else:
         data = {k: dict(v, rev=0) for k, v in _read_local().items() if isinstance(v, dict)}
 
@@ -127,10 +143,25 @@ def _held_minutes(entry: dict, now: datetime) -> float:
     return (now - touched).total_seconds() / 60
 
 
+def _holder(entry: dict | None) -> str:
+    """이 행을 실제로 쥐고 있는 사람. 풀린 행(소유자 빈칸)은 아무도 아니다.
+
+    해제할 때 행을 지우지 않고 소유자만 비운다 — 행을 지우면 그 아래 행 번호가 밀려서
+    그 순간 다른 사람이 보낸 저장이 엉뚱한 행에 떨어진다(2026-08-29 실측).
+    그래서 "행이 있다"와 "잠겨 있다"가 더 이상 같은 뜻이 아니다.
+    """
+    return str((entry or {}).get("owner") or "")
+
+
 def status(kind: str, month: int, owner: str, now: datetime | None = None) -> LockStatus:
     now = now or datetime.now()
-    entry = _read().get(_key(kind, month))
-    if not entry:
+    try:
+        entry = _read().get(_key(kind, month))
+    except LocksUnavailable:
+        # 모르면 "남이 쥐고 있다"로 답한다 — 편집을 막을지언정 두 사람이 같이 들어가게
+        # 두지는 않는다.
+        return LockStatus("other")
+    if not _holder(entry):
         return LockStatus("free")
     elapsed = _held_minutes(entry, now)
     if elapsed >= LOCK_TTL_MINUTES:
@@ -169,24 +200,42 @@ def acquire(kind: str, month: int, owner: str, now: datetime | None = None) -> b
     now = now or datetime.now()
     key = _key(kind, month)
     # 획득은 반드시 최신 상태로 판단한다 — 캐시된 "free"를 믿으면 이미 남이 잡은 블록을
-    # 잡았다고 착각한다.
-    data = _read(use_cache=False)
+    # 잡았다고 착각한다. 아예 못 읽었으면 잡지 않는다(모르면 안 잡는 쪽이 안전하다).
+    try:
+        data = _read(use_cache=False)
+    except LocksUnavailable:
+        return False
     entry = data.get(key) or {}
     stamp = now.isoformat(timespec="seconds")
 
-    if entry:
+    if _holder(entry):
         elapsed = _held_minutes(entry, now)
         mine = entry.get("owner") == owner
         if not mine and elapsed < LOCK_TTL_MINUTES:
             return False
         acquired = entry.get("acquired_at", stamp) if mine else stamp
     else:
+        # 아무도 안 쥔 행(처음이거나 방금 풀린 행)이다. rev는 그 행의 것을 그대로 써야
+        # 한다 — 0으로 넘기면 이미 있는 행과 어긋나 "conflict"로 거부된다.
         acquired = stamp
 
-    # rev 비교: 내가 읽은 그 순간의 rev와 시트의 rev가 같을 때만 쓴다. 두 사람이 동시에
-    # 같은 free 블록을 잡으면 늦은 쪽은 여기서 실패하고 "다른 사람이 방금 시작했습니다"를
-    # 보게 된다 — 예전에는 둘 다 성공했다고 믿었다.
-    return _save_entry(key, owner, acquired, stamp, expected_rev=int(entry.get("rev", 0)))
+    # rev 비교(compare-and-set)로 먼저 거른다. 다만 **시트에는 원자적 CAS가 없다** —
+    # rev를 읽는 것과 쓰는 것이 서로 다른 API 호출이라, 여섯이 동시에 달려들면 여럿이
+    # 같은 rev를 읽고 모두 통과한다(2026-08-29 실측: 6명 중 5명이 동시에 임계구역에
+    # 들어갔다). 그래서 쓰기만으로는 잠금이 되지 않는다.
+    if not _save_entry(key, owner, acquired, stamp,
+                       expected_rev=int(entry.get("rev", 0))):
+        return False
+
+    # **claim-then-verify**: 내가 쓴 뒤 잠깐 기다렸다 다시 읽어, 그 사이 남의 쓰기가
+    # 나를 덮어쓰지 않았는지 확인한다. 동시에 쓴 사람이 여럿이어도 마지막에 남는 주인은
+    # 하나뿐이므로, 자기 이름이 남아 있는 사람만 잠금을 가진 것으로 본다.
+    time.sleep(_CLAIM_SETTLE_SECONDS)
+    try:
+        fresh = _read(use_cache=False).get(key)
+    except LocksUnavailable:
+        return False
+    return _holder(fresh) == owner
 
 
 def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> bool:
@@ -202,8 +251,11 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
     now = now or datetime.now()
     key = _key(kind, month)
 
-    entry = _read().get(key)
-    if not entry or entry.get("owner") != owner:
+    try:
+        entry = _read().get(key)
+    except LocksUnavailable:
+        return False
+    if _holder(entry) != owner:
         return False
     elapsed_seconds = _held_minutes(entry, now) * 60
     if elapsed_seconds >= LOCK_TTL_MINUTES * 60:
@@ -211,8 +263,11 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
     if elapsed_seconds < _TOUCH_INTERVAL_SECONDS:
         return True  # 방금 갱신됐다 — 쓰지 않는다
 
-    fresh = _read(use_cache=False).get(key)
-    if not fresh or fresh.get("owner") != owner:
+    try:
+        fresh = _read(use_cache=False).get(key)
+    except LocksUnavailable:
+        return False
+    if _holder(fresh) != owner:
         return False
     if _held_minutes(fresh, now) >= LOCK_TTL_MINUTES:
         return False
@@ -224,8 +279,12 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
 
 def release(kind: str, month: int, owner: str) -> None:
     key = _key(kind, month)
-    entry = _read(use_cache=False).get(key)
-    if entry and entry.get("owner") == owner:
+    try:
+        entry = _read(use_cache=False).get(key)
+    except LocksUnavailable:
+        # 못 읽었으면 그냥 둔다 — 최대 잠금 TTL이 지나면 자동으로 풀린다.
+        return
+    if _holder(entry) == owner:
         _delete_entry(key)
 
 

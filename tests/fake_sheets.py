@@ -80,6 +80,23 @@ class _Values:
         self.book.appends.append(tab)
         return _Execute({})
 
+    def batchClear(self, spreadsheetId=None, body=None, **_):  # noqa: N802, N803
+        """지정한 행 범위의 내용만 비운다(행은 그대로 남는다)."""
+        for item in (body or {}).get("ranges", []):
+            # "탭!A5:Z5" 처럼 시작·끝이 있는 범위다 — parse_range는 숫자를 전부 이어
+            # 붙여(55) 엉뚱한 행을 가리키므로 시작 행만 따로 읽는다.
+            text = str(item)
+            tab = text.split("!", 1)[0]
+            start = text.split("!", 1)[1].split(":", 1)[0] if "!" in text else ""
+            digits = "".join(c for c in start if c.isdigit())
+            row = int(digits) if digits else None
+            rows = self.book.tabs.get(tab)
+            if rows is None or row is None or not (1 <= row <= len(rows)):
+                continue
+            rows[row - 1] = []
+            self.book.deleted.append((tab, row))
+        return _Execute({})
+
     def clear(self, spreadsheetId=None, range=None, **_):  # noqa: A002, N803
         tab, _row = self.book.parse_range(range)
         self.book.cleared.append(tab)
