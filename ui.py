@@ -244,6 +244,12 @@ header[data-testid="stHeader"] { background: transparent; }
 .kpi-d.is-up { color: #c0392b; }
 .kpi-d.is-down { color: #1f5fa8; }
 
+/* 표 아래 우측에 붙는 작은 안내(예: "텍스트 애셋은 제외했습니다").
+   섹션 제목 밑에 두면 본문보다 먼저 읽혀 무게가 과했다 — 표를 다 본 뒤 읽을 각주다. */
+.tbl-note {
+  font-size: 10.5px; color: var(--faint); text-align: right; margin: 2px 0 10px;
+}
+
 /* ------------------------------------------------- 블록 잠금 */
 /* 잠긴 블록은 조작 버튼을 감추고 "무엇이 막혔는지 + 어떻게 푸는지"만 남긴다.
    안내는 전체 폭 알럿이 아니라 제목 줄에 붙는 작은 회색 문구다(2026-08-29). */
@@ -542,6 +548,9 @@ header[data-testid="stHeader"] { background: transparent; }
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 .mat-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* 세로 소재만 자리를 꽉 채운다 — 16:9 썸네일에 좌우로 깔린 배경 띠가 잘려 나가
+   그림이 커진다. 가로 소재는 contain 그대로 둔다(잘라내면 자막·인물이 날아간다). */
+.mat-thumb.is-fill img { object-fit: cover; }
 .mat-thumb .mat-noimg { font-size: 10.5px; color: var(--faint); text-align: center; padding: 4px; }
 .mat-meta {
   flex: 1 1 auto; min-width: 0; padding: 9px 24px 10px 11px;

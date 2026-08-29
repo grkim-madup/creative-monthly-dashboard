@@ -20,6 +20,7 @@ import streamlit as st
 import auth
 import blocks as report_blocks
 import drive_materials
+import youtube_thumbs
 import dropbox_source
 import google_snapshot
 import highlights
@@ -606,6 +607,81 @@ GOOGLE_LABELS = {
     "in_app_action": "인앱 액션",
 }
 
+
+
+def render_google_material_cards(df: pd.DataFrame) -> None:
+    """구글 우수·저조 소재를 메타/틱톡과 같은 카드로 보여준다(2026-08-29).
+
+    예전에는 여기에 "전체 평균(벤치마크)" 한 줄짜리 표가 있었다. 같은 자리에 표가 두 개
+    붙어 어느 쪽이 소재이고 어느 쪽이 기준인지 헷갈렸고, 정작 **어떤 그림의 소재인지**는
+    볼 수 없었다.
+
+    구글은 Drive 파일명 매칭이 안 되지만(식별자가 URL), URL 자체에서 그림을 얻을 수 있다 —
+    YouTube는 영상 ID로 썸네일 주소를 조합하고, 이미지 애셋은 URL이 곧 그림이다.
+    광고주 Drive를 뒤지지 않으므로 메타/틱톡 카드보다 오히려 빠르다.
+    """
+    best, worst = pick_best_worst(df, [("CPI", False), ("인앱 CPA", False)])
+    if not best and not worst:
+        return
+
+    # 썸네일 비율을 미리(병렬로) 확인해 둔다 — 카드마다 따로 받으면 지연이 누적된다.
+    # 한 번 확인한 영상은 디스크에 남아 다음부터는 네트워크를 타지 않는다.
+    youtube_thumbs.prefetch(
+        [str(df.loc[index, "asset"]) for index in list(best) + list(worst)]
+    )
+
+    cards = []
+    for index, column in list(best.items()) + list(worst.items()):
+        row = df.loc[index]
+        is_good = index in best
+        state_class = "is-good" if is_good else "is-bad"
+        raw_value = row.get(column)
+        try:
+            value_label = FORMATS.get(column, "{}").format(raw_value) if pd.notna(raw_value) else "-"
+        except (TypeError, ValueError):
+            value_label = str(raw_value)
+
+        title_kr = str(row.get("title_kr") or "")
+        title_html = (
+            f'<div class="mat-title">{html.escape(title_kr)}</div>'
+            if title_kr and title_kr != "nan" else ""
+        )
+        detail = " · ".join(
+            str(row.get(key)) for key in ("asset_type", "objective", "direction")
+            if row.get(key) and str(row.get(key)) != "nan"
+        )
+        meta = (
+            f'<div class="mat-meta">'
+            f'<div class="mat-cap"><b>{"우수" if is_good else "저조"}</b> · '
+            f'{html.escape(COLUMN_LABELS.get(column, column))}</div>'
+            f'<div class="mat-value">{html.escape(value_label)}</div>'
+            f'{title_html}'
+            f'<div class="mat-name">{html.escape(detail)}</div>'
+            f'</div>'
+        )
+        asset = str(row.get("asset") or "")
+        # 방향 컬럼은 쓰지 않는다 — iOS 보고서에는 그 컬럼이 아예 비어 있어(실측 55건 전부)
+        # 세로 소재가 가로로 취급됐다. 대신 원본 비율 썸네일을 실제로 받아본 결과로 정한다.
+        thumb_url, fill = youtube_thumbs.resolve(asset)
+        thumb_class = "mat-thumb is-fill" if fill else "mat-thumb"
+        thumb = (
+            f'<img src="{html.escape(thumb_url, quote=True)}" alt="" loading="lazy">'
+            if thumb_url else '<div class="mat-noimg">썸네일 없음</div>'
+        )
+        if asset.startswith("http"):
+            cards.append(
+                f'<a class="mat-card {state_class}" href="{html.escape(asset, quote=True)}" '
+                f'target="_blank" rel="noopener">'
+                f'<span class="mat-ext" aria-hidden="true">&#8599;</span>'
+                f'<div class="{thumb_class}">{thumb}</div>{meta}</a>'
+            )
+        else:
+            cards.append(
+                f'<div class="mat-card {state_class} is-dead">'
+                f'<div class="{thumb_class}">{thumb}</div>{meta}</div>'
+            )
+
+    st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: bool = True):
@@ -1295,7 +1371,6 @@ if not google_error and not google.empty:
 
 section(
     "3", "구글 TOP 소재 성과",
-    "영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.",
     note="*매체 대시보드 데이터 기준",
     badge=f"소재 {len(google):,}개" if not google.empty else "데이터 없음",
     extra_hint=google_read_hint,
@@ -1338,10 +1413,11 @@ else:
         table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
         render_google_table(g_top)
 
-        g_benchmark = aggregate_google(
-            g_os_scope.assign(_all=f"{g_os} 전체 평균 (벤치마크)"), ["_all"]
-        ).rename(columns={"_all": "asset"})
-        render_google_table(g_benchmark, highlight=False, link_column=False)
+        render_google_material_cards(g_top)
+        st.markdown(
+            '<div class="tbl-note">영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.</div>',
+            unsafe_allow_html=True,
+        )
 
 # --------------------------------------------------------------------------- 4. 소재 속성별
 
