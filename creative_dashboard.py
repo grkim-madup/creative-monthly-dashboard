@@ -26,6 +26,13 @@ import highlights
 import locks
 import overrides as manual_overrides
 from creative_data import (
+    delta_direction,
+    DISPLAY_COLUMNS,
+    display_columns,
+    comparison_window,
+    delta_label,
+    relative_change,
+    scope_to_day,
     add_derived_metrics,
     aggregate_by,
     explode_extra_info,
@@ -49,13 +56,14 @@ from next_step import (
     save_image,
     to_preview_html,
 )
-from ui import (  # noqa: E402
+from ui import (
     LOGO_PATH,
     footnote,
     inject_css,
     kpi_cards,
     note_header,
     report_header,
+    report_table,
     section,
     sidebar_brand,
     status_row,
@@ -99,15 +107,85 @@ RANK_METRICS = {
     "cost": "소진액",
 }
 
-DISPLAY_COLUMNS = [
-    "ad", "media", "cost", "impression", "click", "CTR", "CPC",
-    "total install", "CPI", "D0 read", "D0 read CVR", "D0 coin", "D0 coin CVR",
+# 컬럼 헤더에 붙일 도움말. 헤더에 "(마크업 포함)" 같은 괄호 설명을 넣으면 그 컬럼만
+# 넓어져 표 전체가 밀린다 — 물음표 아이콘으로 옮겨 커서를 올렸을 때만 보이게 한다
+# (2026-08-28). column_config는 서식이 Styler보다 우선하지만, 여기서는 label/help만
+# 주고 format은 건드리지 않으므로 우수/저조 행 색칠과 숫자 포맷은 그대로 유지된다.
+COLUMN_HELP = {
+    "소진액": "마크업 포함",
+    "CPI": "소진액 ÷ 인스톨",
+    "CTR": "클릭 ÷ 노출",
+    "D0 Read CVR": "D0 Read ÷ 인스톨",
+    "D0 Coin CVR": "D0 Coin ÷ 인스톨",
+}
+
+
+# 총계 표(매체 × OS 요약)의 지표 순서. st.dataframe에서 컬럼을 끌어 옮긴 순서는
+# 새로고침하면 사라지므로, 화면에서 맞춰둔 순서를 여기에 고정한다(2026-08-28).
+# 규칙: 식별(매체·os) → 규모(소진·노출·클릭) → 효율(CTR·CPC) → 전환 규모(설치·Read·Coin)
+# → 전환 효율(CPI·CVR). 없는 컬럼은 그냥 빠진다.
+SUMMARY_COLUMN_ORDER = [
+    "매체", "os",
+    "소진액", "노출", "클릭",
+    "CTR", "CPC",
+    "설치", "CPI",
+    "D0 Read", "D0 Coin",
+    "D0 Read CVR", "D0 Coin CVR",
+    "D7 coin", "D7 coin CVR",
 ]
+
+
+# 지표 묶음이 바뀌는 지점 — 이 컬럼 왼쪽에만 세로 구분선을 넣어 "규모"와 "효율"을
+# 눈으로 가른다. 컬럼이 없으면 그냥 무시된다.
+GROUP_START_COLUMNS = {"소진액", "CTR"}
+
+
+def format_cell(label: str, value) -> str:
+    """표 셀 하나를 문자열로. 서식은 FORMATS(한글 라벨 키까지 등록돼 있음)를 따른다."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "-"
+    fmt = FORMATS.get(label)
+    if fmt:
+        try:
+            return fmt.format(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+# 가운데 정렬에서 빼는 컬럼. 소재명은 길고 앞부분(작품코드·작품명)으로 훑게 되므로
+# 시작점이 고정돼야 읽힌다.
+LEFT_ALIGNED_COLUMNS = {"소재명", "소재 링크"}
+
+
+def column_help_config(df):
+    """표의 컬럼 설정 — 전부 가운데 정렬하고, 지정된 컬럼에만 물음표 도움말을 단다.
+
+    정렬은 컬럼마다 따로 주지 않으면 텍스트는 좌측, 숫자는 우측으로 갈려 표가 들쭉날쭉
+    보인다(2026-08-28 요청). Styler의 text-align은 st.dataframe이 캔버스로 그려서
+    무시되므로, column_config의 alignment가 유일한 수단이다.
+
+    예외는 소재명이다 — 값이 길어 가운데 정렬하면 행마다 시작점이 달라져 훑기가 어렵다.
+    """
+    return {
+        str(name): st.column_config.Column(
+            str(name),
+            help=COLUMN_HELP.get(str(name)),
+            alignment="left" if str(name) in LEFT_ALIGNED_COLUMNS else "center",
+        )
+        for name in df.columns
+    }
+
+
+# 행 높이는 Streamlit 기본값(35px)을 쓴다. 22px까지 줄여봤지만 행이 서로 붙어
+# 오히려 답답해 보인다는 피드백을 받아 되돌렸다(2026-08-28) — 밀도를 높이는 것보다
+# 숨 쉴 여백이 리포트 톤에 맞다. 다시 줄이자는 이야기가 나오면 이 기록을 먼저 볼 것.
+TABLE_ROW_HEIGHT = None
 
 COLUMN_LABELS = {
     "ad": "소재명",
     "media": "매체",
-    "cost": "소진액(마크업 포함)",
+    "cost": "소진액",
     "impression": "노출",
     "click": "클릭",
     "total install": "설치",
@@ -121,7 +199,7 @@ COLUMN_LABELS = {
 MONEY_COLUMNS = ("cost", "cost_raw", "CPC", "CPI", "인앱 CPA")
 COUNT_COLUMNS = (
     "impression", "click", "total install", "D0 read", "D7 read",
-    "D0 coin", "D7 coin", "UA D7 read", "in_app_action",
+    "D0 coin", "D7 coin", "in_app_action",
 )
 PERCENT_COLUMNS = ("CTR", "D0 read CVR", "D0 coin CVR", "D7 coin CVR")
 
@@ -210,6 +288,7 @@ HIGHLIGHT_STYLE = "background-color: #ffd93d; font-weight: 700;"
 def render_table(
     df: pd.DataFrame, color_columns: list[str] | None = None,
     highlight_key: str | None = None, month: int | None = None,
+    column_order: list[str] | None = None,
 ) -> None:
     """표를 그린다. highlight_key를 주면 셀을 클릭·드래그해 그때그때 강조할 수 있다.
 
@@ -219,11 +298,19 @@ def render_table(
     같은 범위를 다시 잡으면 취소된다.
     """
     renamed = df.rename(columns=COLUMN_LABELS)
+    if column_order:
+        # 지정한 순서를 먼저 놓고, 목록에 없는 컬럼은 뒤에 원래 순서로 붙인다 —
+        # 새 지표가 생겼을 때 조용히 사라지지 않게 한다.
+        ordered = [c for c in column_order if c in renamed.columns]
+        renamed = renamed[ordered + [c for c in renamed.columns if c not in ordered]]
     colors = [COLUMN_LABELS.get(c, c) for c in (color_columns or [])]
     styler = style_table(renamed, colors)
 
     if not highlight_key or month is None:
-        st.dataframe(styler, width="stretch", hide_index=True)
+        st.dataframe(
+            styler, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
+            column_config=column_help_config(renamed),
+        )
         return
 
     saved_cells = highlights.load(month, highlight_key)
@@ -236,6 +323,17 @@ def render_table(
         ]
 
     styler = styler.apply(paint_selected, axis=1)
+
+    # 강조는 이 리포트를 보는 **모든 사람**에게 보이는 공유 상태다. 예전에는 뷰 모드에서도
+    # 셀을 드래그하는 순간 저장돼, 화면을 구경하던 사람이 고객사 리포트의 강조를 통째로
+    # 바꿀 수 있었다(소유자 개념도, 잠금도 없다). 편집 모드에서만 바꿀 수 있게 한다.
+    if st.session_state.get("mode_toggle") != "편집":
+        st.dataframe(
+            styler, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
+            column_config=column_help_config(renamed),
+        )
+        return
+
     widget_key = f"hl_table_{highlight_key}_{month}"
     # 강조 목록은 항상 디스크가 기준이고, 프론트엔드 선택 상태는 "방금 드래그/클릭한
     # 범위"를 알려주는 일회성 신호로만 쓴다 — 새로고침 시 프론트엔드가 빈 선택으로
@@ -244,7 +342,8 @@ def render_table(
     # 그 범위를 전부 해제하고, 하나라도 강조가 안 돼 있으면 범위 전체를 강조한다 —
     # 그래서 같은 범위를 다시 드래그하면 "취소"가 된다.
     event = st.dataframe(
-        styler, width="stretch", hide_index=True,
+        styler, width="stretch", hide_index=True, row_height=TABLE_ROW_HEIGHT,
+        column_config=column_help_config(renamed),
         on_select="rerun", selection_mode="multi-cell", key=widget_key,
     )
     picked = [tuple(c) for c in event["selection"]["cells"]]
@@ -381,7 +480,7 @@ GOOGLE_LABELS = {
 }
 
 GOOGLE_COLUMN_CONFIG = {
-    "소진액(마크업 포함)": {"format": "₩%,d"},
+    "소진액": {"format": "₩%,d"},
     "노출": {"format": "%,d"},
     "클릭": {"format": "%,d"},
     "CTR": {"format": "%.2f%%"},
@@ -414,13 +513,27 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
             return [ROW_BAD] * len(row)
         return [""] * len(row)
 
+    # 다른 표와 같은 규칙으로 가운데 정렬한다. 숫자 컬럼은 서식이 있어 NumberColumn을
+    # 쓰고, 나머지(작품·캠페인 목적 등)는 기본 Column으로 정렬만 준다.
     config = {
-        name: st.column_config.NumberColumn(**options)
+        str(name): st.column_config.Column(
+            str(name),
+            help=COLUMN_HELP.get(str(name)),
+            alignment="left" if str(name) in LEFT_ALIGNED_COLUMNS else "center",
+        )
+        for name in renamed.columns
+    }
+    config.update({
+        name: st.column_config.NumberColumn(
+            name, help=COLUMN_HELP.get(name), alignment="center", **options,
+        )
         for name, options in GOOGLE_COLUMN_CONFIG.items()
         if name in renamed.columns
-    }
+    })
     if link_column and "소재 링크" in renamed.columns:
-        config["소재 링크"] = st.column_config.LinkColumn("소재 링크", display_text="열기")
+        config["소재 링크"] = st.column_config.LinkColumn(
+            "소재 링크", display_text="열기", alignment="left",
+        )
 
     st.dataframe(
         renamed.style.apply(paint, axis=1),
@@ -453,6 +566,18 @@ def _drive_material_thumbnails(specs: tuple[tuple[str, str, str], ...]) -> dict[
         return drive_materials.material_thumbnails(list(specs))
     with st.spinner(f"소재 썸네일 만드는 중… ({missing}개)"):
         return drive_materials.material_thumbnails(list(specs))
+
+
+# 사이드바 버튼에서 개별로 비울 수 있어야 해서, 캐시 래퍼는 사이드바보다 위에 둔다.
+# 아래에 두면 버튼을 누르는 순간 아직 정의되지 않아 NameError가 난다.
+@st.cache_data(show_spinner="Media_RAW 불러오는 중…")
+def _load(sid: str) -> pd.DataFrame:
+    return load_media_raw(sid)
+
+
+@st.cache_data(show_spinner="구글 애셋 보고서 읽는 중…")
+def _google(folder: str, markup: float) -> pd.DataFrame:
+    return load_google_ads_folder(folder, cost_markup=markup)
 
 
 def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
@@ -536,7 +661,10 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
     st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
-def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False):
+def render_table_best_worst(
+    df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False,
+    rank_metric: str | None = None,
+):
     """지표별 히트맵 대신, 우수 2행·저조 2행만 행 전체를 색칠한다(시트 컨벤션).
 
     link_materials=True면 하이라이트된 소재를 광고주 Drive 영상과 잇는 카드를 표 아래에 붙인다
@@ -545,20 +673,26 @@ def render_table_best_worst(df: pd.DataFrame, metrics: list[tuple[str, bool]], l
     best, worst = pick_best_worst(df, metrics)
     # 표에는 지표 컬럼만 보여준다 — title_kr처럼 카드 전용으로 딸려온 컬럼은 여기서 뺀다
     # (소재명 컬럼과 내용이 겹쳐 표를 어지럽힌다).
-    display_df = df[[c for c in DISPLAY_COLUMNS if c in df.columns]]
+    display_df = df[display_columns(df, rank_metric)]
     renamed = display_df.rename(columns=COLUMN_LABELS)
-    present = [c for c in renamed.columns if c in FORMATS]
-    styler = renamed.style.format({c: FORMATS[c] for c in present}, na_rep="-")
 
-    def paint(row):
-        if row.name in best:
-            return [ROW_GOOD] * len(row)
-        if row.name in worst:
-            return [ROW_BAD] * len(row)
-        return [""] * len(row)
-
-    styler = styler.apply(paint, axis=1)
-    st.dataframe(styler, width="stretch", hide_index=True)
+    # 이 표는 셀 클릭 강조를 쓰지 않으므로 HTML로 직접 그린다 — st.dataframe으로는
+    # 헤더를 가운데 정렬하거나 굵게 할 수 없고 지표 묶음 구분선도 못 넣는다.
+    headers = list(renamed.columns)
+    rows = [
+        [format_cell(name, value) for name, value in zip(headers, record)]
+        for record in renamed.itertuples(index=False, name=None)
+    ]
+    row_classes = [
+        "is-good" if idx in best else "is-bad" if idx in worst else ""
+        for idx in renamed.index
+    ]
+    report_table(
+        rows, headers,
+        left_columns=LEFT_ALIGNED_COLUMNS,
+        group_starts=GROUP_START_COLUMNS,
+        row_classes=row_classes,
+    )
 
     if link_materials:
         render_material_cards(df, best, worst)
@@ -601,10 +735,11 @@ except ValueError as error:
 
 with data_card:
     if st.button("시트에서 다시 불러오기", width="stretch"):
-        st.cache_data.clear()
-        # 썸네일 캐시는 st.cache_data가 아니라 모듈 안에 있어서 따로 비워야 한다 —
-        # '다시 불러오기'를 눌렀으면 사용자는 전부 새로 받길 기대한다.
-        drive_materials.clear_thumbnail_cache()
+        # 시트만 다시 읽는다. 예전에는 st.cache_data.clear()로 드롭박스·Drive 목록·
+        # 썸네일까지 통째로 날려서, 시트만 갱신하고 싶어도 1분 넘게 기다려야 했다
+        # (2026-08-28 분리). 각 소스는 자기 버튼으로만 갱신한다.
+        _load.clear()
+        _google.clear()
         load_media_raw(sheet_id, refresh=True)
         st.rerun()
 
@@ -613,11 +748,6 @@ with data_card:
         st.caption(
             f"마지막 동기화: {dt.datetime.fromtimestamp(stamp):%Y-%m-%d %H:%M}"
         )
-
-
-@st.cache_data(show_spinner="Media_RAW 불러오는 중…")
-def _load(sid: str) -> pd.DataFrame:
-    return load_media_raw(sid)
 
 
 try:
@@ -658,6 +788,7 @@ with mode_slot:
              "보기는 고객사가 보는 화면 그대로입니다.",
     )
 edit_mode = mode_choice == "편집"
+# 블록 저장소를 못 읽은 상태에서는 아래에서 편집 모드를 강제로 끈다(blocks_unavailable).
 
 # 아래 조건은 사이드바 위젯을 없애고 고정값으로 둔다(사용자 요청 — 사이드바를 비우기로 함).
 # 매체·Creative Format·Creative Type·Dimension은 1번 총괄 섹션 안에서 직접 고를 수 있고,
@@ -698,6 +829,14 @@ with data_card:
             st.session_state["_google_cache_bust"] = (
                 st.session_state.get("_google_cache_bust", 0) + 1
             )
+            _google.clear()
+    st.markdown('<div class="sb-sub">소재 영상 (광고주 Drive)</div>', unsafe_allow_html=True)
+    drive_files_slot = st.container()
+    if st.button("소재 목록 새로고침", key="drive_refetch", width="stretch"):
+        drive_materials.clear_file_list_cache()
+        _drive_material_index.clear()
+        st.rerun()
+
     cost_markup = st.number_input(
         "구글 비용 마크업 배율",
         min_value=1.0, max_value=2.0, value=DEFAULT_COST_MARKUP, step=0.001, format="%.4f",
@@ -724,6 +863,20 @@ with data_card:
         )
 
 google_folder = _synced_google_folder(st.session_state.get("_google_cache_bust", 0))
+
+def _apply_base_filters(frame):
+    """매체·OS·UA·포맷 기본 필터. 전월 비교도 **똑같은 조건**을 통과해야 한다 —
+    한쪽에만 필터가 걸리면 델타가 조용히 틀린다."""
+    if media_selection:
+        frame = frame[frame["media"].isin(media_selection)]
+    if os_selection:
+        frame = frame[frame["os"].isin(os_selection)]
+    if ua_selection:
+        frame = frame[frame["ua_type"].isin(ua_selection)]
+    if format_selection:
+        frame = frame[frame["format"].isin(format_selection) | (frame["media"] == "Google")]
+    return frame
+
 
 scope = raw[raw["month"] == month]
 if media_selection:
@@ -796,19 +949,72 @@ overview = manual_overrides.apply(overview, month)
 named_overview = overview[overview["ad"] != "-"]
 
 totals = aggregate_by(overview.assign(_all="전체"), ["_all"]).iloc[0]
+
+# 전월 대비 델타. 리포트는 다음 달 초에 나가므로 발송 시점에는 그 달이 완결돼 있어
+# 전체 월끼리 비교하는 게 맞다. 월중에 미리 열어볼 때만 같은 기간끼리로 자동 전환한다
+# (8/23까지 들어온 8월을 7월 31일치와 비교하면 소진액이 -26.2%로 나온다 — 실제로는
+# 같은 기간끼리 -0.4%다). 사람이 매번 올바른 쪽을 고르게 두면 언젠가 틀린다.
+previous_month = month - 1
+max_day = comparison_window(scope["date"], month) if "date" in scope.columns else None
+previous_scope = _apply_base_filters(scope_to_day(raw, previous_month, max_day))
+for _column, _selection in (
+    ("media", overview_media),
+    ("format", overview_format),
+    ("creative_type", overview_type),
+    ("size", overview_dimension),
+):
+    if _selection and not previous_scope.empty:
+        previous_scope = previous_scope[previous_scope[_column].isin(_selection)]
+if not previous_scope.empty:
+    previous_scope = add_derived_metrics(previous_scope)
+    previous_scope = manual_overrides.apply(previous_scope, previous_month)
+previous_totals = None
+if not previous_scope.empty:
+    previous_totals = aggregate_by(previous_scope.assign(_all="전체"), ["_all"]).iloc[0]
+
+
+# 비교 기준은 카드마다 반복하지 않고 묶음 우측 상단에 한 번만 적는다. 달이 안 끝나
+# 같은 기간끼리 맞춘 경우에는 그 사실이 문구에 드러나야 한다 — 안 적으면 왜 숫자가
+# 리포트의 전월 실적과 다른지 설명할 방법이 없다.
+if previous_totals is None:
+    comparison_note = f"{previous_month}월 데이터가 없어 전월 대비를 표시하지 않습니다"
+elif max_day is not None:
+    comparison_note = (
+        f"전월({previous_month}월 1~{max_day}일) 대비 — "
+        f"{month}월이 {max_day}일까지만 집계돼 같은 기간끼리 맞췄습니다"
+    )
+else:
+    comparison_note = f"전월({previous_month}월) 대비"
+
+
+def _kpi(label, column, value_text, fmt=None, sub="", primary=False):
+    """KPI 카드 하나. sub(회색 설명)는 소진액의 '마크업 포함'처럼 값의 정의가 달라져
+    오해가 생길 수 있는 곳에만 남긴다 — 나머지는 라벨만으로 충분하다(2026-08-28)."""
+    card = {"label": label, "value": value_text, "sub": sub}
+    if primary:
+        card["primary"] = True
+    if previous_totals is not None and column in previous_totals:
+        change = relative_change(totals[column], previous_totals[column])
+        card["delta"] = delta_label(change)
+        card["delta_direction"] = delta_direction(change)
+    return card
+
+
 kpi_cards([
-    {"label": "소진액", "value": f"₩{totals['cost']:,.0f}", "sub": "마크업 포함",
-     "primary": True},
-    {"label": "노출", "value": f"{totals['impression']:,.0f}", "sub": "Impression"},
-    {"label": "CTR", "value": f"{totals['CTR']:.2%}", "sub": "클릭 ÷ 노출"},
-    {"label": "인스톨", "value": f"{totals['total install']:,.0f}", "sub": "Total install"},
-    {"label": "CPI", "value": f"₩{totals['CPI']:,.0f}", "sub": "소진 ÷ 인스톨"},
-    {"label": "D0 Read CVR", "value": f"{totals['D0 read CVR']:.2%}", "sub": "D0 Read ÷ 인스톨"},
-])
+    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}", sub="마크업 포함", primary=True),
+    _kpi("노출", "impression", f"{totals['impression']:,.0f}"),
+    _kpi("CTR", "CTR", f"{totals['CTR']:.2%}"),
+    _kpi("인스톨", "total install", f"{totals['total install']:,.0f}"),
+    _kpi("CPI", "CPI", f"₩{totals['CPI']:,.0f}"),
+    _kpi("D0 Read CVR", "D0 read CVR", f"{totals['D0 read CVR']:.2%}"),
+], note=comparison_note)
 
 table_title("매체 × OS 요약")
 by_media_os = aggregate_by(overview, ["media", "os"])
-render_table(by_media_os, color_columns=["CPI"], highlight_key="media_os", month=month)
+render_table(
+    by_media_os, color_columns=["CPI"], highlight_key="media_os", month=month,
+    column_order=SUMMARY_COLUMN_ORDER,
+)
 
 # --------------------------------------------------------------------------- 2. TOP 소재
 
@@ -838,6 +1044,7 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
         top,
         metrics=[("CPI", False), ("D0 coin CVR", True)],
         link_materials=True,
+        rank_metric=rank_metric,
     )
 
 # OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 남긴다.
@@ -854,11 +1061,6 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------------- 3. 구글
-
-
-@st.cache_data(show_spinner="구글 애셋 보고서 읽는 중…")
-def _google(folder: str, markup: float) -> pd.DataFrame:
-    return load_google_ads_folder(folder, cost_markup=markup)
 
 
 # 고정 여부·시각은 시트 메타데이터만 읽는 가벼운 호출이라 짧게만 캐시한다. 1시간을
@@ -1278,6 +1480,28 @@ def clear_editor_state(block_id: str) -> None:
     st.session_state.pop(f"held_{block_id}", None)
 
 
+def commit_blocks(month: int, fn, expect: dict | None = None) -> bool:
+    """블록 변경을 저장하고, 실패하면 그 이유를 화면에 드러낸다.
+
+    저장이 거부되는 건 정상 동작이다 — 그 사이 다른 사람이 같은 블록을 고쳤다는 뜻이고,
+    조용히 덮어써서 남의 글을 지우는 것보다 낫다. 실패를 삼키면 사용자는 저장된 줄 알고
+    화면을 떠나므로, 반드시 눈에 보이게 알린다.
+    """
+    ok, reason = report_blocks.mutate(month, fn, expect=expect)
+    if ok:
+        return True
+    if reason == "conflict":
+        st.error(
+            "다른 사람이 방금 이 블록을 수정했습니다. 저장하지 않았습니다 — "
+            "작성 중이던 내용을 복사해 두고 새로 고친 뒤 다시 저장해 주세요."
+        )
+    elif reason == "deleted":
+        st.error("이 블록이 방금 삭제되었습니다. 저장하지 않았습니다 — 새로 고쳐 확인해 주세요.")
+    else:
+        st.error(f"저장하지 못했습니다. 내용을 복사해 두세요 — {reason}")
+    return False
+
+
 def editor_taken_over(block_id: str, month: int) -> bool:
     """내가 잡고 있던 잠금을 남이 가져갔는지."""
     owner = st.session_state["editor_token"]
@@ -1384,12 +1608,12 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
         ):
             st.caption("삭제하면 코멘트·조건이 모두 사라집니다.")
             if st.button("삭제", key=f"del_yes_{block_id}"):
-                locks.force_release(f"block:{block_id}", month)
-                report_blocks.mutate(
+                if commit_blocks(
                     month, lambda d: report_blocks.remove_block(d, slot, block_id)
-                )
-                st.session_state.pop(confirm_key, None)
-                st.rerun()
+                ):
+                    locks.force_release(f"block:{block_id}", month)
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
             if st.button("취소", key=f"del_no_{block_id}"):
                 st.session_state[confirm_key] = False
                 st.rerun()
@@ -1408,11 +1632,15 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
             else:
                 st.error("다른 사람이 방금 편집을 시작했습니다.")
         if st.button("▲", key=f"up_{block_id}", help="위로"):
-            report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, -1))
-            st.rerun()
+            if commit_blocks(
+                month, lambda d: report_blocks.move_block(d, slot, block_id, -1)
+            ):
+                st.rerun()
         if st.button("▼", key=f"down_{block_id}", help="아래로"):
-            report_blocks.mutate(month, lambda d: report_blocks.move_block(d, slot, block_id, 1))
-            st.rerun()
+            if commit_blocks(
+                month, lambda d: report_blocks.move_block(d, slot, block_id, 1)
+            ):
+                st.rerun()
         if st.button("삭제", key=f"del_{block_id}"):
             st.session_state[confirm_key] = True
             st.rerun()
@@ -1424,9 +1652,9 @@ def insert_block_row(slot: str, position: int, block_type: str, default_title: s
     with st.container(key=f"insert_{slot}_{position}"):
         if st.button(label, key=f"insert_btn_{slot}_{position}",
                      help="이 자리에 블록을 추가합니다", width="stretch"):
-            report_blocks.mutate(month, lambda d: report_blocks.add_block(
-                d, slot, block_type, default_title, position=position))
-            st.rerun()
+            if commit_blocks(month, lambda d: report_blocks.add_block(
+                    d, slot, block_type, default_title, position=position)):
+                st.rerun()
 
 
 def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple[dict, bool]:
@@ -1648,13 +1876,18 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         if st.button("완료", type="primary", key=f"save_{block_id}", disabled=taken_over):
             if locks.status(f"block:{block_id}", month, owner).state != "mine":
                 st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
-            else:
-                # 화면이 들고 있는 스냅샷이 아니라 디스크의 최신 상태에 이 블록만 덮어쓴다
-                report_blocks.mutate(month, lambda d: report_blocks.update_block(
+            elif commit_blocks(
+                # 화면이 들고 있는 스냅샷이 아니라 저장소의 최신 상태에 이 블록만 덮어쓴다.
+                # expect(내가 보고 있던 rev)를 함께 넘겨, 그 사이 같은 블록이 바뀌었으면
+                # 덮어쓰지 않고 거부한다.
+                month,
+                lambda d: report_blocks.update_block(
                     d, report_blocks.SLOT_ANALYSIS, block_id,
                     title=title_value, conditions=conditions,
                     show_table=show_table, comment=comment or "",
-                ))
+                ),
+                expect={block_id: block.get("_rev", 0)},
+            ):
                 locks.release(f"block:{block_id}", month, owner)
                 clear_editor_state(block_id)
                 st.rerun()
@@ -1671,7 +1904,11 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         )
 
 
-page_blocks = report_blocks.load_blocks(month)
+blocks_state = report_blocks.load_state(month)
+page_blocks = blocks_state.data
+# 읽기 자체가 실패했으면(권한·네트워크·깨진 행) 빈 리포트를 조용히 보여주면 안 된다.
+# 그 상태로 편집·저장을 허용하면 남아 있던 내용을 빈 값으로 덮어쓸 수 있다.
+blocks_unavailable = blocks_state.status == "error"
 # 파일이 깨져 있었다면 지우지 않고 옆에 치워둔 상태다. 조용히 빈 화면을 보여주면 사용자가
 # 눈치채지 못한 채 새로 저장해서 복구 기회를 날린다.
 _corrupt = report_blocks.pop_corruption(month)
@@ -1680,6 +1917,12 @@ analysis_blocks = page_blocks[report_blocks.SLOT_ANALYSIS]
 # 편집 상태는 블록마다 자기 헤더에 이미 표시되므로(편집 중 · 나 / 다른 사람이 편집 중),
 # 섹션 배지에 또 요약하지 않는다 — 중복이다.
 section("5", "소재 분석")
+
+if blocks_unavailable:
+    st.error(
+        f"{month}월 블록을 읽지 못했습니다 — {blocks_state.reason}. "
+        "지금은 저장하지 마세요(빈 값으로 덮어쓸 수 있습니다). 새로 고쳐 다시 시도해 주세요."
+    )
 
 if _corrupt:
     st.error(
@@ -1692,6 +1935,9 @@ if not analysis_blocks:
 
 # 블록 사이사이(맨 앞·맨 뒤 포함)에 얇은 "+" 줄을 둔다 — 노션처럼 원하는 자리에 바로
 # 끼워 넣을 수 있게. 편집 모드가 꺼져 있으면 고객사 화면이라 아예 그리지 않는다.
+if blocks_unavailable:
+    edit_mode = False
+
 if edit_mode:
     insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 블록")
 for index, block in enumerate(list(analysis_blocks)):
@@ -1819,16 +2065,20 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                     if pasted and pasted.strip():
                         tables.append(pasted)
 
-                    report_blocks.mutate(month, lambda d: report_blocks.update_block(
-                        d, report_blocks.SLOT_NEXT_STEP, block_id,
-                        title=title_value, comment=draft_markdown or "",
-                        images=images, tables=tables,
-                        image_max_height=image_max_height,
-                    ))
-                    st.session_state.pop(f"attach_nonce_{block_id}", None)
-                    locks.release(f"block:{block_id}", month, owner)
-                    clear_editor_state(block_id)
-                    st.rerun()
+                    if commit_blocks(
+                        month,
+                        lambda d: report_blocks.update_block(
+                            d, report_blocks.SLOT_NEXT_STEP, block_id,
+                            title=title_value, comment=draft_markdown or "",
+                            images=images, tables=tables,
+                            image_max_height=image_max_height,
+                        ),
+                        expect={block_id: block.get("_rev", 0)},
+                    ):
+                        st.session_state.pop(f"attach_nonce_{block_id}", None)
+                        locks.release(f"block:{block_id}", month, owner)
+                        clear_editor_state(block_id)
+                        st.rerun()
 
             attachments = list(block.get("images", [])) + list(block.get("tables", []))
             if attachments:
@@ -1853,14 +2103,20 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                         )
                         if action.button("삭제", key=f"del_img_{block_id}_{stored}",
                                          width="stretch"):
-                            delete_image(stored)
                             remaining_images = [i for i in block["images"] if i != stored]
-                            report_blocks.mutate(
-                                month, lambda d: report_blocks.update_block(
+                            # 먼저 블록에서 참조를 끊고, 저장이 성공했을 때만 실제 파일을
+                            # 지운다. 순서를 뒤집으면 저장이 거부됐을 때 블록은 여전히
+                            # 그 이미지를 가리키는데 실물이 없어 빈칸이 남는다.
+                            if commit_blocks(
+                                month,
+                                lambda d: report_blocks.update_block(
                                     d, report_blocks.SLOT_NEXT_STEP, block_id,
                                     images=remaining_images,
-                                ))
-                            st.rerun()
+                                ),
+                                expect={block_id: block.get("_rev", 0)},
+                            ):
+                                delete_image(stored)
+                                st.rerun()
 
                     for index in range(len(block.get("tables", []))):
                         label, action = st.columns([3.9, 1.6], vertical_alignment="center")
@@ -1870,12 +2126,15 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                         if action.button("삭제", key=f"del_tbl_{block_id}_{index}",
                                          width="stretch"):
                             remaining = [t for i, t in enumerate(block["tables"]) if i != index]
-                            report_blocks.mutate(
-                                month, lambda d: report_blocks.update_block(
+                            if commit_blocks(
+                                month,
+                                lambda d: report_blocks.update_block(
                                     d, report_blocks.SLOT_NEXT_STEP, block_id,
                                     tables=remaining,
-                                ))
-                            st.rerun()
+                                ),
+                                expect={block_id: block.get("_rev", 0)},
+                            ):
+                                st.rerun()
     else:
         if block.get("comment"):
             # 에디터가 HTML을 돌려준다. 예전에 저장한 마크다운도 같은 호출로 문제없이 렌더된다.
@@ -1905,7 +2164,10 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
         for raw_table in block.get("tables", []):
             table = parse_pasted_table(raw_table)
             if not table.empty:
-                st.dataframe(table, width="stretch", hide_index=True)
+                st.dataframe(
+                    table, width="stretch", hide_index=True,
+                    column_config=column_help_config(table),
+                )
 
 
 next_step_blocks = page_blocks[report_blocks.SLOT_NEXT_STEP]

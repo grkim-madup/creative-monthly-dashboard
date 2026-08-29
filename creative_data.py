@@ -32,7 +32,8 @@ SUM_METRICS = {
     "D0(uni) read": "D0 read",
     "D0(uni) coin": "D0 coin",
     "D7(uni) coin": "D7 coin",
-    "UA D7(uni) read": "UA D7 read",
+    # "UA D7(uni) read"는 표에 노출하지 않는다(2026-08-28, 사용자 요청) — 집계 대상에서
+    # 빼면 aggregate_by가 만들어내지 않으므로 모든 표에서 한 번에 사라진다.
 }
 
 MEDIA_ALIASES = {
@@ -412,3 +413,123 @@ def benchmark_row(df: pd.DataFrame, label: str) -> pd.DataFrame:
     total = aggregate_by(df.assign(_all=label), ["_all"]).rename(columns={"_all": "ad"})
     total["media"] = "전체"
     return total
+
+
+# ---------------------------------------------------------------------------
+# 전월 대비 델타
+#
+# 리포트는 9월 초에 8월분을 보내므로 **발송 시점에는 그 달이 완결**돼 있다. 그래서 기본은
+# 전체 월끼리 비교한다. 문제는 월중에 미리 열어볼 때다 — 8/23까지만 들어온 8월을 7월
+# 31일치와 비교하면 소진액이 -26.2%로 나온다(실측). 실제로는 같은 기간끼리 -0.4%라
+# 집행은 거의 동일한데, 달이 안 끝났다는 이유만으로 "예산이 4분의 1 줄었다"고 읽힌다.
+#
+# 이 프로젝트에서 반복된 실패 유형(에러 없이 조용히 틀림)이라, 사람이 매번 올바른 비교
+# 방식을 고르게 두지 않고 **데이터가 그 달을 다 덮었는지 보고 자동으로 갈라준다.**
+
+
+def month_is_complete(dates: pd.Series, month: int, year: int | None = None) -> bool:
+    """그 달 마지막 날까지 데이터가 들어와 있는지. 순수 함수 — pytest 대상."""
+    values = pd.to_datetime(pd.Series(dates), errors="coerce").dropna()
+    scoped = values[values.dt.month == month]
+    if year is not None:
+        scoped = scoped[scoped.dt.year == year]
+    if scoped.empty:
+        return False
+    last = scoped.max()
+    return int(last.day) == int(last.days_in_month)
+
+
+def comparison_window(dates: pd.Series, month: int, year: int | None = None) -> int | None:
+    """비교에 쓸 '일자 상한'. 달이 완결됐으면 None(제한 없음), 아니면 마지막 일자.
+
+    None을 돌려준다는 건 "전체 월끼리 비교해도 안전하다"는 뜻이다.
+    """
+    if month_is_complete(dates, month, year):
+        return None
+    values = pd.to_datetime(pd.Series(dates), errors="coerce").dropna()
+    scoped = values[values.dt.month == month]
+    if year is not None:
+        scoped = scoped[scoped.dt.year == year]
+    return None if scoped.empty else int(scoped.max().day)
+
+
+def scope_to_day(df: pd.DataFrame, month: int, max_day: int | None) -> pd.DataFrame:
+    """그 달 데이터에서 max_day 이하만 남긴다. max_day가 None이면 그 달 전체."""
+    scoped = df[df["month"] == month]
+    if max_day is None or scoped.empty or "date" not in scoped.columns:
+        return scoped
+    days = pd.to_datetime(scoped["date"], errors="coerce").dt.day
+    return scoped[days <= max_day]
+
+
+def relative_change(current: float, previous: float) -> float | None:
+    """(현재-이전)/이전. 이전이 0이거나 값이 없으면 None(= 표시하지 않음).
+
+    0으로 나눠 inf를 화면에 띄우는 것보다 아예 안 보여주는 게 낫다 — 광고주가 보는
+    리포트에서 'inf%'나 '+99999%'는 숫자가 아니라 결함으로 읽힌다.
+    """
+    if current is None or previous is None:
+        return None
+    try:
+        current = float(current)
+        previous = float(previous)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(current) or pd.isna(previous) or previous == 0:
+        return None
+    return (current - previous) / previous
+
+
+def delta_direction(change: float | None) -> str:
+    """델타 색상 클래스. 상승=빨강(up) / 하락=파랑(down) — 국내 증시 관례를 따른다
+    (2026-08-28 사용자 지정). 변화가 없거나 알 수 없으면 색을 주지 않는다."""
+    if not change:
+        return ""
+    return "up" if change > 0 else "down"
+
+
+def delta_label(change: float | None) -> str:
+    """KPI 카드에 붙일 변화율 한 조각(예: "▲ 12.1%").
+
+    전월 실적 원값은 붙이지 않는다(2026-08-28) — 카드가 좁아 두 숫자가 한 줄에 들어가면
+    어느 쪽이 이번 달 값인지 헷갈린다. '전월 대비'라는 기준만 옆에 표기한다.
+    """
+    if change is None:
+        return ""
+    arrow = "▲" if change > 0 else ("▼" if change < 0 else "－")
+    return f"{arrow} {abs(change) * 100:,.1f}%"
+
+
+# ---------------------------------------------------------------------------
+# 표에 그릴 컬럼 구성 (순수 함수 — pytest 대상)
+
+# 표에 항상 띄우는 컬럼. 13개를 한 줄에 늘어놓으면 가로로 잘려 스크롤해야 읽히므로
+# **원값과 비율이 겹치는 것부터 덜어냈다**(클릭→CTR, D0 read/coin 원값→각 CVR에 반영).
+# 정렬 기준으로 고른 지표는 표에 안 보이면 왜 그 순서인지 알 수 없으므로, 아래
+# display_columns()가 그 컬럼만 다시 끼워 넣는다.
+DISPLAY_COLUMNS = [
+    "ad", "media", "cost", "impression", "total install",
+    "CTR", "CPI", "D0 read CVR", "D0 coin CVR",
+]
+
+
+# 원값 컬럼과 그 자리를 대신하는 비율 컬럼 — 정렬 기준으로 쓰일 때만 되살린다.
+RAW_METRIC_SLOTS = {
+    "total install": "total install",
+    "D0 read": "D0 read CVR",
+    "D0 coin": "D0 coin CVR",
+    "cost": "cost",
+}
+
+
+def display_columns(df, rank_metric: str | None = None) -> list[str]:
+    """표에 그릴 컬럼 순서. 정렬 기준 컬럼이 빠져 있으면 그 자리에 끼워 넣는다."""
+    columns = [c for c in DISPLAY_COLUMNS if c in df.columns]
+    if not rank_metric or rank_metric in columns or rank_metric not in df.columns:
+        return columns
+    anchor = RAW_METRIC_SLOTS.get(rank_metric)
+    if anchor in columns:
+        columns.insert(columns.index(anchor), rank_metric)
+    else:
+        columns.append(rank_metric)
+    return columns

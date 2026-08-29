@@ -194,27 +194,92 @@ header[data-testid="stHeader"] { background: transparent; }
 /* ------------------------------------------------------------ KPI */
 .kpis {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  grid-auto-rows: 1fr;  /* 두 줄로 접혔을 때 위·아래 줄의 카드 높이를 같게 */
   gap: 0; background: var(--surface);
   border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
-  margin-bottom: 8px;
   box-shadow: 0 2px 6px rgba(20, 23, 26, .07);
 }
 .kpi {
-  padding: 17px 20px 18px 20px;
+  /* 아래 여백을 줄여 카드가 내용에 맞게 붙게 한다 — 예전엔 값 아래에 설명 줄이 있어
+     넉넉히 잡아뒀는데, 그 줄을 라벨 옆으로 올리면서 아래가 통째로 비었다. */
+  padding: 14px 16px 15px 16px;
   border-right: 1px solid var(--line-soft);
   border-top: 2px solid transparent;
+  /* 여섯 칸이 두 줄로 접혀도 카드 높이가 어긋나지 않게 한다 */
+  display: flex; flex-direction: column;
 }
 .kpi:last-child { border-right: 0; }
 .kpi.is-primary { border-top-color: var(--brand); }
 .kpi-l {
   font-size: 11px; color: var(--muted); font-weight: 700;
-  letter-spacing: .05em; margin-bottom: 8px;
+  letter-spacing: .05em; margin-bottom: 9px;
+  display: flex; align-items: baseline; gap: 6px; white-space: nowrap;
 }
+/* 라벨에 딸린 부연 — 라벨보다 약하게 */
+.kpi-sub { font-size: 10px; font-weight: 400; color: var(--faint); letter-spacing: 0; }
 .kpi-v {
   font-size: 24px; font-weight: 800; color: var(--ink);
   line-height: 1.1; letter-spacing: -.04em;
 }
-.kpi-s { font-size: 11px; color: var(--faint); margin-top: 7px; }
+/* 전월 대비 델타. 신호색(빨강/초록) 대신 기호로 방향을 표시한다 — 액센트를 하나로
+   유지해야 리포트 톤이 흐트러지지 않는다. 색은 델타에만 두고 값에는 번지지 않게 한다. */
+/* 변화율은 값 아래에 둔다(2026-08-28 확정). 값 옆에 붙이면 화면 폭에 따라 어떤 카드는
+   옆에, 어떤 카드는 아래로 내려가 줄이 들쭉날쭉해진다 — 항상 아래로 고정해 여섯 칸의
+   높이를 맞춘다. */
+.kpi-row { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.kpi-d {
+  font-size: 13px; font-weight: 700; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 비교 기준은 카드마다 반복하지 않고 묶음 우측 상단에 한 번만 둔다 */
+.kpis-wrap { margin-bottom: 8px; }
+.kpis-note {
+  font-size: 10.5px; color: var(--faint); text-align: right;
+  margin-bottom: 5px; font-variant-numeric: tabular-nums;
+}
+/* 상승은 빨강, 하락은 파랑(국내 증시 관례 — 2026-08-28 사용자 지정).
+   "액센트는 브랜드 그린 하나만" 원칙의 의도적 예외다. 전월 대비는 한눈에 방향이
+   읽혀야 해서 기호만으로는 부족하다는 판단. 대신 색은 델타 줄에만 쓰고 숫자 본문
+   (kpi-v)에는 번지지 않게 한다 — 카드 전체가 물들면 리포트 톤이 무너진다. */
+.kpi-d.is-up { color: #c0392b; }
+.kpi-d.is-down { color: #1f5fa8; }
+
+/* ------------------------------------------------- 리포트 표 (HTML 직접 렌더) */
+/* st.dataframe이 캔버스라 못 바꾸는 것들(헤더 정렬·굵기·그룹 구분선)을 위해 쓰는 표.
+   행 높이는 st.dataframe 기본값(35px)과 비슷한 느낌으로 맞춰 두 종류 표가 나란히
+   있어도 이질감이 없게 한다. */
+.rt-wrap {
+  overflow-x: auto; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--surface); margin-bottom: 8px;
+}
+.rt {
+  width: 100%; border-collapse: collapse;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.rt th {
+  background: #f1f4f6; color: #374151;
+  font-size: 11px; font-weight: 700; letter-spacing: .01em;
+  padding: 10px 10px; white-space: nowrap;
+  border-bottom: 1.5px solid var(--ink);  /* 섹션 제목의 검정 밑선과 같은 규칙 */
+}
+.rt td {
+  padding: 8px 10px; white-space: nowrap;
+  border-bottom: 1px solid var(--line-soft); color: var(--ink);
+}
+.rt tbody tr:last-child td { border-bottom: 0; }
+.rt .c { text-align: center; }
+.rt .l { text-align: left; }
+/* 규모/효율처럼 성격이 다른 지표 묶음 사이에만 세로선 */
+.rt .gs { border-left: 1px solid var(--line); }
+.rt tbody tr:hover td { background: #fafbfc; }
+/* 우수·저조: 행 전체를 굵게 물들이면 숫자가 읽히지 않아 배경만 옅게 깔고
+   소재명에만 색을 준다(시트의 파랑=우수 / 빨강=저조 컨벤션 유지). */
+.rt tr.is-good td { background: #eefaf4; }
+.rt tr.is-bad td { background: #fdf3f3; }
+.rt tr.is-good:hover td { background: #e6f7ee; }
+.rt tr.is-bad:hover td { background: #fbebeb; }
+.rt tr.is-good td.l { color: #0b5c38; font-weight: 700; }
+.rt tr.is-bad td.l { color: #8c2b2b; font-weight: 700; }
 
 /* ------------------------------------------------------------ 상태 행 */
 .row {
@@ -293,15 +358,17 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 .mat-card {
   position: relative; display: flex; flex-direction: row; align-items: stretch;
-  border: 1px solid var(--line); border-left: 3px solid var(--brand-deep);
-  border-radius: 4px; overflow: hidden; background: var(--surface);
+  /* 우수/저조 띠는 카드 위쪽에 둔다(2026-08-28 사용자 지정) — 좌측 세로 띠는
+     썸네일 옆에 붙어 이미지의 일부처럼 보였다. */
+  border: 1px solid var(--line); border-top: 3px solid var(--brand-deep);
+  border-radius: 0; overflow: hidden; background: var(--surface);
   cursor: pointer; transition: border-color .15s, background .15s;
 }
-.mat-card.is-bad { border-left-color: #a32d2d; }
+.mat-card.is-bad { border-top-color: #a32d2d; }
 .mat-card:hover { border-color: var(--brand-deep); background: #f6fdfa; }
 .mat-card.is-bad:hover { border-color: #a32d2d; background: #fdf6f6; }
 .mat-card.is-dead {
-  cursor: default; border-left-color: var(--line);
+  cursor: default; border-top-color: var(--line);
 }
 .mat-card.is-dead:hover { border-color: var(--line); background: var(--surface); }
 .mat-ext {
@@ -957,18 +1024,83 @@ def note_header(title: str, badge: tuple[str, str] | None = None, info: str | No
     )
 
 
-def kpi_cards(cards: list[dict]) -> None:
-    """cards: [{label, value, sub, primary}] — primary=True인 카드에만 브랜드 액센트."""
+def kpi_cards(cards: list[dict], note: str = "") -> None:
+    """cards: [{label, value, delta, delta_direction, sub, primary}].
+
+    델타는 값 **옆에** 붙인다(2026-08-28 확정). 비교 기준 문구는 카드마다 반복하지 않고
+    note로 받아 카드 묶음 우측 상단에 한 번만 찍는다 — 여섯 칸에 같은 말이 반복되면
+    정작 읽어야 할 숫자가 묻힌다.
+    """
     blocks = []
     for card in cards:
         klass = "kpi is-primary" if card.get("primary") else "kpi"
+        delta = card.get("delta", "")
+        direction = card.get("delta_direction", "")
+        delta_class = "kpi-d" + (f" is-{direction}" if direction else "")
+        delta_html = f'<span class="{delta_class}">{_e(delta)}</span>' if delta else ""
+        # 부연 설명("마크업 포함")은 라벨 옆에 붙인다(2026-08-28). 값 아래에 두면
+        # 그 카드만 한 줄 길어져 여섯 칸 높이가 어긋나고, 나머지 다섯 칸은 아래가
+        # 빈 채로 남는다. 라벨 옆이면 어느 카드에 붙어도 높이가 그대로다.
+        sub = card.get("sub", "")
+        sub_html = f'<span class="kpi-sub">{_e(sub)}</span>' if sub else ""
         blocks.append(
             f'<div class="{klass}">'
-            f'<div class="kpi-l">{_e(card["label"])}</div>'
-            f'<div class="kpi-v">{_e(card["value"])}</div>'
-            f'<div class="kpi-s">{_e(card.get("sub", ""))}</div></div>'
+            f'<div class="kpi-l">{_e(card["label"])}{sub_html}</div>'
+            f'<div class="kpi-row">'
+            f'<span class="kpi-v">{_e(card["value"])}</span>{delta_html}</div>'
+            f'</div>'
         )
-    st.markdown(f'<div class="kpis">{"".join(blocks)}</div>', unsafe_allow_html=True)
+    note_html = f'<div class="kpis-note">{_e(note)}</div>' if note else ""
+    st.markdown(
+        f'<div class="kpis-wrap">{note_html}'
+        f'<div class="kpis">{"".join(blocks)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def report_table(
+    rows: list[list[str]],
+    headers: list[str],
+    left_columns: set[str] | None = None,
+    group_starts: set[str] | None = None,
+    row_classes: list[str] | None = None,
+) -> None:
+    """리포트용 HTML 표. `st.dataframe`으로 못 하는 것들을 하기 위해 직접 그린다.
+
+    st.dataframe은 헤더까지 캔버스로 그려서 **헤더 정렬·굵기·글자색·그룹 구분선을
+    바꿀 수 없다**(2026-08-28 확인: column_config의 alignment는 문서상 "cell content"
+    전용, Styler는 헤더에 안 먹음 — streamlit#6958). 그래서 헤더를 손봐야 하는 표만
+    이 함수로 그린다.
+
+    바꿔 잃는 것: 셀 클릭·드래그 강조(st.dataframe의 selection 이벤트)와 CSV 내려받기
+    버튼. 그 기능을 쓰는 표는 그대로 st.dataframe에 남겨둔다.
+    """
+    left_columns = left_columns or set()
+    group_starts = group_starts or set()
+    row_classes = row_classes or [""] * len(rows)
+
+    def cell_class(name: str) -> str:
+        classes = ["l" if name in left_columns else "c"]
+        if name in group_starts:
+            classes.append("gs")
+        return " ".join(classes)
+
+    head = "".join(
+        f'<th class="{cell_class(name)}">{_e(name)}</th>' for name in headers
+    )
+    body = []
+    for values, klass in zip(rows, row_classes):
+        cells = "".join(
+            f'<td class="{cell_class(name)}">{_e(value)}</td>'
+            for name, value in zip(headers, values)
+        )
+        body.append(f'<tr class="{klass}">{cells}</tr>')
+    st.markdown(
+        f'<div class="rt-wrap"><table class="rt">'
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody>"
+        f"</table></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def status_row(tone: str, title: str, detail: str = "") -> None:

@@ -184,11 +184,13 @@ def test_mutate_does_not_revert_another_session_save():
     assert blocks.find_block(stale, blocks.SLOT_ANALYSIS, b_id)["comment"] == ""
 
 
-def test_mutate_returns_fresh_state():
+def test_mutate_reports_success():
+    """mutate는 (성공 여부, 실패 이유)를 돌려준다 — 호출부가 실패를 삼키지 않게."""
     blocks.save_blocks(7, blocks.empty_blocks())
-    result = blocks.mutate(7, lambda d: blocks.add_block(
-        d, blocks.SLOT_ANALYSIS, "creative_query", "새 블록"))
-    assert [b["title"] for b in result[blocks.SLOT_ANALYSIS]] == ["새 블록"]
+    assert blocks.mutate(7, lambda d: blocks.add_block(
+        d, blocks.SLOT_ANALYSIS, "creative_query", "새 블록")) == (True, None)
+    saved = blocks.load_blocks(7)
+    assert [b["title"] for b in saved[blocks.SLOT_ANALYSIS]] == ["새 블록"]
 
 
 def test_save_blocks_leaves_no_temp_file():
@@ -250,91 +252,90 @@ def test_migration_runs_only_once():
 
 
 # ----------------------------------------------------------------------------
-# 구글시트 백엔드 — google_sheets_writer가 configured()=True일 때 그쪽으로 위임하는지만
-# 확인한다. 실제 Google API 호출은 google_sheets_writer 자체 단위에서 다룬다.
+# 구글시트 백엔드 — 실제 API 요청을 인메모리 가짜 시트가 받는다.
+# (동시 저장·소실 회귀 테스트는 tests/test_concurrent_writes.py에 따로 있다)
 
 
 @pytest.fixture
 def sheet_mode(monkeypatch):
-    monkeypatch.setattr(google_sheets_writer, "configured", lambda: True)
+    from tests import fake_sheets
+
+    return fake_sheets.install(monkeypatch, google_sheets_writer)
 
 
-def test_save_blocks_writes_to_sheet_in_sheet_mode(sheet_mode, monkeypatch):
-    captured = {}
-
-    def fake_write_blocks(month, data):
-        captured["month"] = month
-        captured["data"] = data
-
-    monkeypatch.setattr(google_sheets_writer, "write_blocks", fake_write_blocks)
+def test_save_blocks_writes_rows_to_sheet_in_sheet_mode(sheet_mode):
     data = blocks.empty_blocks()
     blocks.add_block(data, blocks.SLOT_ANALYSIS, "creative_query", "시트 저장 확인")
     blocks.save_blocks(7, data)
 
-    assert captured["month"] == 7
-    assert captured["data"][blocks.SLOT_ANALYSIS][0]["title"] == "시트 저장 확인"
+    tab = google_sheets_writer.block_rows_tab(7)
+    rows = sheet_mode.tabs[tab]
+    assert rows[0] == google_sheets_writer.BLOCK_HEADER
+    assert len(rows) == 2  # 헤더 + 블록 한 행
+    assert "시트 저장 확인" in rows[1][-1]
     # 시트 모드에서는 로컬 파일을 만들지 않는다
     assert not blocks.blocks_path(7).exists()
 
 
-def test_load_blocks_reads_from_sheet_in_sheet_mode(sheet_mode, monkeypatch):
+def test_load_blocks_reads_rows_from_sheet_in_sheet_mode(sheet_mode):
     stored = blocks.empty_blocks()
     blocks.add_block(stored, blocks.SLOT_NEXT_STEP, "note", "배포판 코멘트")
-    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: stored)
+    blocks.save_blocks(7, stored)
 
     data = blocks.load_blocks(7)
     assert data[blocks.SLOT_NEXT_STEP][0]["title"] == "배포판 코멘트"
 
 
-def test_load_blocks_creates_empty_tab_when_sheet_has_none(sheet_mode, monkeypatch):
-    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
-    written = {}
-    monkeypatch.setattr(
-        google_sheets_writer, "write_blocks",
-        lambda month, data: written.setdefault(month, data),
-    )
+def test_load_blocks_keeps_slot_order_by_seq(sheet_mode):
+    data = blocks.empty_blocks()
+    first = blocks.add_block(data, blocks.SLOT_ANALYSIS, "creative_query", "첫째")
+    second = blocks.add_block(data, blocks.SLOT_ANALYSIS, "creative_query", "둘째")
+    blocks.save_blocks(7, data)
+
+    blocks.mutate(7, lambda d: blocks.move_block(d, blocks.SLOT_ANALYSIS, second, -1))
+    order = [b["id"] for b in blocks.load_blocks(7)[blocks.SLOT_ANALYSIS]]
+    assert order == [second, first]
+
+
+def test_load_blocks_creates_header_only_tab_when_sheet_has_none(sheet_mode):
     data = blocks.load_blocks(7)
     assert data == blocks.empty_blocks()
-    assert written[7] == blocks.empty_blocks()
+    # 다음 리런에서 이관 조회를 또 타지 않도록 헤더 + 이관 표식만 놓아 둔다
+    tab = google_sheets_writer.block_rows_tab(7)
+    rows = sheet_mode.tabs[tab]
+    assert rows[0] == google_sheets_writer.BLOCK_HEADER
+    assert [r[0] for r in rows[1:]] == [google_sheets_writer.MIGRATION_KEY]
+    # 표식이 있으면 다시 이관하지 않는다(빈 달을 매번 다시 옮기려 들지 않아야 한다)
+    assert blocks.load_blocks(7) == blocks.empty_blocks()
 
 
-def test_load_blocks_migrates_legacy_local_notes_into_sheet(sheet_mode, monkeypatch):
+def test_load_blocks_migrates_legacy_local_notes_into_sheet(sheet_mode):
     """배포판이라도 예전에 로컬에 남아 있던 노트가 있으면 시트로 한 번 옮긴다."""
     next_step.save_note(7, {"markdown": "<p>인사이트</p>"}, kind="insight")
-    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
-    written = {}
-    monkeypatch.setattr(
-        google_sheets_writer, "write_blocks",
-        lambda month, data: written.setdefault(month, data),
-    )
     data = blocks.load_blocks(7)
     assert data[blocks.SLOT_ANALYSIS][0]["comment"] == "<p>인사이트</p>"
-    assert written[7][blocks.SLOT_ANALYSIS][0]["comment"] == "<p>인사이트</p>"
+    assert blocks.load_blocks(7)[blocks.SLOT_ANALYSIS][0]["comment"] == "<p>인사이트</p>"
 
 
-def test_load_blocks_ignores_malformed_sheet_rows(sheet_mode, monkeypatch):
-    monkeypatch.setattr(
-        google_sheets_writer, "read_blocks",
-        lambda m: {blocks.SLOT_ANALYSIS: [{"no_id": True}], blocks.SLOT_NEXT_STEP: "이상함"},
-    )
-    data = blocks.load_blocks(7)
-    assert data == blocks.empty_blocks()
+def test_load_blocks_ignores_malformed_sheet_rows(sheet_mode):
+    """id가 없는 행은 건너뛴다(깨진 JSON은 error로 다루는 것과 다른 경우다)."""
+    tab = google_sheets_writer.block_rows_tab(7)
+    sheet_mode.tabs[tab] = [
+        google_sheets_writer.BLOCK_HEADER,
+        ["abc123", "analysis", "0", "1", '{"no_id": true}'],
+    ]
+    assert blocks.load_blocks(7) == blocks.empty_blocks()
 
 
-def test_load_blocks_carries_over_pre_existing_local_file_into_sheet(sheet_mode, monkeypatch):
+def test_load_blocks_carries_over_pre_existing_local_file_into_sheet(sheet_mode):
     """시트 백엔드를 막 켠 시점에 로컬 blocks_<월>.json에 남아 있던 코멘트를 잃으면 안 된다."""
     local = blocks.empty_blocks()
     blocks.add_block(local, blocks.SLOT_ANALYSIS, "creative_query", "시트 켜기 전 코멘트")
     blocks.BLOCKS_DIR.mkdir(parents=True, exist_ok=True)
     blocks.blocks_path(7).write_text(json.dumps(local, ensure_ascii=False), encoding="utf-8")
 
-    monkeypatch.setattr(google_sheets_writer, "read_blocks", lambda m: None)
-    written = {}
-    monkeypatch.setattr(
-        google_sheets_writer, "write_blocks",
-        lambda month, data: written.setdefault(month, data),
-    )
-
     data = blocks.load_blocks(7)
     assert data[blocks.SLOT_ANALYSIS][0]["title"] == "시트 켜기 전 코멘트"
-    assert written[7][blocks.SLOT_ANALYSIS][0]["title"] == "시트 켜기 전 코멘트"
+    # 시트에도 옮겨져 있어야 한다(다음 재배포에 사라지지 않게)
+    tab = google_sheets_writer.block_rows_tab(7)
+    assert any("시트 켜기 전 코멘트" in row[-1] for row in sheet_mode.tabs[tab][1:])

@@ -114,18 +114,20 @@ def test_extract_first_frame_swallows_errors_and_returns_empty(monkeypatch):
     assert dm.extract_first_frame_data_uri("file123", "clip.mp4") == ""
 
 
-def test_material_thumbnail_prefers_first_frame(monkeypatch):
+def test_material_thumbnail_prefers_the_drive_thumbnail(monkeypatch):
+    """2026-08-28에 우선순위를 뒤집었다 — 첫 프레임 추출은 개당 5.4초라 너무 느리다."""
     monkeypatch.setattr(dm, "extract_first_frame_data_uri", lambda fid, name: "data:image/jpeg;base64,FIRSTFRAME")
     monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "data:image/jpeg;base64,DEFAULT")
     result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": "https://x"})
-    assert result == "data:image/jpeg;base64,FIRSTFRAME"
-
-
-def test_material_thumbnail_falls_back_to_default_when_extraction_fails(monkeypatch):
-    monkeypatch.setattr(dm, "extract_first_frame_data_uri", lambda fid, name: "")
-    monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "data:image/jpeg;base64,DEFAULT")
-    result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": "https://x"})
     assert result == "data:image/jpeg;base64,DEFAULT"
+
+
+def test_material_thumbnail_falls_back_to_first_frame_without_a_drive_thumbnail(monkeypatch):
+    """자동 썸네일이 없는 파일(실측 8,721개 중 116개)은 종전대로 첫 프레임을 뽑는다."""
+    monkeypatch.setattr(dm, "extract_first_frame_data_uri", lambda fid, name: "data:image/jpeg;base64,FIRSTFRAME")
+    monkeypatch.setattr(dm, "fetch_default_thumbnail_data_uri", lambda link: "")
+    result = dm.material_thumbnail_data_uri({"id": "a", "name": "x.mp4", "thumbnailLink": ""})
+    assert result == "data:image/jpeg;base64,FIRSTFRAME"
 
 
 def test_material_thumbnails_returns_empty_dict_for_no_specs():
@@ -236,7 +238,10 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def clean_thumbnail_cache():
+def clean_thumbnail_cache(tmp_path, monkeypatch):
+    """디스크 캐시를 임시 폴더로 돌린다 — 테스트가 실제 .cache를 건드리면 안 된다."""
+    monkeypatch.setattr(dm, "THUMBNAIL_CACHE_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(dm, "FILE_LIST_CACHE", tmp_path / "file_list.json")
     dm.clear_thumbnail_cache()
     yield
     dm.clear_thumbnail_cache()

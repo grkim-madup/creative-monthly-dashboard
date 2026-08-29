@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import subprocess
 import tempfile
 import threading
+import time
+from pathlib import Path
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -35,6 +38,55 @@ from google_sheets_readonly import get_credentials
 
 # 광고주 공유 드라이브 — 모든 소재 영상 원본이 여기 소재명으로 검색 가능한 형태로 올라간다.
 SHARED_DRIVE_ID = "0AH7dm5OxdfsNUk9PVA"
+
+# 디스크 캐시 — 서버를 껐다 켜도 살아남는다(2026-08-28 도입).
+#
+#  * 파일 목록: 8,721개를 매번 API로 받으면 19초다(실측). 하루쯤 낡아도 실무상 문제가
+#    없어 24시간 캐시한다. 새 소재가 안 잡히면 사이드바 '소재 목록 새로고침'이 지운다.
+#  * 썸네일: 같은 Drive 파일이면 그림이 바뀔 일이 없으므로 기간 제한을 두지 않는다.
+#    버튼으로도 지우지 않는다 — 누를 때마다 8개를 다시 받는 게 배보다 배꼽이 크다.
+#
+# 배포판은 재배포마다 파일시스템이 초기화돼 다시 받는다. 그건 정상이다.
+CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "drive"
+FILE_LIST_CACHE = CACHE_DIR / "file_list.json"
+THUMBNAIL_CACHE_DIR = CACHE_DIR / "thumbnails"
+FILE_LIST_TTL_SECONDS = 24 * 60 * 60
+
+# 썸네일 만드는 방식이 바뀌면 이 값을 올린다 — 예전 방식으로 만든 캐시가 섞이지 않게
+# 폴더를 갈라 놓는다. v2 = Drive 자동 썸네일 우선(2026-08-28).
+THUMBNAIL_CACHE_VERSION = "v2"
+
+
+def _cache_age(path: Path) -> float | None:
+    """파일이 만들어진 지 몇 초 됐는지. 없으면 None."""
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """쓰다 끊겨도 반쪽 파일이 남지 않게 tmp에 쓰고 바꿔치기한다."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # 캐시를 못 써도 동작 자체를 막지 않는다
+
+
+def clear_file_list_cache() -> None:
+    """파일 목록 캐시를 버린다. '소재 목록 새로고침'을 눌렀을 때만 부른다."""
+    try:
+        FILE_LIST_CACHE.unlink()
+    except OSError:
+        pass
+
+
+def _thumbnail_path(file_id: str) -> Path:
+    return THUMBNAIL_CACHE_DIR / THUMBNAIL_CACHE_VERSION / f"{file_id}.txt"
+
 
 _VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv")
 _IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif")
@@ -130,8 +182,29 @@ def find_matches(ad_name: str, exact: dict[str, list[dict]], flat: list[tuple[st
     return []
 
 
-def list_shared_drive_files() -> list[dict]:
-    """공유 드라이브의 전체 파일 목록(폴더 제외)을 가져온다. 약 9번의 API 호출, 수 초 소요."""
+def list_shared_drive_files(max_age_seconds: int = FILE_LIST_TTL_SECONDS) -> list[dict]:
+    """공유 드라이브 전체 파일 목록. 디스크 캐시가 신선하면 그걸 쓴다(기본 24시간).
+
+    API로 받으면 8,721개 기준 19초가 걸린다(2026-08-28 실측). 목록이 하루쯤 낡아도
+    실무상 문제가 없다 — 새 소재가 안 잡히면 '소재 목록 새로고침'으로 해소한다.
+    """
+    age = _cache_age(FILE_LIST_CACHE)
+    if age is not None and age < max_age_seconds:
+        try:
+            cached = json.loads(FILE_LIST_CACHE.read_text(encoding="utf-8"))
+            if isinstance(cached, list) and cached:
+                return cached
+        except (OSError, ValueError):
+            pass  # 깨진 캐시는 무시하고 새로 받는다
+
+    files = _fetch_shared_drive_files()
+    if files:
+        _atomic_write(FILE_LIST_CACHE, json.dumps(files, ensure_ascii=False).encode("utf-8"))
+    return files
+
+
+def _fetch_shared_drive_files() -> list[dict]:
+    """실제 Drive API 호출(약 9번의 페이지 요청, 19초)."""
     creds = get_credentials()
     service = build("drive", "v3", credentials=creds)
 
@@ -163,7 +236,15 @@ def fetch_default_thumbnail_data_uri(thumbnail_link: str) -> str:
     if not thumbnail_link:
         return ""
     try:
-        request = urllib.request.Request(thumbnail_link, headers={"User-Agent": "Mozilla/5.0"})
+        credentials = get_credentials()
+        credentials.refresh(google.auth.transport.requests.Request())
+        request = urllib.request.Request(
+            thumbnail_link,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Authorization": f"Bearer {credentials.token}",
+            },
+        )
         with urllib.request.urlopen(request, timeout=25) as response:
             data = response.read()
         return "data:image/jpeg;base64," + base64.b64encode(data).decode()
@@ -208,23 +289,51 @@ def has_thumbnail(file_id: str) -> bool:
 
 
 def clear_thumbnail_cache() -> None:
-    """캐시를 비운다. '다시 불러오기'처럼 강제 갱신이 필요할 때만 부른다."""
+    """메모리와 디스크 캐시를 모두 비운다. 강제 갱신이 필요할 때만 부른다.
+
+    사이드바 버튼은 이걸 부르지 않는다 — 누를 때마다 8개를 다시 받는 비용이 크고,
+    같은 파일의 썸네일이 낡을 일도 사실상 없기 때문이다(2026-08-28 결정).
+    """
     with _THUMBNAIL_CACHE_LOCK:
         _THUMBNAIL_CACHE.clear()
+    directory = THUMBNAIL_CACHE_DIR / THUMBNAIL_CACHE_VERSION
+    try:
+        for path in directory.glob("*.txt"):
+            path.unlink()
+    except OSError:
+        pass
 
 
 def _cache_get(file_id: str) -> str | None:
+    """메모리 → 디스크 순으로 찾는다. 디스크에서 찾으면 메모리로 끌어올린다."""
     with _THUMBNAIL_CACHE_LOCK:
-        return _THUMBNAIL_CACHE.get(file_id)
+        cached = _THUMBNAIL_CACHE.get(file_id)
+    if cached is not None:
+        return cached
+    try:
+        uri = _thumbnail_path(file_id).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not uri:
+        return None
+    with _THUMBNAIL_CACHE_LOCK:
+        _THUMBNAIL_CACHE[file_id] = uri
+    return uri
 
 
 def _cache_put(file_id: str, uri: str) -> None:
+    """메모리와 디스크 양쪽에 담는다. 실패(빈 문자열)는 담지 않는다.
+
+    디스크에 남기면 서버를 껐다 켜도 다시 뽑지 않는다 — 같은 Drive 파일이면 그림이
+    바뀔 일이 없어 기간 제한도 두지 않는다.
+    """
     if not uri:
         return
     with _THUMBNAIL_CACHE_LOCK:
         _THUMBNAIL_CACHE[file_id] = uri
         while len(_THUMBNAIL_CACHE) > _THUMBNAIL_CACHE_MAX:
             _THUMBNAIL_CACHE.pop(next(iter(_THUMBNAIL_CACHE)))
+    _atomic_write(_thumbnail_path(file_id), uri.encode("utf-8"))
 
 
 def _frame_from_video_bytes(data: bytes, suffix: str) -> str:
@@ -297,11 +406,20 @@ def extract_first_frame_data_uri(file_id: str, file_name: str = "") -> str:
 
 
 def material_thumbnail_data_uri(file: dict) -> str:
-    """카드용 썸네일 하나를 정한다 — 첫 프레임 추출을 우선하고, 실패하면 기본 썸네일."""
-    uri = extract_first_frame_data_uri(file.get("id", ""), file.get("name", ""))
+    """카드용 썸네일 하나를 정한다 — Drive 자동 썸네일 우선, 없으면 첫 프레임 추출.
+
+    2026-08-28에 순서를 뒤집었다. 첫 프레임 추출은 영상을 내려받아 디코딩해야 해서
+    개당 약 5.4초가 들고, 필터를 한 번 바꿀 때마다 8개를 다시 뽑아 43초가 걸렸다.
+    Drive가 이미 만들어 둔 썸네일을 쓰면 같은 8개가 7.7초다(실측).
+
+    대가: 자동 썸네일은 Drive가 임의로 고른 대표 프레임이라 재생 시작 화면과 다를 수
+    있다. 속도를 택한 결정이다(사용자 확인). 자동 썸네일이 없는 파일(8,721개 중 116개,
+    1.3%)은 종전대로 첫 프레임을 뽑는다.
+    """
+    uri = fetch_default_thumbnail_data_uri(file.get("thumbnailLink", ""))
     if uri:
         return uri
-    return fetch_default_thumbnail_data_uri(file.get("thumbnailLink", ""))
+    return extract_first_frame_data_uri(file.get("id", ""), file.get("name", ""))
 
 
 def material_thumbnails(specs: list[tuple[str, str, str]]) -> dict[str, str]:

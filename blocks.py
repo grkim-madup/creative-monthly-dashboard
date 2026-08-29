@@ -4,7 +4,18 @@
 달라지므로 월별 파일로 나누고, 새 달은 빈 상태에서 시작한다.
 
 저장 위치: `google_sheets_writer`(스냅샷용 서비스 계정)가 설정돼 있으면 전용 구글시트의
-`blocks_<월>` 탭. 아니면(로컬 개발 PC 등) `notes/blocks_<월>.json` 로컬 파일.
+`blockrows_<월>` 탭에 **블록 하나당 한 행**. 아니면(로컬 개발 PC 등)
+`notes/blocks_<월>.json` 로컬 파일 한 개.
+
+왜 블록당 한 행인가: 예전에는 그 달 블록 전체를 `blocks_<월>!A1` 한 셀에 JSON으로 넣고
+저장할 때마다 통째로 덮어썼다. 그러면 두 사람이 **서로 다른 블록**의 완료를 눌러도 늦게
+저장한 쪽이 먼저 저장된 블록 편집을 조용히 지운다(lost update) — 블록 단위 잠금으로는
+막을 수 없다(각자 자기 블록의 정당한 주인이기 때문). 행으로 쪼개고 바뀐 행만 갱신하면
+이 충돌이 원리적으로 사라진다. 같은 블록을 동시에 저장하는 경우만 남고, 그건 `rev`
+비교(compare-and-set)로 덮어쓰기를 **거부**한다.
+
+예전 한 셀 형식(`blocks_<월>` 탭)은 지우지 않는다 — 새 탭 이름이 다르므로 이관이
+잘못돼도 원본이 그대로 남아 되돌릴 수 있다.
 
 시트 백엔드가 필요한 이유: 배포판(Streamlit Community Cloud)은 재배포·리부트마다
 로컬 디스크가 초기화된다. 로컬 파일만 믿으면 배포판에서 남긴 코멘트가 재배포 시점에
@@ -17,6 +28,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -47,9 +59,18 @@ def empty_blocks() -> dict:
 
 
 def save_blocks(month: int, data: dict) -> Path | None:
-    payload = {slot: list(data.get(slot, [])) for slot in SLOTS}
+    """전체를 통째로 저장한다(로컬 파일 모드, 그리고 이관·초기 생성 전용).
+
+    편집 저장 경로에서는 이 함수를 쓰지 않는다 — `mutate`가 바뀐 행만 갱신한다.
+    """
+    payload = {slot: [_strip_meta(b) for b in data.get(slot, [])] for slot in SLOTS}
     if google_sheets_writer.configured():
-        google_sheets_writer.write_blocks(month, payload)
+        google_sheets_writer.ensure_block_rows_tab(month)
+        for slot in SLOTS:
+            for seq, block in enumerate(payload[slot]):
+                google_sheets_writer.upsert_block_row(
+                    month, block["id"], slot, seq, block
+                )
         return None
     BLOCKS_DIR.mkdir(parents=True, exist_ok=True)
     path = blocks_path(month)
@@ -60,6 +81,15 @@ def save_blocks(month: int, data: dict) -> Path | None:
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
     return path
+
+
+# `_rev`는 시트 행의 버전이다. 블록 본문이 아니므로 저장 payload에서는 반드시 뺀다 —
+# 안 그러면 rev가 본문 안에 눌러앉아 "바뀐 게 있나" 비교가 매번 어긋난다.
+_META_FIELDS = ("_rev",)
+
+
+def _strip_meta(block: dict) -> dict:
+    return {k: v for k, v in block.items() if k not in _META_FIELDS}
 
 
 # 손상 파일을 격리했다는 사실을 화면에 알리기 위한 자리. load_blocks는 Streamlit을 몰라야 하므로
@@ -88,6 +118,21 @@ def quarantine_corrupt(month: int) -> str | None:
     return str(target)
 
 
+@dataclass
+class BlocksState:
+    """블록 구성을 읽은 결과.
+
+    status가 "error"면 **절대 저장하지 않는다.** 예전에는 읽기 실패와 "아직 데이터 없음"을
+    똑같이 None으로 뭉개고 그 위에 빈 값을 저장했다 — 일시적 읽기 실패 한 번으로 그 달
+    블록 전체가 전원에게서 사라질 수 있는 구조였다.
+    """
+
+    data: dict
+    revs: dict = dc_field(default_factory=dict)  # block_id -> rev
+    status: str = "ok"                           # "ok" | "error"
+    reason: str | None = None
+
+
 def _normalize(data: dict) -> dict:
     result = empty_blocks()
     for slot in SLOTS:
@@ -109,28 +154,82 @@ def _read_local_blocks_file(month: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _state_from_rows(items: list[dict]) -> BlocksState:
+    data = empty_blocks()
+    revs: dict[str, int] = {}
+    for item in sorted(items, key=lambda i: (i["slot"], i["seq"])):
+        if item["slot"] not in SLOTS:
+            continue
+        block = dict(item["block"])
+        block["_rev"] = item["rev"]
+        data[item["slot"]].append(block)
+        revs[item["block_id"]] = item["rev"]
+    return BlocksState(data=data, revs=revs)
+
+
+def load_state(month: int) -> BlocksState:
+    """블록 구성 + 각 블록의 rev + 읽기 성공 여부를 함께 돌려준다."""
+    if not google_sheets_writer.configured():
+        return BlocksState(data=_load_blocks_from_disk(month))
+
+    status, items, reason = google_sheets_writer.read_block_rows(month)
+    if status == "error":
+        # 여기서 빈 값을 돌려주고 저장까지 하면 그 순간 한 달치가 날아간다. 화면에는
+        # 빈 리포트가 아니라 에러가 떠야 하고, 저장은 막혀야 한다.
+        return BlocksState(data=empty_blocks(), status="error", reason=reason)
+    if status == "ok":
+        return _state_from_rows(items)
+
+    # 새 형식 탭이 아직 없다 — 옮겨올 것이 있으면 한 번만 옮긴다.
+    migrated = _migrate_into_rows(month)
+    if migrated is not None:
+        again, items, _ = google_sheets_writer.read_block_rows(month)
+        if again == "ok":
+            return _state_from_rows(items)
+        return BlocksState(data=_normalize(migrated))
+    # 옮길 게 없으면 헤더와 이관 표식만 남긴다 — 안 그러면 리런마다 이관 조회를 다시 탄다.
+    google_sheets_writer.ensure_block_rows_tab(month)
+    google_sheets_writer.mark_migrated(
+        google_sheets_writer.block_rows_tab(month), google_sheets_writer.BLOCK_HEADER
+    )
+    return BlocksState(data=empty_blocks())
+
+
+def _migrate_into_rows(month: int) -> dict | None:
+    """예전 한 셀 형식 / 로컬 파일 / 레거시 노트를 새 행 형식으로 한 번 옮긴다.
+
+    옮길 게 없으면 None. 원본은 어느 쪽도 지우지 않는다.
+    """
+    # 어느 경로로 옮겼든(또는 옮길 게 없었든) 표식을 남겨 다시 옮기지 않게 한다.
+    legacy_cell = google_sheets_writer.read_blocks(month)
+    if legacy_cell is not None and (
+        legacy_cell.get(SLOT_ANALYSIS) or legacy_cell.get(SLOT_NEXT_STEP)
+    ):
+        normalized = _normalize(legacy_cell)
+        save_blocks(month, normalized)
+        google_sheets_writer.mark_migrated(
+            google_sheets_writer.block_rows_tab(month), google_sheets_writer.BLOCK_HEADER
+        )
+        return normalized
+    local = _read_local_blocks_file(month)
+    if local is not None and (local.get(SLOT_ANALYSIS) or local.get(SLOT_NEXT_STEP)):
+        normalized = _normalize(local)
+        save_blocks(month, normalized)
+        google_sheets_writer.mark_migrated(
+            google_sheets_writer.block_rows_tab(month), google_sheets_writer.BLOCK_HEADER
+        )
+        return normalized
+    migrated = migrate_legacy_notes(month)
+    if migrated is not None:
+        google_sheets_writer.mark_migrated(
+            google_sheets_writer.block_rows_tab(month), google_sheets_writer.BLOCK_HEADER
+        )
+    return migrated
+
+
 def load_blocks(month: int) -> dict:
-    """블록 구성을 읽는다. 없으면 예전 노트를 한 번 옮겨 온다."""
-    if google_sheets_writer.configured():
-        data = google_sheets_writer.read_blocks(month)
-        if data is not None:
-            return _normalize(data)
-        # 시트 탭이 아직 없다 — 이 PC에 시트 백엔드를 켜기 전부터 쓰던
-        # `blocks_<월>.json`이 남아 있으면(예: 서비스 계정을 막 설정한 직후) 그 내용을
-        # 그대로 시트로 한 번 옮긴다. 안 그러면 시트가 비어 있다는 이유만으로
-        # 이미 써 둔 코멘트가 사라진 것처럼 보인다.
-        local = _read_local_blocks_file(month)
-        if local is not None and (local.get(SLOT_ANALYSIS) or local.get(SLOT_NEXT_STEP)):
-            normalized = _normalize(local)
-            save_blocks(month, normalized)
-            return normalized
-        migrated = migrate_legacy_notes(month)
-        if migrated is not None:
-            return migrated
-        empty = empty_blocks()
-        save_blocks(month, empty)
-        return empty
-    return _load_blocks_from_disk(month)
+    """블록 구성만 돌려준다(기존 호출부 호환). 읽기 실패 여부까지 필요하면 load_state."""
+    return load_state(month).data
 
 
 def _load_blocks_from_disk(month: int) -> dict:
@@ -157,17 +256,58 @@ def _load_blocks_from_disk(month: int) -> dict:
     return _normalize(data)
 
 
-def mutate(month: int, fn) -> dict:
-    """디스크의 최신 상태를 다시 읽어 고치고 저장한다(read-modify-write).
+def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None]:
+    """저장소의 최신 상태를 다시 읽어 고치고, **바뀐 블록만** 저장한다.
 
     화면은 실행 시작 시점에 읽은 스냅샷을 들고 있는데, 그 사이 다른 사람이 자기 블록을
-    저장했을 수 있다. 스냅샷을 그대로 통째로 쓰면 남의 저장이 소리 없이 되돌아간다 —
-    블록 단위 잠금으로는 못 막는다(각자 자기 블록의 정당한 주인이기 때문).
+    저장했을 수 있다. 그래서 저장 직전에 최신 상태를 다시 읽고, 그 위에 fn을 적용한 뒤
+    실제로 달라진 행만 갱신한다 — 남의 블록은 아예 쓰기 대상에 들어가지 않는다.
+
+    expect는 {block_id: 내가 화면에서 보고 있던 rev}다. 그 사이 같은 블록이 바뀌었으면
+    아무것도 쓰지 않고 (False, "conflict")를 돌려준다 — 조용히 덮어쓰는 것보다 낫다.
+
+    돌려주는 값: (성공 여부, 실패 이유).
     """
-    data = load_blocks(month)
-    fn(data)
-    save_blocks(month, data)
-    return data
+    state = load_state(month)
+    if state.status == "error":
+        return False, state.reason or "저장소를 읽지 못했습니다"
+
+    if expect:
+        for block_id, seen_rev in expect.items():
+            if state.revs.get(block_id, 0) != int(seen_rev):
+                return False, "conflict"
+
+    baseline = {
+        block["id"]: (slot, seq, _strip_meta(block))
+        for slot in SLOTS
+        for seq, block in enumerate(state.data.get(slot, []))
+        if block.get("id")
+    }
+    fn(state.data)
+
+    if not google_sheets_writer.configured():
+        save_blocks(month, state.data)
+        return True, None
+
+    seen: set[str] = set()
+    for slot in SLOTS:
+        for seq, block in enumerate(state.data.get(slot, [])):
+            block_id = block.get("id")
+            if not block_id:
+                continue
+            seen.add(block_id)
+            payload = _strip_meta(block)
+            if baseline.get(block_id) == (slot, seq, payload):
+                continue  # 바뀐 게 없으면 쓰지 않는다(쿼터·충돌 둘 다 줄인다)
+            ok, reason = google_sheets_writer.upsert_block_row(
+                month, block_id, slot, seq, payload,
+                expected_rev=state.revs.get(block_id, 0),
+            )
+            if not ok:
+                return False, reason
+    for block_id in set(baseline) - seen:
+        google_sheets_writer.delete_block_row(month, block_id)
+    return True, None
 
 
 def add_block(

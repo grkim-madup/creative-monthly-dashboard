@@ -87,17 +87,24 @@ def test_status_reports_held_minutes():
 
 
 def test_touch_survives_force_release_between_reads(monkeypatch):
-    """status() 이후 항목이 사라져도 KeyError로 페이지가 죽으면 안 된다."""
+    """두 번의 읽기 사이에 항목이 사라져도 죽지 않고 False를 돌려준다.
+
+    touch는 (1) 소유권 확인용 읽기 (2) 쓰기 직전의 최신 읽기를 한다. 그 사이 누군가
+    강제 해제하면 예전 구현은 KeyError로 페이지가 통째로 죽었다.
+    """
     locks.acquire("block:b1", 7, ME, now=T0)
 
-    original_status = locks.status
+    original_read = locks._read
+    seen = []
 
-    def steal_then_report(kind, month, owner, now=None):
-        result = original_status(kind, month, owner, now)
-        locks.force_release(kind, month)  # 두 번의 읽기 사이에 남이 강제 해제
+    def read_then_steal(use_cache=True):
+        result = original_read(use_cache=use_cache)
+        seen.append(use_cache)
+        if len(seen) == 1:
+            locks.force_release("block:b1", 7)
         return result
 
-    monkeypatch.setattr(locks, "status", steal_then_report)
+    monkeypatch.setattr(locks, "_read", read_then_steal)
     assert locks.touch("block:b1", 7, ME, now=T0 + timedelta(minutes=1)) is False
 
 
