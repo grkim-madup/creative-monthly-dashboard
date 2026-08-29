@@ -7,16 +7,22 @@ background-color·font-weight는 반영된다 — 그래서 "굵은 선" 대신 
 셀을 가리킬 수 있다 — 같은 달 안에서 조건을 그대로 유지하는 일반적인 사용 방식에서는
 문제없다.
 
-저장 위치: `google_sheets_writer`가 설정돼 있으면 전용 구글시트 `highlights_<월>` 탭에
-**표 하나당 한 행**. 아니면 `notes/highlights_<월>.json`.
+저장 위치: `google_sheets_writer`가 설정돼 있으면 전용 구글시트 `hlcells_<월>` 탭에
+**셀 하나당 한 행**. 아니면 `notes/highlights_<월>.json`.
 
-시트로 옮긴 이유: 배포판은 재배포·리부트마다 로컬 디스크가 초기화돼 강조가 조용히 사라졌다.
-그리고 파일 하나를 통째로 다시 쓰던 방식은 두 사람이 서로 다른 표를 강조해도 늦게 저장한
-쪽이 먼저 저장된 강조를 지웠다.
+왜 셀마다 한 행인가 (2026-08-29, 실측 두 번 끝에):
+- 처음에는 표 하나의 강조 목록을 한 셀에 JSON으로 넣고 통째로 덮어썼다. 두 사람이 같은
+  표를 거의 동시에 강조하면 늦게 저장한 쪽이 앞사람 강조를 지웠다(6명 동시 → 1개만 생존).
+- 다음으로 행의 `rev`를 대조해 쓰도록 고쳤다(compare-and-set). 그래도 6명 중 3명 것이
+  사라졌다 — 시트 API는 읽기와 쓰기가 원자적이지 않아, 같은 행을 겨냥한 여섯이 모두
+  같은 rev를 읽고 통과해 버린다. **같은 행에 동시에 쓰는 구조 자체가 문제**였다.
+- 그래서 이 프로젝트의 원칙("키 하나 = 행 하나")대로 셀마다 행을 나눴다. 서로 다른 셀은
+  다른 행이라 충돌이 원리적으로 없고, 같은 셀을 둘이 켜면 같은 값이 두 번 쓰일 뿐이다.
+  블록이 같은 방식으로 6명 동시에도 무사했던 것과 같은 이유다.
 
 읽기 캐시: 강조는 표를 그릴 때마다 조회되므로(한 화면에 표가 여러 개다) 시트를 매번 읽으면
 리런 한 번에 API 호출이 열 번 넘게 나간다. 월 단위로 짧게(_CACHE_TTL초) 캐시하고 저장 직후
-비운다. 다른 사람의 강조는 최대 그 시간만큼 늦게 보인다 — 쓰기가 있는 값에 긴 TTL을 걸면
+갱신한다. 다른 사람의 강조는 최대 그 시간만큼 늦게 보인다 — 쓰기가 있는 값에 긴 TTL을 걸면
 "고쳤는데 화면이 그대로"인 조용한 오류가 나므로 짧게 유지한다.
 """
 
@@ -77,15 +83,24 @@ def _update_cache(month: int, table_key: str, cells: list) -> None:
     캐시가 아직 없으면 아무것도 하지 않는다 — 다음 load()가 시트에서 통째로 읽는다.
     남이 같은 달의 다른 표를 고친 것은 기존 TTL(_CACHE_TTL)이 지나면 반영된다.
     """
-    cached = _CACHE.get(month)
+    cached = _CACHE.get(int(month))
     if not cached:
         return
     data = dict(cached[1])
     if cells:
-        data[table_key] = cells
+        data[table_key] = [[int(r), str(c)] for r, c in cells]
     else:
         data.pop(table_key, None)
-    _CACHE[month] = (cached[0], data)
+    _CACHE[int(month)] = (cached[0], data)
+
+
+def seed_cache(month: int, data: dict) -> None:
+    """다른 곳에서 이미 읽어 온 이 달의 강조 전체를 캐시에 넣는다.
+
+    화면 한 번을 그릴 때 블록·강조·잠금을 batchGet으로 **한 번에** 읽고 그 결과를
+    각 모듈에 나눠 담는다(prefetch.py). 여기 없으면 load_all이 시트를 또 읽는다.
+    """
+    _CACHE[int(month)] = (time.monotonic(), data)
 
 
 def clear_cache(month: int | None = None) -> None:  # noqa: D401
@@ -93,6 +108,22 @@ def clear_cache(month: int | None = None) -> None:  # noqa: D401
         _CACHE.clear()
     else:
         _CACHE.pop(int(month), None)
+
+
+def _migrate_from_table_rows(month: int) -> dict:
+    """예전 형식(표 하나 = 한 행)과 로컬 파일에서 한 번만 옮긴다. 원본은 지우지 않는다."""
+    status, data, _reason = google_sheets_writer.read_highlights(month)
+    if status == "error":
+        return {}
+    if not data:
+        data = _read_local_all(month)
+    for table_key, cells in data.items():
+        google_sheets_writer.add_hl_cells(month, table_key, _normalize_cells(cells))
+    # 이관 표식 — 없으면 사용자가 전부 지운 강조가 예전 탭에서 되살아난다.
+    google_sheets_writer.mark_migrated(
+        google_sheets_writer.hl_cells_tab(month), google_sheets_writer.HL_CELL_HEADER
+    )
+    return data
 
 
 def load_all(month: int) -> dict:
@@ -105,19 +136,12 @@ def load_all(month: int) -> dict:
     if not google_sheets_writer.configured():
         data = _read_local_all(month)
     else:
-        status, data, _reason = google_sheets_writer.read_highlights(month)
+        status, data, _reason = google_sheets_writer.read_hl_cells(month)
         if status == "error":
             # 읽기 실패를 "강조 없음"으로 오인해 저장하면 전부 사라진다 — 쓰지 않는다.
             return {}
         if status == "empty":
-            # 시트 백엔드를 켜기 전 로컬에 남아 있던 강조를 한 번 옮긴다.
-            data = _read_local_all(month)
-            for table_key, cells in data.items():
-                google_sheets_writer.write_highlight(month, table_key, cells)
-            # 이관 표식 — 없으면 사용자가 전부 지운 강조가 로컬 파일에서 되살아난다.
-            google_sheets_writer.mark_migrated(
-                f"highlights_{int(month)}", google_sheets_writer.HIGHLIGHT_HEADER
-            )
+            data = _migrate_from_table_rows(month)
 
     _CACHE[month] = (time.monotonic(), data)
     return data
@@ -128,39 +152,62 @@ def load(month: int, table_key: str) -> list[tuple[int, str]]:
     return _normalize_cells(load_all(month).get(table_key))
 
 
-def save(month: int, table_key: str, cells: list) -> None:
-    """이 표의 강조 셀을 통째로 덮어쓴다(빈 목록을 주면 강조를 전부 지운다).
+def apply(month: int, table_key: str, add=(), remove=()) -> tuple[bool, str | None]:
+    """이 표의 강조에 `add`를 켜고 `remove`를 끈다. 남의 강조는 건드리지 않는다.
 
-    저장 직전에 시트를 다시 읽는다. 읽어둔 원본을 재사용하면 왕복 한 번(0.45초)을
-    아낄 수 있지만, 그 사이 다른 사람이 행을 추가·삭제하면 **행 번호가 밀려 남의 행을
-    덮어쓴다**. 0.45초를 아끼자고 감수할 위험이 아니다(2026-08-29 되돌림).
+    화면이 들고 있는 목록을 통째로 덮어쓰지 않고 **바뀐 셀의 행만** 만진다. 그래서 두
+    사람이 같은 표의 다른 셀을 동시에 강조해도 서로 다른 행이라 둘 다 남는다.
     """
     month = int(month)
-    normalized = [[int(r), str(c)] for r, c in cells]
+    to_add = [(int(r), str(c)) for r, c in add]
+    to_remove = [(int(r), str(c)) for r, c in remove]
+    if not to_add and not to_remove:
+        return True, None
 
-    if google_sheets_writer.configured():
-        if normalized:
-            ok, _reason = google_sheets_writer.write_highlight(
-                month, table_key, normalized
-            )
+    if not google_sheets_writer.configured():
+        clear_cache(month)
+        data = _read_local_all(month)
+        merged = (
+            set(_normalize_cells(data.get(table_key))) | set(to_add)
+        ) - set(to_remove)
+        if merged:
+            data[table_key] = [[r, c] for r, c in sorted(merged)]
         else:
-            google_sheets_writer.delete_highlight(month, table_key)
-            ok = True
-        # 방금 쓴 값을 이미 아는데 캐시를 비우면, 같은 리런에서 시트를 한 번 더 읽는다
-        # (실측 430ms). 성공했을 때만 캐시를 그 값으로 갱신한다 — 실패했는데 갱신하면
-        # 화면에는 저장된 것처럼 보이고 시트에는 없는, 이 프로젝트에서 가장 위험한
-        # 어긋남이 생긴다(2026-08-29).
-        if ok:
-            _update_cache(month, table_key, normalized)
-        else:
-            clear_cache(month)
-        return
+            data.pop(table_key, None)
+        _write_local_all(month, data)
+        return True, None
 
-    clear_cache(month)
+    ok, reason = google_sheets_writer.add_hl_cells(month, table_key, to_add)
+    if not ok:
+        clear_cache(month)
+        return False, reason
+    ok, reason = google_sheets_writer.remove_hl_cells(month, table_key, to_remove)
+    if not ok:
+        clear_cache(month)
+        return False, reason
 
-    data = _read_local_all(month)
-    if normalized:
-        data[table_key] = normalized
-    else:
-        data.pop(table_key, None)
-    _write_local_all(month, data)
+    # 캐시에는 내가 아는 범위만 반영한다. 남이 같은 순간에 켠 셀은 TTL이 지나면 보인다.
+    cached = _CACHE.get(month)
+    if cached:
+        current = set(_normalize_cells(cached[1].get(table_key)))
+        _update_cache(
+            month, table_key, sorted((current | set(to_add)) - set(to_remove))
+        )
+    return True, None
+
+
+def save(month: int, table_key: str, cells: list) -> tuple[bool, str | None]:
+    """이 표의 강조를 주어진 목록으로 맞춘다(빈 목록이면 전부 지운다).
+
+    **덮어쓰기 의미다.** 사용자가 셀을 켜고 끄는 경로에서는 `apply`를 써야 한다 —
+    이 함수는 초기화·이관처럼 "이 값이 전부"임이 확실할 때만 쓴다. 내부적으로도 통째로
+    쓰지 않고, 현재 상태와의 차이만 행 단위로 반영한다.
+    """
+    month = int(month)
+    wanted = {(int(r), str(c)) for r, c in cells}
+    current = set(load(month, table_key))
+    if wanted == current:
+        return True, None
+    return apply(
+        month, table_key, add=sorted(wanted - current), remove=sorted(current - wanted)
+    )

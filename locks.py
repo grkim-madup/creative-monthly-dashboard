@@ -85,6 +85,16 @@ def clear_cache() -> None:
     _cache = None
 
 
+def seed_cache(data: dict) -> None:
+    """다른 곳에서 읽어 온 잠금 상태를 캐시에 넣는다(prefetch.py).
+
+    화면 한 번을 그릴 때 블록·강조·잠금을 batchGet으로 한 번에 읽고 나눠 담는다 —
+    여기 없으면 _read가 시트를 또 읽는다.
+    """
+    global _cache
+    _cache = (time.monotonic(), data)
+
+
 def reset_state() -> None:
     """캐시를 통째로 비운다(테스트·프로세스 재시작 대용)."""
     clear_cache()

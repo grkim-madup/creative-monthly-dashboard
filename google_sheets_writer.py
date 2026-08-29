@@ -79,6 +79,26 @@ def _sheet_id() -> str:
 # 수 초가 날아갔다(2026-08-28 실측: 첫 호출 2.8초, 이후에도 매번 0.5초).
 _local = threading.local()
 
+# 시트 API는 **분당 60회 읽기(서비스 계정 1개 기준)** 라는 한도가 있고, 여러 명이 동시에
+# 쓰면 이 한도가 기능 버그보다 먼저 터진다(2026-08-29 실측: 6명이 15초 만에 429).
+# googleapiclient의 num_retries는 429와 5xx를 지수 백오프+지터로 알아서 재시도한다 —
+# 짧은 순간의 몰림은 여기서 흡수되고, 그래도 실패하면 호출자가 사용자에게 알린다.
+API_RETRIES = 4
+
+
+def is_quota_error(reason: str | None) -> bool:
+    """실패 사유가 쿼터 초과(429)인가."""
+    text = str(reason or "")
+    return "429" in text or "Quota exceeded" in text or "rateLimitExceeded" in text
+
+
+def friendly_error(reason: str | None) -> str:
+    """사용자에게 보여줄 문장. 원인을 알 수 있는 것만 우리말로 바꾼다."""
+    if is_quota_error(reason):
+        return ("지금 접속이 몰려 저장하지 못했습니다(구글 시트 조회 한도). "
+                "20초쯤 뒤에 다시 눌러 주세요.")
+    return str(reason or "알 수 없는 오류")
+
 
 def _service():
     if not hasattr(_local, "service"):
@@ -113,7 +133,7 @@ def _existing_tabs(service) -> set[str]:
         cached = _tabs_cache
     if cached and (time.monotonic() - cached[0]) < _TABS_TTL:
         return cached[1]
-    meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute()
+    meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute(num_retries=API_RETRIES)
     tabs = {s["properties"]["title"] for s in meta.get("sheets", [])}
     with _tabs_lock:
         _tabs_cache = (time.monotonic(), tabs)
@@ -126,7 +146,7 @@ def _ensure_tab(service, title: str) -> None:
     service.spreadsheets().batchUpdate(
         spreadsheetId=_sheet_id(),
         body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
     _clear_tabs_cache()
     _clear_ids_cache()
 
@@ -145,7 +165,7 @@ def frozen_at(month: int) -> str | None:
             return None
         rows = service.spreadsheets().values().get(
             spreadsheetId=_sheet_id(), range=META_TAB
-        ).execute().get("values", [])
+        ).execute(num_retries=API_RETRIES).get("values", [])
         for row in rows[1:]:
             if len(row) >= 2 and row[0] == str(month):
                 return row[1]
@@ -159,14 +179,14 @@ def write_month(month: int, df: pd.DataFrame) -> None:
     service = _service()
     tab = _tab_name(month)
     _ensure_tab(service, tab)
-    service.spreadsheets().values().clear(spreadsheetId=_sheet_id(), range=tab).execute()
+    service.spreadsheets().values().clear(spreadsheetId=_sheet_id(), range=tab).execute(num_retries=API_RETRIES)
 
     body_df = df.astype(object).where(df.notna(), "")
     values = [list(body_df.columns)] + body_df.values.tolist()
     service.spreadsheets().values().update(
         spreadsheetId=_sheet_id(), range=f"{tab}!A1",
         valueInputOption="RAW", body={"values": values},
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
 
     # 고정 시각은 이 달 행 하나만 갱신한다. 예전에는 메타 탭 전체를 다시 써서, 두 사람이
     # 서로 다른 달을 동시에 고정하면 한쪽 frozen_at이 조용히 사라졌다.
@@ -186,7 +206,7 @@ def read_month(month: int) -> pd.DataFrame | None:
         return None
     rows = service.spreadsheets().values().get(
         spreadsheetId=_sheet_id(), range=tab
-    ).execute().get("values", [])
+    ).execute(num_retries=API_RETRIES).get("values", [])
     if not rows:
         return None
     header, *body = rows
@@ -233,7 +253,7 @@ def write_blocks(month: int, data: dict) -> None:
     service.spreadsheets().values().update(
         spreadsheetId=_sheet_id(), range=f"{tab}!A1",
         valueInputOption="RAW", body={"values": [[payload]]},
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
 
 
 def read_blocks(month: int) -> dict | None:
@@ -248,7 +268,7 @@ def read_blocks(month: int) -> dict | None:
         return None
     rows = service.spreadsheets().values().get(
         spreadsheetId=_sheet_id(), range=f"{tab}!A1"
-    ).execute().get("values", [])
+    ).execute(num_retries=API_RETRIES).get("values", [])
     if not rows or not rows[0]:
         return None
     try:
@@ -280,7 +300,7 @@ def write_image(month: int, stored_name: str, data: bytes) -> None:
         spreadsheetId=_sheet_id(), range=f"{tab}!A1",
         valueInputOption="RAW", insertDataOption="INSERT_ROWS",
         body={"values": rows},
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
 
 
 # 이미지 바이트 캐시. stored_name은 `{월}_{타임스탬프}_{파일명}`이라 내용이 절대 바뀌지
@@ -404,12 +424,52 @@ def store_read(tab: str) -> StoreRead:
             return StoreRead("empty")
         rows = service.spreadsheets().values().get(
             spreadsheetId=_sheet_id(), range=tab
-        ).execute().get("values", [])
+        ).execute(num_retries=API_RETRIES).get("values", [])
     except Exception as error:  # noqa: BLE001 - 실패를 삼키지 않고 호출자에게 넘긴다
         return StoreRead("error", reason=f"{type(error).__name__}: {error}")
     if not rows:
         return StoreRead("empty")
     return StoreRead("ok", rows)
+
+
+def store_read_many(tabs: list[str]) -> dict[str, StoreRead]:
+    """여러 탭을 **한 번의 API 호출**로 읽는다(values.batchGet).
+
+    탭마다 store_read를 부르면 조작 한 번에 읽기가 2~3회 나가고, 그 곱하기 사람 수가
+    분당 60회 한도를 넘긴다. batchGet은 몇 개를 읽든 호출 1회로 계산된다.
+
+    없는 탭은 batchGet이 통째로 400을 내므로 미리 걸러 empty로 돌려준다(탭 목록은
+    캐시되어 있어 추가 호출이 아니다).
+    """
+    wanted = list(dict.fromkeys(tabs))
+    if not wanted:
+        return {}
+    try:
+        service = _service()
+        existing = _existing_tabs(service)
+    except Exception as error:  # noqa: BLE001
+        reason = f"{type(error).__name__}: {error}"
+        return {tab: StoreRead("error", reason=reason) for tab in wanted}
+
+    result = {tab: StoreRead("empty") for tab in wanted if tab not in existing}
+    ranges = [tab for tab in wanted if tab in existing]
+    if not ranges:
+        return result
+    try:
+        payload = service.spreadsheets().values().batchGet(
+            spreadsheetId=_sheet_id(), ranges=ranges,
+        ).execute(num_retries=API_RETRIES)
+    except Exception as error:  # noqa: BLE001 - 실패를 삼키지 않는다
+        reason = f"{type(error).__name__}: {error}"
+        return {**result, **{tab: StoreRead("error", reason=reason) for tab in ranges}}
+
+    # valueRanges는 요청한 ranges와 같은 순서로 돌아온다.
+    for tab, value_range in zip(ranges, payload.get("valueRanges", [])):
+        rows = value_range.get("values", [])
+        result[tab] = StoreRead("ok", rows) if rows else StoreRead("empty")
+    for tab in ranges:
+        result.setdefault(tab, StoreRead("empty"))
+    return result
 
 
 def _looks_like_header(row: list[str], header: list[str]) -> bool:
@@ -494,7 +554,7 @@ def store_upsert(
             service.spreadsheets().values().update(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
                 valueInputOption="RAW", body={"values": [header, row]},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
             return True, None
         numbers = store_row_numbers(read, header, key)
         if not numbers:
@@ -502,7 +562,7 @@ def store_upsert(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
                 valueInputOption="RAW", insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
         else:
             if len(numbers) > 1:
                 # 중복 줄은 여기서 스스로 정리된다(첫 줄만 남긴다).
@@ -510,7 +570,7 @@ def store_upsert(
             service.spreadsheets().values().update(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A{numbers[0]}",
                 valueInputOption="RAW", body={"values": [row]},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
@@ -561,7 +621,7 @@ def store_upsert_many(
             service.spreadsheets().values().update(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
                 valueInputOption="RAW", body={"values": body},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
             return True, None
 
         updates = []
@@ -584,13 +644,13 @@ def store_upsert_many(
             service.spreadsheets().values().batchUpdate(
                 spreadsheetId=_sheet_id(),
                 body={"valueInputOption": "RAW", "data": updates},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
         if appends:
             service.spreadsheets().values().append(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A1",
                 valueInputOption="RAW", insertDataOption="INSERT_ROWS",
                 body={"values": appends},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
@@ -633,7 +693,7 @@ def _sheet_ids(service) -> dict[str, int]:
         cached = _ids_cache
     if cached and (time.monotonic() - cached[0]) < _TABS_TTL:
         return cached[1]
-    meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute()
+    meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute(num_retries=API_RETRIES)
     ids = {
         s["properties"]["title"]: s["properties"]["sheetId"] for s in meta.get("sheets", [])
     }
@@ -664,7 +724,7 @@ def _delete_rows(tab: str, numbers: list[int]) -> None:
     ]
     service.spreadsheets().batchUpdate(
         spreadsheetId=_sheet_id(), body={"requests": requests}
-    ).execute()
+    ).execute(num_retries=API_RETRIES)
 
 
 def mark_migrated(tab: str, header: list[str]) -> None:
@@ -680,15 +740,29 @@ def has_migration_mark(read: StoreRead, header: list[str]) -> bool:
 
 def store_delete(
     tab: str, header: list[str], key: str, known_read: "StoreRead | None" = None,
-) -> None:
+    expected_rev: int | None = None,
+) -> tuple[bool, str | None]:
     """키에 해당하는 행을 (중복이 있으면 전부) 지운다. 없으면 아무것도 하지 않는다.
 
     방금 같은 탭을 읽은 호출자는 그 결과를 넘겨 왕복 한 번을 아낄 수 있다.
+    expected_rev를 주면 그 사이 남이 고친 행은 지우지 않고 "conflict"를 돌려준다 —
+    지우기도 덮어쓰기와 똑같이 남의 작업을 없앨 수 있기 때문이다.
     """
     read = known_read if known_read is not None else store_read(tab)
+    if read.failed:
+        return False, read.reason
     if not read.ok:
-        return
-    _delete_rows(tab, store_row_numbers(read, header, key))
+        return True, None
+    if expected_rev is not None:
+        current = store_get(read, header, key)
+        current_rev = _as_int(current.get(REV_COLUMN)) if current else 0
+        if current is not None and current_rev != int(expected_rev):
+            return False, "conflict"
+    try:
+        _delete_rows(tab, store_row_numbers(read, header, key))
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+    return True, None
 
 
 def delete_block_rows(month: int, block_ids: list[str], known_read=None) -> None:
@@ -848,17 +922,15 @@ def read_highlights(month: int) -> tuple[str, dict, str | None]:
     return _json_store_read(f"highlights_{int(month)}", HIGHLIGHT_HEADER)
 
 
-def read_highlights_with_raw(month: int) -> tuple[str, dict, str | None, StoreRead]:
-    """강조를 읽되 원본(StoreRead)까지 함께 돌려준다.
-
-    저장할 때 이 원본을 그대로 넘기면 같은 탭을 두 번 읽지 않는다(왕복 0.45초 절약).
-    """
-    return _json_store_parse(store_read(f"highlights_{int(month)}"), HIGHLIGHT_HEADER)
-
-
 def write_highlight(
     month: int, table_key: str, cells: list, known_read: "StoreRead | None" = None,
 ) -> tuple[bool, str | None]:
+    """**예전 형식**(표 하나 = 한 행)에 쓴다. 새 코드에서 쓰지 말 것.
+
+    이 형식은 두 사람이 같은 표를 동시에 강조하면 한쪽이 사라진다(실측). 지금 쓰는 것은
+    셀마다 한 행인 `add_hl_cells`/`remove_hl_cells`다. 이 함수는 이관 경로를 시험할 때와
+    예전 데이터를 읽어 오는 맥락에만 남겨 둔다.
+    """
     return store_upsert(
         f"highlights_{int(month)}", HIGHLIGHT_HEADER,
         {"table_key": table_key, REV_COLUMN: "",
@@ -867,13 +939,94 @@ def write_highlight(
     )
 
 
-def delete_highlight(month: int, table_key: str) -> None:
-    store_delete(f"highlights_{int(month)}", HIGHLIGHT_HEADER, table_key)
+# ----------------------------------------------------------------------------
+# 셀 강조 — "표 하나 = 한 행"에서 "셀 하나 = 한 행"으로 (2026-08-29)
+#
+# 예전에는 표 하나의 강조 셀 전체를 한 셀에 JSON으로 넣고 통째로 덮어썼다. 두 사람이
+# **같은 표**를 동시에 강조하면 한 명 것만 남았다(6명 동시 → 1개만 생존, 실측).
+# rev 대조(compare-and-set)를 붙여도 부족했다: 시트 API는 읽기와 쓰기가 원자적이지
+# 않아 여섯이 동시에 같은 행을 겨냥하면 여러 명이 같은 rev를 보고 통과한다(→ 3개 생존).
+#
+# 그래서 이 프로젝트의 원칙("키 하나 = 행 하나")대로 셀마다 행을 나눴다. 서로 다른 셀은
+# 아예 다른 행이라 충돌 자체가 없고, 같은 셀을 둘이 켜면 같은 값이 두 번 쓰일 뿐이다.
+# 예전 탭(highlights_<월>)은 지우지 않는다 — 이관이 잘못돼도 되돌릴 수 있어야 한다.
+
+HL_CELL_HEADER = ["cell_key", REV_COLUMN, "table_key", "row", "col"]
 
 
-def read_locks() -> tuple[str, dict, str | None]:
-    """(상태, {키: {owner, acquired_at, touched_at, rev}}, 실패 이유)."""
-    read = store_read(LOCKS_TAB)
+def hl_cells_tab(month: int) -> str:
+    return f"hlcells_{int(month)}"
+
+
+def hl_cell_key(table_key: str, row: int, col: str) -> str:
+    return f"{table_key}|{int(row)}|{col}"
+
+
+def read_hl_cells(
+    month: int, known_read: "StoreRead | None" = None,
+) -> tuple[str, dict, str | None]:
+    """(상태, {표 키: [(행, 컬럼), ...]}, 실패 이유)."""
+    read = known_read if known_read is not None else store_read(hl_cells_tab(month))
+    if read.failed:
+        return "error", {}, read.reason
+    if not read.ok:
+        return "empty", {}, None
+    out: dict[str, list] = {}
+    for row in store_rows(read, HL_CELL_HEADER):
+        record = dict(zip(HL_CELL_HEADER, row))
+        if record["cell_key"] == MIGRATION_KEY:
+            continue
+        table_key = record["table_key"]
+        cell = (_as_int(record["row"]), record["col"])
+        cells = out.setdefault(table_key, [])
+        if cell not in cells:  # 같은 셀을 둘이 켜서 줄이 겹쳐도 한 번만 센다
+            cells.append(cell)
+    if not out and not has_migration_mark(read, HL_CELL_HEADER):
+        return "empty", {}, None
+    return "ok", out, None
+
+
+def add_hl_cells(month: int, table_key: str, cells: list) -> tuple[bool, str | None]:
+    """셀들을 강조로 표시한다(셀마다 한 행). rev 대조가 필요 없다 — 같은 값이다."""
+    if not cells:
+        return True, None
+    return store_upsert_many(
+        hl_cells_tab(month), HL_CELL_HEADER,
+        [{"cell_key": hl_cell_key(table_key, r, c), REV_COLUMN: "",
+          "table_key": table_key, "row": str(int(r)), "col": str(c)}
+         for r, c in cells],
+    )
+
+
+def remove_hl_cells(month: int, table_key: str, cells: list) -> tuple[bool, str | None]:
+    """셀들의 강조를 지운다(그 행만 지운다 — 다른 셀·다른 표는 건드리지 않는다)."""
+    if not cells:
+        return True, None
+    tab = hl_cells_tab(month)
+    read = store_read(tab)
+    if read.failed:
+        return False, read.reason
+    if not read.ok:
+        return True, None
+    numbers: list[int] = []
+    for row, col in cells:
+        numbers.extend(
+            store_row_numbers(read, HL_CELL_HEADER, hl_cell_key(table_key, row, col))
+        )
+    try:
+        _delete_rows(tab, numbers)
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+    return True, None
+
+
+def read_locks(known_read: "StoreRead | None" = None) -> tuple[str, dict, str | None]:
+    """(상태, {키: {owner, acquired_at, touched_at, rev}}, 실패 이유).
+
+    known_read를 주면 그것을 파싱만 한다 — 한 번의 batchGet으로 여러 탭을 읽어 온 뒤
+    나눠 담을 때 쓴다(prefetch.py).
+    """
+    read = known_read if known_read is not None else store_read(LOCKS_TAB)
     if read.failed:
         return "error", {}, read.reason
     if not read.ok:
@@ -917,4 +1070,4 @@ def ensure_block_rows_tab(month: int) -> None:
     service.spreadsheets().values().update(
         spreadsheetId=_sheet_id(), range=f"{block_rows_tab(month)}!A1",
         valueInputOption="RAW", body={"values": [BLOCK_HEADER]},
-    ).execute()
+    ).execute(num_retries=API_RETRIES)

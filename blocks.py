@@ -28,6 +28,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+from time import monotonic
 from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from pathlib import Path
@@ -167,10 +168,39 @@ def _state_from_rows(items: list[dict]) -> BlocksState:
     return BlocksState(data=data, revs=revs)
 
 
-def load_state(month: int) -> BlocksState:
-    """블록 구성 + 각 블록의 rev + 읽기 성공 여부를 함께 돌려준다."""
+# 한 화면을 그릴 때 5번(분석)과 7번(NEXT STEP) 섹션이 각각 이 상태를 읽는다 — 같은 탭을
+# 두 번 읽는 셈이라 조작당 API 호출이 그만큼 늘었다. 아주 짧게 캐시해 한 번의 렌더 안에서만
+# 재사용한다. 저장(mutate)은 **절대 캐시를 쓰지 않고** 늘 시트를 다시 읽으며, 저장 직후
+# 캐시를 비운다 — 낡은 rev로 "다른 사람이 수정했습니다"가 잘못 뜨는 일을 막기 위해서다.
+_STATE_TTL = 3.0
+_STATE_CACHE: dict[int, tuple[float, list[dict]]] = {}
+
+
+def clear_state_cache(month: int | None = None) -> None:
+    if month is None:
+        _STATE_CACHE.clear()
+    else:
+        _STATE_CACHE.pop(int(month), None)
+
+
+def seed_state(month: int, items: list[dict]) -> None:
+    """다른 곳에서 읽어 온 블록 행들을 캐시에 넣는다(prefetch.py)."""
+    _STATE_CACHE[int(month)] = (monotonic(), copy.deepcopy(items))
+
+
+def load_state(month: int, use_cache: bool = False) -> BlocksState:
+    """블록 구성 + 각 블록의 rev + 읽기 성공 여부를 함께 돌려준다.
+
+    use_cache=True는 **화면을 그리는 경로 전용**이다. 저장 경로는 기본값(False)으로
+    항상 최신을 읽는다.
+    """
     if not google_sheets_writer.configured():
         return BlocksState(data=_load_blocks_from_disk(month))
+
+    if use_cache:
+        cached = _STATE_CACHE.get(int(month))
+        if cached and (monotonic() - cached[0]) < _STATE_TTL:
+            return _state_from_rows(copy.deepcopy(cached[1]))
 
     status, items, reason = google_sheets_writer.read_block_rows(month)
     if status == "error":
@@ -178,6 +208,7 @@ def load_state(month: int) -> BlocksState:
         # 빈 리포트가 아니라 에러가 떠야 하고, 저장은 막혀야 한다.
         return BlocksState(data=empty_blocks(), status="error", reason=reason)
     if status == "ok":
+        _STATE_CACHE[int(month)] = (monotonic(), copy.deepcopy(items))
         return _state_from_rows(items)
 
     # 새 형식 탭이 아직 없다 — 옮겨올 것이 있으면 한 번만 옮긴다.
@@ -268,6 +299,7 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
 
     돌려주는 값: (성공 여부, 실패 이유).
     """
+    clear_state_cache(month)
     state = load_state(month)
     if state.status == "error":
         return False, state.reason or "저장소를 읽지 못했습니다"
@@ -318,6 +350,7 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
     removed = sorted(set(baseline) - seen)
     if removed:
         google_sheets_writer.delete_block_rows(month, removed)
+    clear_state_cache(month)
     return True, None
 
 

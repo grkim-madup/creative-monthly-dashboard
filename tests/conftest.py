@@ -21,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import blocks  # noqa: E402
 import google_sheets_writer  # noqa: E402
 import highlights  # noqa: E402
 import locks  # noqa: E402
@@ -43,8 +44,10 @@ def _no_real_sheet(monkeypatch):
     # 바꾼다(실제로 잠금 테스트 3개가 이렇게 어긋났다). 앞뒤로 비운다.
     locks.reset_state()
     highlights.clear_cache()
+    blocks.clear_state_cache()
     google_sheets_writer.clear_image_cache()
     yield
     locks.reset_state()
     highlights.clear_cache()
+    blocks.clear_state_cache()
     google_sheets_writer.clear_image_cache()

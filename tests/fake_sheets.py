@@ -17,7 +17,9 @@ class _Execute:
     def __init__(self, result):
         self._result = result
 
-    def execute(self):
+    def execute(self, **kwargs):
+        # 실제 코드는 execute(num_retries=...)로 부른다 — 429·5xx 자동 재시도 옵션이다.
+        # 가짜 시트는 재시도할 일이 없으므로 인자만 받아 무시한다.
         return self._result
 
 
@@ -26,8 +28,18 @@ class _Values:
         self.book = book
 
     def get(self, spreadsheetId=None, range=None, **_):  # noqa: A002, N803
+        self.book.calls.append(("get", range))
         tab, _row = self.book.parse_range(range)
         return _Execute({"values": [list(r) for r in self.book.tabs.get(tab, [])]})
+
+    def batchGet(self, spreadsheetId=None, ranges=None, **_):  # noqa: N802, N803
+        """여러 탭을 한 번에 읽는다 — 실제 API와 같이 요청 순서대로 돌려준다."""
+        self.book.calls.append(("batchGet", tuple(ranges or ())))
+        out = []
+        for item in ranges or []:
+            tab, _row = self.book.parse_range(item)
+            out.append({"values": [list(r) for r in self.book.tabs.get(tab, [])]})
+        return _Execute({"valueRanges": out})
 
     def update(self, spreadsheetId=None, range=None, body=None, **_):  # noqa: A002, N803
         tab, row = self.book.parse_range(range)
@@ -109,6 +121,9 @@ class FakeSheets:
     def __init__(self, tabs: dict | None = None):
         self.tabs: dict[str, list[list]] = {k: [list(r) for r in v]
                                            for k, v in (tabs or {}).items()}
+        # 읽기 호출 이력 — "조작 한 번에 시트를 몇 번 읽었나"를 테스트로 고정한다.
+        # 구글 시트 API의 진짜 상한이 분당 60회 읽기라서, 이 숫자가 곧 동시 사용 가능 인원이다.
+        self.calls: list[tuple] = []
         self.cleared: list[str] = []
         self.updates: list[tuple[str, int | None]] = []
         self.appends: list[str] = []

@@ -22,10 +22,12 @@ import blocks as report_blocks
 import drive_materials
 import youtube_thumbs
 import dropbox_source
+import google_sheets_writer
 import google_snapshot
 import highlights
 import locks
 import overrides as manual_overrides
+import prefetch
 from creative_data import (
     delta_direction,
     DISPLAY_COLUMNS,
@@ -476,16 +478,32 @@ def render_table(
                     "강조", key=f"hl_on_{highlight_key}_{month}",
                     help="선택한 셀을 강조합니다",
                 ):
-                    highlights.save(month, highlight_key, list(saved | picked))
-                    st.rerun(scope="fragment")
+                    ok, reason = highlights.apply(
+                        month, highlight_key, add=picked
+                    )
+                    if not ok:
+                        st.error(
+                            "강조를 저장하지 못했습니다 — "
+                            + google_sheets_writer.friendly_error(reason)
+                        )
+                    else:
+                        st.rerun(scope="fragment")
                 index += 1
             if show_off:
                 if slots[index].button(
                     "해제", key=f"hl_off_{highlight_key}_{month}",
                     help="선택한 셀의 강조를 지웁니다",
                 ):
-                    highlights.save(month, highlight_key, list(saved - picked))
-                    st.rerun(scope="fragment")
+                    ok, reason = highlights.apply(
+                        month, highlight_key, remove=picked
+                    )
+                    if not ok:
+                        st.error(
+                            "강조를 저장하지 못했습니다 — "
+                            + google_sheets_writer.friendly_error(reason)
+                        )
+                    else:
+                        st.rerun(scope="fragment")
 
     _highlight_table()
 
@@ -1674,7 +1692,10 @@ def commit_blocks(month: int, fn, expect: dict | None = None) -> bool:
     elif reason == "deleted":
         st.error("이 블록이 방금 삭제되었습니다. 저장하지 않았습니다 — 새로 고쳐 확인해 주세요.")
     else:
-        st.error(f"저장하지 못했습니다. 내용을 복사해 두세요 — {reason}")
+        st.error(
+            "저장하지 못했습니다. 내용을 복사해 두세요 — "
+            + google_sheets_writer.friendly_error(reason)
+        )
     return False
 
 
@@ -2137,7 +2158,12 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         )
 
 
-blocks_state = report_blocks.load_state(month)
+# 블록·강조·잠금을 한 번의 호출로 미리 읽어 둔다. 따로 읽으면 조작 한 번에 시트 조회가
+# 2~3회 나가고, 그 곱하기 사람 수가 분당 60회 한도를 넘긴다(6명 동시 사용 시 실측 초과).
+# 저장 경로는 이 캐시를 쓰지 않는다 — 늘 최신을 다시 읽고 rev를 대조한다.
+prefetch.warm(month)
+
+blocks_state = report_blocks.load_state(month, use_cache=True)
 page_blocks = blocks_state.data
 # 읽기 자체가 실패했으면(권한·네트워크·깨진 행) 빈 리포트를 조용히 보여주면 안 된다.
 # 그 상태로 편집·저장을 허용하면 남아 있던 내용을 빈 값으로 덮어쓸 수 있다.
@@ -2181,7 +2207,9 @@ def _analysis_blocks_section() -> None:
     # 바깥에서 한 번 읽어둔 목록을 그대로 쓰면 각 블록의 rev가 화면 기준으로 낡아,
     # 혼자 쓰는데도 저장이 "다른 사람이 방금 수정했습니다"로 거부된다(2026-08-29 실제
     # 발생). rev 대조는 유실을 막는 장치라 끄면 안 되고, 대신 기준을 최신으로 맞춘다.
-    blocks = report_blocks.load_state(month).data[report_blocks.SLOT_ANALYSIS]
+    blocks = report_blocks.load_state(month, use_cache=True).data[
+        report_blocks.SLOT_ANALYSIS
+    ]
     if edit_mode:
         insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 블록")
     for index, block in enumerate(list(blocks)):
@@ -2443,7 +2471,9 @@ if not next_step_blocks:
 @st.fragment
 def _next_step_blocks_section() -> None:
     # 5번과 같은 이유로 여기서 새로 읽는다(낡은 rev로 저장이 거부되는 것을 막는다).
-    blocks = report_blocks.load_state(month).data[report_blocks.SLOT_NEXT_STEP]
+    blocks = report_blocks.load_state(month, use_cache=True).data[
+        report_blocks.SLOT_NEXT_STEP
+    ]
     if edit_mode:
         insert_block_row(report_blocks.SLOT_NEXT_STEP, 0, "note", "다음 달 액션")
     for index, block in enumerate(list(blocks)):
