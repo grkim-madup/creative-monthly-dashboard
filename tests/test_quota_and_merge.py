@@ -393,3 +393,54 @@ def test_override_save_returns_success(book):
 
     assert manual.save(MONTH, "소재-A", {"creative_type": "Highlight"}) == (True, None)
     assert manual.load(MONTH)["소재-A"]["creative_type"] == "Highlight"
+
+
+# ---------------------------------------------------------------------------
+# 읽기가 사람 수에 비례하지 않는다 (1-C)
+
+
+def test_prefetch_does_nothing_when_the_caches_are_fresh(book):
+    """캐시는 프로세스 전역이다 — 한 사람이 읽어 오면 그 순간 전원이 같이 쓴다.
+
+    예전에는 신선도를 안 보고 리런마다 batchGet을 쏴서 읽기가 인원수에 비례했다.
+    """
+    _add_block("표")
+    highlights.apply(MONTH, TABLE, add=[(1, "CPI")])
+    blocks.clear_state_cache()
+    highlights.clear_cache()
+    locks.reset_state()
+
+    assert prefetch.warm(MONTH) is True          # 첫 사람이 읽어 온다
+    book.calls.clear()
+
+    for _another_person in range(5):
+        assert prefetch.warm(MONTH) is False     # 나머지는 그대로 쓴다
+
+    assert [c for c in book.calls if c[0] in ("get", "batchGet")] == []
+
+
+def test_prefetch_reads_again_after_someone_saves(book):
+    """내 저장이 캐시를 비우므로 다음 화면은 최신을 읽는다."""
+    _add_block("표")
+    blocks.clear_state_cache()
+    highlights.clear_cache()
+    locks.reset_state()
+    prefetch.warm(MONTH)
+
+    _add_block("둘째")                            # mutate가 블록 캐시를 비운다
+    book.calls.clear()
+
+    assert prefetch.warm(MONTH) is True
+    assert [c for c in book.calls if c[0] == "batchGet"]
+
+
+def test_saving_checks_the_lock_without_the_cache(book):
+    """저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다."""
+    locks.acquire("block:x", MONTH, "나")
+    locks.status("block:x", MONTH, "나")          # 캐시를 채운다
+
+    locks.force_release("block:x", MONTH)         # 남이 강제 해제
+    locks.acquire("block:x", MONTH, "남")
+
+    # 캐시된 값은 아직 "내 것"으로 보일 수 있다. fresh=True는 저장소를 다시 읽는다.
+    assert locks.status("block:x", MONTH, "나", fresh=True).state == "other"

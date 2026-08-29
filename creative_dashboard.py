@@ -1716,6 +1716,7 @@ def editor_taken_over(block_id: str, month: int) -> bool:
     owner = st.session_state["editor_token"]
     if not st.session_state.get(f"held_{block_id}"):
         return False
+    # 저장 버튼을 살릴지 판단하는 값이라 캐시로 충분하다(매 리런 읽으면 쿼터가 샌다).
     return locks.status(f"block:{block_id}", month, owner).state != "mine"
 
 
@@ -2140,7 +2141,10 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다. 완료는 항상 저장까지
         # 같이 한다.
         if st.button("완료", type="primary", key=f"save_{block_id}", disabled=taken_over):
-            if locks.status(f"block:{block_id}", month, owner).state != "mine":
+            # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
+            if locks.status(
+                f"block:{block_id}", month, owner, fresh=True
+            ).state != "mine":
                 st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
             elif commit_blocks(
                 # 화면이 들고 있는 스냅샷이 아니라 저장소의 최신 상태에 이 블록만 덮어쓴다.
@@ -2361,7 +2365,10 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
             # 저장 안 된 글이 날아가기 쉽다. 완료는 항상 저장부터 하고 잠금을 놓는다.
             if st.button("완료", type="primary", key=f"next_step_save_{block_id}",
                          width="stretch", disabled=taken_over):
-                if locks.status(f"block:{block_id}", month, owner).state != "mine":
+                # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
+            if locks.status(
+                f"block:{block_id}", month, owner, fresh=True
+            ).state != "mine":
                     st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
                 else:
                     images = list(block.get("images", []))

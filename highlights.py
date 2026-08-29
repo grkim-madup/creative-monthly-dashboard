@@ -94,6 +94,12 @@ def _update_cache(month: int, table_key: str, cells: list) -> None:
     _CACHE[int(month)] = (cached[0], data)
 
 
+def cache_is_fresh(month: int) -> bool:
+    """이 달 강조 캐시가 아직 살아 있는가(prefetch가 건너뛸지 판단하는 데 쓴다)."""
+    cached = _CACHE.get(int(month))
+    return bool(cached) and (time.monotonic() - cached[0]) < _CACHE_TTL
+
+
 def seed_cache(month: int, data: dict) -> None:
     """다른 곳에서 이미 읽어 온 이 달의 강조 전체를 캐시에 넣는다.
 

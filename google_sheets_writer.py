@@ -450,7 +450,7 @@ def delete_image(month: int, stored_name: str) -> None:
         i + 1 for i, row in enumerate(read.rows)
         if row and str(row[0]) == str(stored_name)
     ]
-    _delete_rows(_images_tab_name(month), numbers)
+    _retire_rows(_images_tab_name(month), numbers, 3)
 
 
 # ----------------------------------------------------------------------------
@@ -572,7 +572,11 @@ def store_rows(read: StoreRead, header: list[str]) -> list[list[str]]:
         return []
     body = read.rows[1:] if _looks_like_header(read.rows[0], header) else read.rows
     width = len(header)
-    return [(list(r) + [""] * width)[:width] for r in body if r and str(r[0]).strip()]
+    return [
+        (list(r) + [""] * width)[:width]
+        for r in body
+        if r and str(r[0]).strip() and not _is_dead(r[0])   # 묘비는 없는 행이다
+    ]
 
 
 def _matches(read: StoreRead, header: list[str], key: str) -> list[tuple[int, dict]]:
@@ -666,7 +670,7 @@ def store_upsert(
         else:
             if len(numbers) > 1:
                 # 중복 줄은 여기서 스스로 정리된다(첫 줄만 남긴다).
-                _delete_rows(tab, numbers[1:])
+                _retire_rows(tab, numbers[1:], len(header))
             service.spreadsheets().values().update(
                 spreadsheetId=_sheet_id(), range=f"{tab}!A{numbers[0]}",
                 valueInputOption="RAW", body={"values": [row]},
@@ -749,7 +753,7 @@ def store_upsert_many(
                 body={"values": appends},
             ).execute(num_retries=API_RETRIES)
         if stale_rows:
-            _delete_rows(tab, stale_rows)
+            _retire_rows(tab, stale_rows, len(header))
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
@@ -801,36 +805,47 @@ def _sheet_ids(service) -> dict[str, int]:
     return ids
 
 
-def _delete_rows(tab: str, numbers: list[int]) -> None:
-    """지정한 시트 행 번호들만 지운다(탭 clear 금지 — 다른 행을 건드리지 않는다).
+# 묘비 표식. 이 접두로 시작하는 키를 가진 행은 "지워진 행"이고, 읽는 쪽이 건너뛴다.
+_DEAD_PREFIX = "__dead__"
 
-    한 번의 batchUpdate로 보내되, 앞 행을 지우면 뒤 행 번호가 밀리므로 뒤에서 앞으로
-    지운다. 요청 하나로 묶여 있어 중간 상태(탭이 잠깐 비는 순간)가 생기지 않는다.
 
-    ⚠ **행을 정말로 없애면 그 아래 행 번호가 한 칸씩 밀린다.** 이 저장소의 쓰기는
-    "읽어서 행 번호를 찾고 → 그 번호에 update"라서, 지우기와 남의 저장이 겹치면 드물게
-    엉뚱한 행에 떨어질 수 있다. 그래서 **지우기가 잦은 곳은 아예 지우지 않도록** 만들었다
-    (잠금 해제는 행을 지우지 않고 소유자만 비운다 — locks.py 참고).
+def _is_dead(value) -> bool:
+    return str(value or "").startswith(_DEAD_PREFIX)
 
-    "행을 남기고 내용만 비우는" 방식도 시도했지만 더 나빴다(2026-08-29 실측):
-    빈 행이 생기면 `append`가 표의 끝을 그 빈 행으로 보고 **거기에 새 행을 끼워 넣어**
-    아래를 전부 밀어버린다. 지울 거면 진짜로 지워서 표를 이어진 상태로 두는 편이 낫다.
+
+def _retire_rows(tab: str, numbers: list[int], width: int) -> None:
+    """행을 **지우지 않고** 묘비로 만든다 — 키 컬럼만 `__dead__…`로 덮고 나머지를 비운다.
+
+    왜 지우지 않는가 (2026-08-30, 이 저장소 사고의 뿌리):
+    이 저장소의 모든 쓰기는 "읽어서 행 번호를 찾고 → `A{n}`에 update"다. 행 번호가 곧
+    주소인데, 누가 위쪽 행을 하나라도 **지우면 그 아래 주소가 전부 한 칸씩 밀린다.**
+    `rev` 대조(compare-and-set)는 그 행의 **값**을 검증할 뿐 **주소**를 검증하지 않으므로,
+    통과한 쓰기가 그대로 **남의 행을 키 컬럼까지 덮어쓴다.** 잠금·강조·블록 삭제가 전부
+    이 경로에 걸려 있었다.
+
+    행 개수가 변하지 않으면 어떤 읽기에서 얻은 주소도 계속 유효하다 → 경합이 원리적으로
+    사라진다.
+
+    ⚠ 예전에 시도했다 되돌린 "내용만 비우기"와 다르다. 그때는 **첫 셀이 비어서**
+    `append`가 표의 끝을 그 빈 행으로 보고 거기에 끼어들어 아래를 전부 밀었다.
+    묘비는 첫 셀이 차 있어 `append`가 진짜 끝으로 간다(2026-08-30 실제 시트로 확인:
+    묘비 행 위/아래 순서 그대로, 새 행은 맨 끝에 붙었다).
+
+    묘비 행은 쌓인다. 월 수백 행 수준이라 문제가 없고, 정말 정리가 필요해지면 이미 검증된
+    `_swap_tab`(임시 탭에 살아 있는 행만 쓰고 이름 맞바꾸기)을 쓰면 된다.
     """
     if not numbers:
         return
-    service = _service()
-    sheet_id = _sheet_ids(service).get(tab)
-    if sheet_id is None:
-        return
-    requests = [
-        {"deleteDimension": {"range": {
-            "sheetId": sheet_id, "dimension": "ROWS",
-            "startIndex": n - 1, "endIndex": n,
-        }}}
-        for n in sorted(set(numbers), reverse=True)
+    blank = [""] * max(width - 1, 0)
+    data = [
+        {"range": f"{tab}!A{n}",
+         "values": [[f"{_DEAD_PREFIX}{uuid4().hex[:8]}"] + blank]}
+        for n in sorted(set(numbers))
     ]
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=_sheet_id(), body={"requests": requests}
+    service = _service()
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=_sheet_id(),
+        body={"valueInputOption": "RAW", "data": data},
     ).execute(num_retries=API_RETRIES)
 
 
@@ -866,28 +881,39 @@ def store_delete(
         if current is not None and current_rev != int(expected_rev):
             return False, "conflict"
     try:
-        _delete_rows(tab, store_row_numbers(read, header, key))
+        _retire_rows(tab, store_row_numbers(read, header, key), len(header))
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
 
 
-def delete_block_rows(month: int, block_ids: list[str], known_read=None) -> None:
+def delete_block_rows(
+    month: int, block_ids: list[str], known_read=None
+) -> tuple[bool, str | None]:
     """블록 여러 개를 한 번의 요청으로 지운다.
 
     행마다 따로 지우면 그때마다 탭을 다시 읽는다. 한 번 읽어 행 번호를 모두 모은 뒤
-    한 요청으로 지운다 — 뒤 행부터 지워야 번호가 밀리지 않는다(_delete_rows가 처리).
+    한 요청으로 지운다.
+
+    **(성공 여부, 사유)를 돌려준다.** 예전에는 조용히 return해서, 삭제가 실패해도
+    `blocks.mutate`가 성공을 보고했다 — 지운 블록이 다음 새로고침에 되살아난다.
     """
     if not block_ids:
-        return
+        return True, None
     tab = block_rows_tab(month)
     read = known_read if known_read is not None else store_read(tab)
+    if read.failed:
+        return False, read.reason
     if not read.ok:
-        return
+        return True, None          # 탭이 비어 있다 — 지울 것이 없다
     numbers: list[int] = []
     for block_id in block_ids:
         numbers.extend(store_row_numbers(read, BLOCK_HEADER, block_id))
-    _delete_rows(tab, numbers)
+    try:
+        _retire_rows(tab, numbers, len(BLOCK_HEADER))
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+    return True, None
 
 
 # ----------------------------------------------------------------------------
@@ -1021,8 +1047,13 @@ def write_override(month: int, ad: str, fields: dict) -> tuple[bool, str | None]
     )
 
 
-def delete_override(month: int, ad: str) -> None:
-    store_delete(f"overrides_{int(month)}", OVERRIDE_HEADER, ad)
+def delete_override(month: int, ad: str) -> tuple[bool, str | None]:
+    """분류를 지운다. **반드시 (성공 여부, 사유)를 돌려준다.**
+
+    예전에는 아무것도 돌려주지 않아, 분류 필드를 전부 비우고 저장하면 화면이
+    `ok, reason = ...`로 언패킹하다 TypeError로 죽었다(2026-08-30).
+    """
+    return store_delete(f"overrides_{int(month)}", OVERRIDE_HEADER, ad)
 
 
 def read_highlights(month: int) -> tuple[str, dict, str | None]:
@@ -1121,7 +1152,7 @@ def remove_hl_cells(month: int, table_key: str, cells: list) -> tuple[bool, str 
             store_row_numbers(read, HL_CELL_HEADER, hl_cell_key(table_key, row, col))
         )
     try:
-        _delete_rows(tab, numbers)
+        _retire_rows(tab, numbers, len(HL_CELL_HEADER))
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
     return True, None
@@ -1163,7 +1194,7 @@ def write_lock(
     )
 
 
-def delete_lock(key: str) -> tuple[bool, str | None]:
+def delete_lock(key: str, expected_rev: int | None = None) -> tuple[bool, str | None]:
     """잠금을 푼다. **행은 지우지 않고 소유자만 비운다.**
 
     잠금은 6명이 쉬지 않고 넣고 푸는, 이 시트에서 가장 churn이 심한 탭이다. 행을 진짜로
@@ -1172,10 +1203,14 @@ def delete_lock(key: str) -> tuple[bool, str | None]:
     변하지 않아 그 경합이 아예 없어진다. 읽는 쪽은 소유자가 빈 행을 "잠금 없음"으로 본다.
 
     행은 블록 하나당 하나로 묶여 있어 무한정 늘지 않는다.
+
+    `expected_rev`를 주면 **그 사이 잠금이 바뀌지 않았을 때만** 푼다. 예전에는 대조가 없어,
+    호출자의 사전 확인이 조금이라도 낡았으면 **남이 방금 가져간 잠금을 지워 버릴 수** 있었다.
     """
     return store_upsert(
         LOCKS_TAB, LOCK_HEADER,
         {"key": key, REV_COLUMN: "", "owner": "", "acquired_at": "", "touched_at": ""},
+        expected_rev=expected_rev,
     )
 
 

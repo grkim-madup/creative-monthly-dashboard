@@ -89,6 +89,11 @@ def clear_cache() -> None:
     _cache = None
 
 
+def cache_is_fresh() -> bool:
+    """잠금 캐시가 아직 살아 있는가(prefetch가 건너뛸지 판단하는 데 쓴다)."""
+    return bool(_cache) and (time.monotonic() - _cache[0]) < _CACHE_TTL
+
+
 def seed_cache(data: dict) -> None:
     """다른 곳에서 읽어 온 잠금 상태를 캐시에 넣는다(prefetch.py).
 
@@ -153,10 +158,19 @@ def _holder(entry: dict | None) -> str:
     return str((entry or {}).get("owner") or "")
 
 
-def status(kind: str, month: int, owner: str, now: datetime | None = None) -> LockStatus:
+def status(
+    kind: str, month: int, owner: str, now: datetime | None = None,
+    fresh: bool = False,
+) -> LockStatus:
+    """잠금 상태. `fresh=True`면 캐시를 건너뛰고 저장소를 다시 읽는다.
+
+    **저장 직전에는 반드시 fresh=True로 확인해야 한다.** 캐시(_CACHE_TTL초) 때문에,
+    그 사이 남이 강제 해제하고 가져간 잠금을 여전히 "내 것"으로 보고 저장하는 경로가
+    있었다(2026-08-30).
+    """
     now = now or datetime.now()
     try:
-        entry = _read().get(_key(kind, month))
+        entry = _read(use_cache=not fresh).get(_key(kind, month))
     except LocksUnavailable:
         # 모르면 "남이 쥐고 있다"로 답한다 — 편집을 막을지언정 두 사람이 같이 들어가게
         # 두지는 않는다.
@@ -186,14 +200,19 @@ def _save_entry(
     return True
 
 
-def _delete_entry(key: str) -> None:
+def _delete_entry(key: str, expected_rev: int | None = None) -> tuple[bool, str | None]:
+    """잠금을 푼다. **결과를 돌려준다** — 호출자가 재시도할 수 있어야 한다.
+
+    예전에는 결과를 버렸다. 그래서 해제 '쓰기'가 429로 실패해도 조용히 끝났고,
+    남이 그 블록을 최대 TTL(15분) 동안 못 만졌다(2026-08-30).
+    """
     clear_cache()
     if google_sheets_writer.configured():
-        google_sheets_writer.delete_lock(key)
-        return
+        return google_sheets_writer.delete_lock(key, expected_rev=expected_rev)
     data = _read_local()
     if data.pop(key, None) is not None:
         _write_local(data)
+    return True, None
 
 
 def acquire(kind: str, month: int, owner: str, now: datetime | None = None) -> bool:
@@ -281,15 +300,24 @@ def release(kind: str, month: int, owner: str) -> None:
     key = _key(kind, month)
     # 해제에 실패하면 남이 그 블록을 못 만진다(최대 TTL). 한 번 실패했다고 포기하지 않고
     # 몇 번 더 해본다 — 접속이 몰린 순간은 대개 몇 초면 지나간다.
+    # 첫 시도는 캐시로 본다. 진짜 방어선은 아래 rev 대조다 — 캐시가 낡아 남이 이미
+    # 가져갔다면 그 대조에서 거부되고, 다음 바퀴에서 최신을 다시 읽는다. 예전에는 대조가
+    # 없어서 사전 확인이 낡으면 **남의 잠금을 지웠다.**
     for attempt in range(3):
         try:
-            entry = _read(use_cache=False).get(key)
+            entry = _read(use_cache=(attempt == 0)).get(key)
         except LocksUnavailable:
             time.sleep(0.4 * (attempt + 1))
             continue
-        if _holder(entry) == owner:
-            _delete_entry(key)
-        return
+        if _holder(entry) != owner:
+            return                      # 내 것이 아니다 — 건드리지 않는다
+        ok, reason = _delete_entry(key, expected_rev=int((entry or {}).get("rev", 0)))
+        if ok:
+            return
+        if reason == "deleted":
+            return                      # 행이 사라졌다 — 이미 풀린 것이다
+        # 해제 **쓰기**가 실패했다. 예전에는 여기서 그냥 끝나 잠금이 남았다.
+        time.sleep(0.4 * (attempt + 1))
 
 
 def force_release(kind: str, month: int) -> None:

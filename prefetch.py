@@ -26,11 +26,20 @@ import locks
 
 
 def warm(month: int) -> bool:
-    """이 달 화면에 필요한 탭들을 한 번에 읽어 캐시에 담는다. 담았으면 True."""
+    """이 달 화면에 필요한 탭들을 한 번에 읽어 캐시에 담는다. 담았으면 True.
+
+    **이미 신선하면 아무것도 하지 않는다.** 예전에는 캐시를 보지 않고 리런마다 무조건
+    batchGet을 쏴서, 시트 읽기가 사람 수에 그대로 비례했다(6명 실측 분당 55회 / 한도 60회).
+    캐시는 프로세스 전역이라 한 사람이 읽어 오면 그 순간 접속한 전원이 같이 쓴다 — 이
+    게이트 하나로 읽기 상한이 인원과 무관해진다.
+    """
     if not google_sheets_writer.configured():
         return False
 
     month = int(month)
+    if (blocks.cache_is_fresh(month) and highlights.cache_is_fresh(month)
+            and locks.cache_is_fresh()):
+        return False
     block_tab = google_sheets_writer.block_rows_tab(month)
     highlight_tab = google_sheets_writer.hl_cells_tab(month)
     lock_tab = google_sheets_writer.LOCKS_TAB

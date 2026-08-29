@@ -184,9 +184,13 @@ class FakeSheets:
         return self._next_id
 
     def ensure(self, title: str) -> int:
-        """탭이 없으면 만들고 그 고정 id를 돌려준다."""
+        """탭이 없으면 만들고 그 고정 id를 돌려준다.
+
+        테스트가 book.tabs[...]에 직접 행을 심는 경우가 많다 — 그때도 id는 있어야 한다.
+        """
         if title not in self.tabs:
             self.tabs[title] = []
+        if title not in self.sheet_ids:
             self.sheet_ids[title] = self._new_id()
         return self.sheet_ids[title]
 

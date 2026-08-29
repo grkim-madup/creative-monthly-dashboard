@@ -183,6 +183,12 @@ def clear_state_cache(month: int | None = None) -> None:
         _STATE_CACHE.pop(int(month), None)
 
 
+def cache_is_fresh(month: int) -> bool:
+    """이 달 블록 캐시가 아직 살아 있는가(prefetch가 건너뛸지 판단하는 데 쓴다)."""
+    cached = _STATE_CACHE.get(int(month))
+    return bool(cached) and (monotonic() - cached[0]) < _STATE_TTL
+
+
 def seed_state(month: int, items: list[dict]) -> None:
     """다른 곳에서 읽어 온 블록 행들을 캐시에 넣는다(prefetch.py)."""
     _STATE_CACHE[int(month)] = (monotonic(), copy.deepcopy(items))
@@ -349,7 +355,11 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
             return False, reason
     removed = sorted(set(baseline) - seen)
     if removed:
-        google_sheets_writer.delete_block_rows(month, removed)
+        # 삭제 실패를 삼키면 화면은 "지웠다"고 하는데 다음 새로고침에 블록이 되살아난다.
+        ok, reason = google_sheets_writer.delete_block_rows(month, removed)
+        if not ok:
+            clear_state_cache(month)
+            return False, reason
     clear_state_cache(month)
     return True, None
 
