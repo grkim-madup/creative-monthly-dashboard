@@ -35,6 +35,7 @@ import threading
 import time
 import os
 from dataclasses import dataclass, field as dataclass_field
+from uuid import uuid4
 
 import pandas as pd
 from google.oauth2 import service_account
@@ -166,6 +167,64 @@ def _ensure_tab(service, title: str) -> None:
     _clear_ids_cache()
 
 
+def _drop_tab(service, title: str) -> None:
+    """탭을 지운다. 없으면 아무것도 하지 않는다(실패해도 조용히 넘어간다)."""
+    try:
+        _clear_ids_cache()
+        sheet_id = _sheet_ids(service).get(title)
+        if sheet_id is None:
+            return
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=_sheet_id(),
+            body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]},
+        ).execute(num_retries=API_RETRIES)
+    except Exception:  # noqa: BLE001 - 뒷정리 실패로 본 작업을 망치지 않는다
+        return
+    finally:
+        _clear_tabs_cache()
+        _clear_ids_cache()
+
+
+_SWAP_ATTEMPTS = 3
+
+
+def _swap_tab(service, staging: str, target: str) -> None:
+    """`staging`을 `target` 이름으로 갈아끼운다 — 한 번의 batchUpdate로 통째로.
+
+    요청 묶음은 전부 적용되거나 전부 적용되지 않으므로, 읽는 사람에게 "탭이 사라진
+    순간"이 보이지 않는다.
+
+    두 사람이 같은 달을 동시에 고정하면 늦은 쪽이 들고 있던 sheetId가 이미 지워져
+    실패한다 — 그때는 목록을 다시 읽어 재시도한다(결과는 둘 중 하나의 스냅샷이고,
+    같은 폴더에서 만든 값이라 내용은 같다).
+    """
+    last_error: Exception | None = None
+    for _attempt in range(_SWAP_ATTEMPTS):
+        _clear_ids_cache()
+        ids = _sheet_ids(service)
+        staging_id = ids.get(staging)
+        if staging_id is None:
+            raise RuntimeError(f"임시 탭을 찾지 못했습니다: {staging}")
+        requests = []
+        if target in ids:
+            requests.append({"deleteSheet": {"sheetId": ids[target]}})
+        requests.append({"updateSheetProperties": {
+            "properties": {"sheetId": staging_id, "title": target},
+            "fields": "title",
+        }})
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=_sheet_id(), body={"requests": requests}
+            ).execute(num_retries=API_RETRIES)
+            _clear_tabs_cache()
+            _clear_ids_cache()
+            return
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            time.sleep(0.4)
+    raise last_error if last_error else RuntimeError("탭 교체에 실패했습니다")
+
+
 def month_exists(month: int) -> bool:
     try:
         return _tab_name(month) in _existing_tabs(_service())
@@ -190,18 +249,34 @@ def frozen_at(month: int) -> str | None:
 
 
 def write_month(month: int, df: pd.DataFrame) -> None:
-    """df(마크업 적용 전 원가 기준)를 이 달 스냅샷 탭에 통째로 쓴다. 이미 있으면 덮어쓴다."""
+    """df(마크업 적용 전 원가 기준)를 이 달 스냅샷으로 고정한다. 이미 있으면 갈아끼운다.
+
+    **임시 탭에 다 쓴 뒤 이름을 바꿔 통째로 맞바꾼다.** 예전에는 원본 탭을 clear한 다음
+    다시 썼는데, 그 사이(약 1초)에 다른 사람이 그 달을 읽으면 탭이 실제로 비어 있어
+    "고정 안 됨"으로 보였다(6명 실측: 고정 중 읽기의 26%). 더 나쁜 건 그 사이에 쓰기가
+    실패하면 **스냅샷이 영구히 사라진다**는 것이다 — clear는 이미 끝났기 때문이다.
+
+    이름 바꾸기는 batchUpdate 한 번에 (기존 탭 삭제 + 임시 탭 개명)으로 묶여 통째로
+    적용되므로, 읽는 사람에게는 옛 스냅샷 아니면 새 스냅샷만 보인다(중간이 없다).
+    """
     service = _service()
     tab = _tab_name(month)
-    _ensure_tab(service, tab)
-    service.spreadsheets().values().clear(spreadsheetId=_sheet_id(), range=tab).execute(num_retries=API_RETRIES)
+    staging = f"{tab}__staging_{uuid4().hex[:6]}"
 
     body_df = df.astype(object).where(df.notna(), "")
     values = [list(body_df.columns)] + body_df.values.tolist()
-    service.spreadsheets().values().update(
-        spreadsheetId=_sheet_id(), range=f"{tab}!A1",
-        valueInputOption="RAW", body={"values": values},
-    ).execute(num_retries=API_RETRIES)
+
+    try:
+        _ensure_tab(service, staging)
+        service.spreadsheets().values().update(
+            spreadsheetId=_sheet_id(), range=f"{staging}!A1",
+            valueInputOption="RAW", body={"values": values},
+        ).execute(num_retries=API_RETRIES)
+        _swap_tab(service, staging, tab)
+    except Exception:
+        # 교체까지 못 갔으면 원본은 그대로다 — 임시 탭만 치운다.
+        _drop_tab(service, staging)
+        raise
 
     # 고정 시각은 이 달 행 하나만 갱신한다. 예전에는 메타 탭 전체를 다시 써서, 두 사람이
     # 서로 다른 달을 동시에 고정하면 한쪽 frozen_at이 조용히 사라졌다.

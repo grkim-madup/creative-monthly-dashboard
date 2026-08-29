@@ -43,7 +43,7 @@ class _Values:
 
     def update(self, spreadsheetId=None, range=None, body=None, **_):  # noqa: A002, N803
         tab, row = self.book.parse_range(range)
-        self.book.tabs.setdefault(tab, [])
+        self.book.ensure(tab)
         rows = self.book.tabs[tab]
         start = (row or 1) - 1
         while len(rows) < start:
@@ -73,7 +73,8 @@ class _Values:
 
     def append(self, spreadsheetId=None, range=None, body=None, **_):  # noqa: A002, N803
         tab, _row = self.book.parse_range(range)
-        rows = self.book.tabs.setdefault(tab, [])
+        self.book.ensure(tab)
+        rows = self.book.tabs[tab]
         for values in body["values"]:
             rows.append(list(values))
         self.book.appends.append(tab)
@@ -82,6 +83,8 @@ class _Values:
     def clear(self, spreadsheetId=None, range=None, **_):  # noqa: A002, N803
         tab, _row = self.book.parse_range(range)
         self.book.cleared.append(tab)
+        self.book.ensure(tab)
+        self.book.ensure(tab) and None or None
         self.book.tabs[tab] = []
         return _Execute({})
 
@@ -93,8 +96,10 @@ class _Spreadsheets:
     def get(self, spreadsheetId=None, **_):  # noqa: N803
         return _Execute({
             "sheets": [
-                {"properties": {"title": title, "sheetId": index}}
-                for index, title in enumerate(self.book.tabs)
+                {"properties": {"title": title,
+                                "sheetId": self.book.sheet_ids.setdefault(
+                                    title, self.book._new_id())}}
+                for title in self.book.tabs
             ]
         })
 
@@ -104,11 +109,33 @@ class _Spreadsheets:
     def batchUpdate(self, spreadsheetId=None, body=None, **_):  # noqa: N802, N803
         for request in body["requests"]:
             if "addSheet" in request:
-                self.book.tabs.setdefault(request["addSheet"]["properties"]["title"], [])
+                title = request["addSheet"]["properties"]["title"]
+                if title in self.book.tabs:
+                    # 실제 API와 같이 거절한다 — 동시에 같은 탭을 만들려는 경우.
+                    raise RuntimeError(
+                        f'Invalid requests: A sheet with the name "{title}" already exists.'
+                    )
+                self.book.ensure(title)
+            elif "deleteSheet" in request:
+                title = self.book.title_of(request["deleteSheet"]["sheetId"])
+                if title is None or title not in self.book.tabs:
+                    raise RuntimeError("Invalid requests: No sheet with the given id.")
+                self.book.tabs.pop(title)
+                self.book.sheet_ids.pop(title, None)
+            elif "updateSheetProperties" in request:
+                props = request["updateSheetProperties"]["properties"]
+                title = self.book.title_of(props["sheetId"])
+                if title is None or title not in self.book.tabs:
+                    raise RuntimeError("Invalid requests: No sheet with the given id.")
+                rows = self.book.tabs.pop(title)
+                sheet_id = self.book.sheet_ids.pop(title)
+                self.book.tabs[props["title"]] = rows
+                self.book.sheet_ids[props["title"]] = sheet_id
             elif "deleteDimension" in request:
                 target = request["deleteDimension"]["range"]
-                titles = list(self.book.tabs)
-                title = titles[target["sheetId"]]
+                title = self.book.title_of(target["sheetId"])
+                if title is None:
+                    continue
                 rows = self.book.tabs[title]
                 del rows[target["startIndex"]:target["endIndex"]]
                 self.book.deleted.append((title, target["startIndex"]))
@@ -121,6 +148,12 @@ class FakeSheets:
     def __init__(self, tabs: dict | None = None):
         self.tabs: dict[str, list[list]] = {k: [list(r) for r in v]
                                            for k, v in (tabs or {}).items()}
+        # 실제 시트의 sheetId는 탭을 지워도 바뀌지 않는 고정값이다. 순번으로 흉내 내면
+        # '삭제 + 개명'을 한 요청으로 보내는 코드가 엉뚱한 탭을 건드려도 통과해 버린다.
+        self._next_id = 0
+        self.sheet_ids: dict[str, int] = {}
+        for title in self.tabs:
+            self.sheet_ids[title] = self._new_id()
         # 읽기 호출 이력 — "조작 한 번에 시트를 몇 번 읽었나"를 테스트로 고정한다.
         # 구글 시트 API의 진짜 상한이 분당 60회 읽기라서, 이 숫자가 곧 동시 사용 가능 인원이다.
         self.calls: list[tuple] = []
@@ -128,6 +161,23 @@ class FakeSheets:
         self.updates: list[tuple[str, int | None]] = []
         self.appends: list[str] = []
         self.deleted: list[tuple[str, int]] = []
+
+    def _new_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def ensure(self, title: str) -> int:
+        """탭이 없으면 만들고 그 고정 id를 돌려준다."""
+        if title not in self.tabs:
+            self.tabs[title] = []
+            self.sheet_ids[title] = self._new_id()
+        return self.sheet_ids[title]
+
+    def title_of(self, sheet_id: int):
+        for title, value in self.sheet_ids.items():
+            if value == sheet_id:
+                return title
+        return None
 
     @staticmethod
     def parse_range(value):

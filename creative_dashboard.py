@@ -1348,7 +1348,10 @@ with freeze_slot.container():
                         st.cache_data.clear()
                         st.rerun()
                     except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
-                        st.error(f"고정 실패: {error}")
+                        st.error(
+                            "고정 실패: "
+                            + google_sheets_writer.friendly_error(str(error))
+                        )
     elif live_source_available and not google_all.empty:
         with st.container(key="google_freeze_pending", border=True):
             st.markdown(
@@ -1363,7 +1366,9 @@ with freeze_slot.container():
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
-                    st.error(f"고정 실패: {error}")
+                    st.error(
+                        "고정 실패: " + google_sheets_writer.friendly_error(str(error))
+                    )
     else:
         # 안 고정됐고 라이브에도 이 달 데이터가 없는 경우 — 담당자가 드롭박스 폴더를
         # 이미 다른 달 파일로 덮어썼거나, 애초에 구글 데이터가 없는 달이다. 캡션 한 줄은
