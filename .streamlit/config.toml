@@ -1,0 +1,8 @@
+# 표 헤더 색감. st.dataframe은 헤더까지 캔버스로 그려서 CSS·Styler로는 못 건드리고,
+# 이 두 테마 옵션만이 유일한 수단이다(2026-08-28 확인). 값은 리포트 표 헤더 톤에 맞춘
+# 중성 회색으로, ui.py의 --line/--line-soft 계열과 같은 계통이다.
+#
+# ⚠ 배포판에도 이 파일이 있어야 같은 색으로 보인다 — 배포 레포에 함께 반영할 것.
+[theme]
+dataframeHeaderBackgroundColor = "#f1f4f6"
+dataframeBorderColor = "#dfe3e6"
