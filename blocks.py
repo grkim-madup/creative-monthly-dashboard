@@ -289,7 +289,12 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
         save_blocks(month, state.data)
         return True, None
 
+    # 바뀐 행을 모아 **한 번에** 저장한다. 블록을 하나 추가하면 뒤따르는 블록의 seq가
+    # 전부 밀려 여러 행이 달라지는데, 행마다 따로 저장하면 매번 탭을 다시 읽고 쓰느라
+    # 왕복이 몇 배가 된다(실측: 추가 1회에 읽기 3번 + 쓰기 2번 = 2.3초).
     seen: set[str] = set()
+    changed: list[dict] = []
+    expected: dict = {}
     for slot in SLOTS:
         for seq, block in enumerate(state.data.get(slot, [])):
             block_id = block.get("id")
@@ -299,14 +304,20 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
             payload = _strip_meta(block)
             if baseline.get(block_id) == (slot, seq, payload):
                 continue  # 바뀐 게 없으면 쓰지 않는다(쿼터·충돌 둘 다 줄인다)
-            ok, reason = google_sheets_writer.upsert_block_row(
-                month, block_id, slot, seq, payload,
-                expected_rev=state.revs.get(block_id, 0),
+            changed.append(
+                {"block_id": block_id, "slot": slot, "seq": seq, "payload": payload}
             )
-            if not ok:
-                return False, reason
-    for block_id in set(baseline) - seen:
-        google_sheets_writer.delete_block_row(month, block_id)
+            expected[block_id] = state.revs.get(block_id, 0)
+
+    if changed:
+        ok, reason = google_sheets_writer.upsert_block_rows(
+            month, changed, expected_revs=expected
+        )
+        if not ok:
+            return False, reason
+    removed = sorted(set(baseline) - seen)
+    if removed:
+        google_sheets_writer.delete_block_rows(month, removed)
     return True, None
 
 

@@ -33,8 +33,6 @@ HIGHLIGHTS_DIR = Path(__file__).resolve().parent / "notes"
 
 _CACHE_TTL = 20.0
 _CACHE: dict[int, tuple[float, dict]] = {}
-# load()가 시트에서 받아온 원본(StoreRead). save()가 재읽기 없이 그대로 쓴다.
-_RAW_CACHE: dict[int, object] = {}
 
 
 def _path(month: int) -> Path:
@@ -107,8 +105,7 @@ def load_all(month: int) -> dict:
     if not google_sheets_writer.configured():
         data = _read_local_all(month)
     else:
-        status, data, _reason, raw = google_sheets_writer.read_highlights_with_raw(month)
-        _RAW_CACHE[month] = raw
+        status, data, _reason = google_sheets_writer.read_highlights(month)
         if status == "error":
             # 읽기 실패를 "강조 없음"으로 오인해 저장하면 전부 사라진다 — 쓰지 않는다.
             return {}
@@ -134,18 +131,17 @@ def load(month: int, table_key: str) -> list[tuple[int, str]]:
 def save(month: int, table_key: str, cells: list) -> None:
     """이 표의 강조 셀을 통째로 덮어쓴다(빈 목록을 주면 강조를 전부 지운다).
 
-    저장 직전에 같은 탭을 다시 읽지 않는다 — 이번 리런에서 load()가 이미 읽어둔
-    원본을 넘겨 왕복 한 번(0.45초)을 아낀다(2026-08-29). 강조는 표 단위로 통째
-    덮어쓰는 값이라 rev 비교 대상이 아니어서 안전하다.
+    저장 직전에 시트를 다시 읽는다. 읽어둔 원본을 재사용하면 왕복 한 번(0.45초)을
+    아낄 수 있지만, 그 사이 다른 사람이 행을 추가·삭제하면 **행 번호가 밀려 남의 행을
+    덮어쓴다**. 0.45초를 아끼자고 감수할 위험이 아니다(2026-08-29 되돌림).
     """
     month = int(month)
     normalized = [[int(r), str(c)] for r, c in cells]
-    known = _RAW_CACHE.get(month)
 
     if google_sheets_writer.configured():
         if normalized:
             ok, _reason = google_sheets_writer.write_highlight(
-                month, table_key, normalized, known_read=known
+                month, table_key, normalized
             )
         else:
             google_sheets_writer.delete_highlight(month, table_key)

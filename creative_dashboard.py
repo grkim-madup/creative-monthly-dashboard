@@ -326,6 +326,20 @@ def highlight_cell_style(saved_cells: set, headers: list[str], position: int, co
     return " ".join(parts) + " font-weight: 700;"
 
 
+def rerun_local() -> None:
+    """가능하면 **지금 있는 fragment만** 다시 그린다(2026-08-29).
+
+    블록 목록은 fragment로 감싸 두었는데, 그 안에서 st.rerun()을 부르면 기본값이
+    "앱 전체"라 표 7개와 카드까지 통째로 다시 그려진다 — 감싼 의미가 사라진다.
+    같은 함수가 fragment 밖에서도 쓰이므로(예: 사이드바 경로) 범위를 지정할 수 없는
+    상황이면 종전대로 전체를 다시 그린다.
+    """
+    try:
+        st.rerun(scope="fragment")
+    except st.errors.StreamlitAPIException:
+        st.rerun()
+
+
 def render_html_table(
     renamed: pd.DataFrame, color_columns: list[str], saved_cells: set,
 ) -> None:
@@ -1651,27 +1665,56 @@ def lock_gate(
         st.error("다른 사람이 이 블록을 이어받았습니다. 작성 중이던 내용을 복사해 두세요.")
         if st.button("확인했습니다", key=f"ack_{block_id}"):
             clear_editor_state(block_id)
-            st.rerun()
+            rerun_local()
         return True
 
     if state.state == "other":
-        header(("other", f"다른 사람이 편집 중 · {int(state.held_minutes)}분째"), with_menu=True)
-        if state.held_minutes >= locks.STEAL_AFTER_MINUTES:
-            if st.session_state.get(f"steal_{block_id}"):
-                st.warning("다른 사람이 작성 중일 수 있습니다. 그래도 잠금을 해제할까요?")
-                yes, no = st.columns([1, 4])
-                if yes.button("해제", key=f"steal_yes_{block_id}"):
-                    locks.force_release(kind, month)
-                    st.session_state[f"steal_{block_id}"] = False
-                    st.rerun()
-                if no.button("취소", key=f"steal_no_{block_id}"):
-                    st.session_state[f"steal_{block_id}"] = False
-                    st.rerun()
-            elif st.button("잠금 해제", key=f"steal_btn_{block_id}"):
-                st.session_state[f"steal_{block_id}"] = True
-                st.rerun()
-        else:
-            st.caption("편집이 끝나면 자동으로 열립니다. 15분간 저장이 없으면 잠금이 스스로 풀립니다.")
+        # 잠긴 동안에는 조작 버튼(편집·이동·삭제)을 감춘다(2026-08-29, 3안).
+        # 예전에는 버튼을 그대로 두고 그 아래 전체 폭 경고를 띄워, 알럿이 폭을 다 먹고
+        # 버튼이 두 줄로 접혀 어느 블록 것인지 알기 어려웠다. 지금은 "무엇이 막혔는지"와
+        # "어떻게 푸는지"만 제목 줄에 남긴다.
+        def locked_menu() -> None:
+            with st.container(
+                key=f"blocklock_{block_id}", horizontal=True,
+                horizontal_alignment="right", vertical_alignment="center", gap="small",
+            ):
+                if state.held_minutes < locks.STEAL_AFTER_MINUTES:
+                    st.markdown(
+                        '<span class="lock-hint">잠시 뒤 잠금을 해제할 수 있습니다</span>',
+                        unsafe_allow_html=True,
+                    )
+                    return
+                if st.session_state.get(f"steal_{block_id}"):
+                    st.markdown(
+                        '<span class="lock-hint">작성 중일 수 있습니다. 해제할까요?</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        "해제", key=f"steal_yes_{block_id}",
+                        on_click=lambda: (
+                            locks.force_release(kind, month),
+                            st.session_state.__setitem__(f"steal_{block_id}", False),
+                        ),
+                    )
+                    # 삭제 확인과 같은 이유로 콜백을 쓴다 — 상태 검사가 버튼보다 위에 있어,
+                    # 클릭 결과로 상태를 켜면 두 번 눌러야 화면이 바뀐다(2026-08-29).
+                    st.button(
+                        "취소", key=f"steal_no_{block_id}",
+                        on_click=lambda: st.session_state.__setitem__(f"steal_{block_id}", False),
+                    )
+                else:
+                    st.button(
+                        "잠금 해제", key=f"steal_btn_{block_id}",
+                        on_click=lambda: st.session_state.__setitem__(f"steal_{block_id}", True),
+                    )
+
+        saved_menu = menu
+        menu = locked_menu
+        header(
+            ("other", f"다른 창에서 편집 중 · {int(state.held_minutes)}분째"),
+            with_menu=True,
+        )
+        menu = saved_menu
         return False
 
     header(with_menu=True)
@@ -1686,23 +1729,38 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
     """
     confirm_key = f"confirm_del_{block_id}"
     if st.session_state.get(confirm_key):
+        # 확인 줄. 묻는 말은 **누를 버튼 바로 왼쪽**에 붙인다(2026-08-29 확정) —
+        # 예전에는 문구가 왼쪽 멀리 떨어져 있어 어느 버튼에 대한 말인지 안 읽혔다.
+        # 문구도 "코멘트·조건이 사라집니다"에서 "이 블록을 삭제할까요?"로 바꿨다.
+        # 블록을 지우면 그 안의 내용이 사라지는 건 당연해서, 설명보다 무엇을 하려는지
+        # 묻는 쪽이 직관적이다.
+        #
         # 제목 옆 좁은 폭이라 컬럼으로 나누면 "삭 제"처럼 글자가 세로로 접힌다 —
         # horizontal 컨테이너로 내용 폭만 쓰게 하고 오른쪽에 붙인다.
+        # 컨테이너 키를 평상시 버튼 줄과 **같게** 둔다. 키가 다르면 Streamlit이 새 요소로
+        # 취급해, 리런이 끝나기 전까지 옛 줄과 새 줄이 함께 보인다("삭제"가 둘로 보이던
+        # 원인, 2026-08-29). 같은 키면 그 자리를 교체한다.
         with st.container(
-            key=f"blockdelconfirm_{block_id}", horizontal=True,
+            key=f"blockmenu_{block_id}", horizontal=True,
             horizontal_alignment="right", vertical_alignment="center", gap="small",
         ):
-            st.caption("삭제하면 코멘트·조건이 모두 사라집니다.")
+            st.markdown(
+                '<span class="del-ask">이 블록을 삭제할까요?</span>',
+                unsafe_allow_html=True,
+            )
+            # 되돌릴 수 없는 쪽만 빨강으로 채워 취소와 확실히 구분한다.
             if st.button("삭제", key=f"del_yes_{block_id}"):
                 if commit_blocks(
                     month, lambda d: report_blocks.remove_block(d, slot, block_id)
                 ):
                     locks.force_release(f"block:{block_id}", month)
                     st.session_state.pop(confirm_key, None)
-                    st.rerun()
-            if st.button("취소", key=f"del_no_{block_id}"):
-                st.session_state[confirm_key] = False
-                st.rerun()
+                    rerun_local()
+            # 취소도 같은 이유로 콜백을 쓴다(한 번 클릭에 바로 원래 줄로 돌아온다).
+            st.button(
+                "취소", key=f"del_no_{block_id}",
+                on_click=lambda: st.session_state.__setitem__(confirm_key, False),
+            )
         return
 
     # 조건 배지(정보)와 성격이 갈리게: 편집은 텍스트 링크처럼, 이동·삭제는 정사각 아이콘
@@ -1714,22 +1772,35 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
     ):
         if st.button("편집하기", key=f"edit_{block_id}"):
             if locks.acquire(f"block:{block_id}", month, owner):
-                st.rerun()
+                rerun_local()
             else:
-                st.error("다른 사람이 방금 편집을 시작했습니다.")
+                # 전체 폭 알럿은 버튼 줄을 아래로 밀어 레이아웃을 무너뜨린다 — 작게 알린다.
+                st.markdown(
+                    '<span class="lock-hint">방금 다른 창에서 편집을 시작했습니다</span>',
+                    unsafe_allow_html=True,
+                )
         if st.button("▲", key=f"up_{block_id}", help="위로"):
             if commit_blocks(
                 month, lambda d: report_blocks.move_block(d, slot, block_id, -1)
             ):
-                st.rerun()
+                rerun_local()
         if st.button("▼", key=f"down_{block_id}", help="아래로"):
             if commit_blocks(
                 month, lambda d: report_blocks.move_block(d, slot, block_id, 1)
             ):
-                st.rerun()
-        if st.button("삭제", key=f"del_{block_id}"):
-            st.session_state[confirm_key] = True
-            st.rerun()
+                rerun_local()
+        # on_click 콜백으로 상태를 켠다(2026-08-29).
+        #
+        # 이 함수는 맨 위에서 confirm 상태를 검사하는데, 버튼은 그 아래에서 그려진다.
+        # 클릭 결과로 상태를 켜면 그 검사는 이미 지나간 뒤라 같은 화면에 반영되지 않아
+        # **두 번 눌러야** 확인 줄이 떴다. 그렇다고 st.rerun을 부르면 리런이 두 번 돌아
+        # 옛 버튼 줄과 겹쳐 보인다("삭제"가 둘로 보이던 문제).
+        # 콜백은 리런 **전에** 실행되므로, 이어지는 한 번의 리런에서 검사 시점에 이미
+        # 상태가 켜져 있다 — 한 번 클릭 + 리런 한 번으로 끝난다.
+        st.button(
+            "삭제", key=f"del_{block_id}",
+            on_click=lambda: st.session_state.__setitem__(confirm_key, True),
+        )
 
 
 def insert_block_row(slot: str, position: int, block_type: str, default_title: str) -> None:
@@ -1740,7 +1811,7 @@ def insert_block_row(slot: str, position: int, block_type: str, default_title: s
                      help="이 자리에 블록을 추가합니다", width="stretch"):
             if commit_blocks(month, lambda d: report_blocks.add_block(
                     d, slot, block_type, default_title, position=position)):
-                st.rerun()
+                rerun_local()
 
 
 def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple[dict, bool]:
@@ -1826,10 +1897,10 @@ def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple
             for index in range(len(rows)):
                 st.session_state.pop(f"cond_field_{block_id}_{index}", None)
             st.session_state[rows_key] = active_rows
-            st.rerun()
+            rerun_local()
         if add_clicked:
             st.session_state[rows_key] = active_rows + [unused[0]]
-            st.rerun()
+            rerun_local()
 
         st.session_state[rows_key] = active_rows
 
@@ -1976,7 +2047,7 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
             ):
                 locks.release(f"block:{block_id}", month, owner)
                 clear_editor_state(block_id)
-                st.rerun()
+                rerun_local()
 
     # 편집 중에는 저장된 값이 아니라 화면의 체크박스 값을 따른다 — 안 그러면 체크를 껐는데도
     # 저장하기 전까지 표가 그대로 남아 반응이 없는 것처럼 보인다.
@@ -2024,12 +2095,28 @@ if not analysis_blocks:
 if blocks_unavailable:
     edit_mode = False
 
-if edit_mode:
-    insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 블록")
-for index, block in enumerate(list(analysis_blocks)):
-    render_query_block(block, month, edit_mode)
+# 블록 목록을 fragment로 감싼다(2026-08-29). 블록을 추가·삭제하면 Streamlit이 스크립트
+# 전체를 다시 돌려 표 7개와 하이라이트 카드까지 통째로 다시 그렸다 — 저장 자체를 2.3초에서
+# 1.5초로 줄여도 체감이 안 되던 이유다(실제 피드백). fragment 안의 버튼은 그 함수만 다시
+# 실행한다. 월·필터처럼 데이터가 바뀌는 조작은 fragment 밖이라 종전대로 전체가 돈다.
+@st.fragment
+def _analysis_blocks_section() -> None:
+    # fragment가 다시 돌 때는 **여기서 상태를 새로 읽어야 한다.**
+    # 바깥에서 한 번 읽어둔 목록을 그대로 쓰면 각 블록의 rev가 화면 기준으로 낡아,
+    # 혼자 쓰는데도 저장이 "다른 사람이 방금 수정했습니다"로 거부된다(2026-08-29 실제
+    # 발생). rev 대조는 유실을 막는 장치라 끄면 안 되고, 대신 기준을 최신으로 맞춘다.
+    blocks = report_blocks.load_state(month).data[report_blocks.SLOT_ANALYSIS]
     if edit_mode:
-        insert_block_row(report_blocks.SLOT_ANALYSIS, index + 1, "creative_query", "새 분석 블록")
+        insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 블록")
+    for index, block in enumerate(list(blocks)):
+        render_query_block(block, month, edit_mode)
+        if edit_mode:
+            insert_block_row(
+                report_blocks.SLOT_ANALYSIS, index + 1, "creative_query", "새 분석 블록"
+            )
+
+
+_analysis_blocks_section()
 
 # --------------------------------------------------------------------------- 6. 작품별
 
@@ -2182,7 +2269,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                         st.session_state.pop(f"attach_nonce_{block_id}", None)
                         locks.release(f"block:{block_id}", month, owner)
                         clear_editor_state(block_id)
-                        st.rerun()
+                        rerun_local()
 
             attachments = list(block.get("images", [])) + list(block.get("tables", []))
             if attachments:
@@ -2220,7 +2307,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                                 expect={block_id: block.get("_rev", 0)},
                             ):
                                 delete_image(stored)
-                                st.rerun()
+                                rerun_local()
 
                     for index in range(len(block.get("tables", []))):
                         label, action = st.columns([3.9, 1.6], vertical_alignment="center")
@@ -2238,7 +2325,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                                 ),
                                 expect={block_id: block.get("_rev", 0)},
                             ):
-                                st.rerun()
+                                rerun_local()
     else:
         if block.get("comment"):
             # 에디터가 HTML을 돌려준다. 예전에 저장한 마크다운도 같은 호출로 문제없이 렌더된다.
@@ -2277,12 +2364,21 @@ section("7", "NEXT STEP")
 if not next_step_blocks:
     st.caption("아직 작성된 내용이 없습니다.")
 
-if edit_mode:
-    insert_block_row(report_blocks.SLOT_NEXT_STEP, 0, "note", "다음 달 액션")
-for index, block in enumerate(list(next_step_blocks)):
-    render_note_block(block, month, edit_mode)
+@st.fragment
+def _next_step_blocks_section() -> None:
+    # 5번과 같은 이유로 여기서 새로 읽는다(낡은 rev로 저장이 거부되는 것을 막는다).
+    blocks = report_blocks.load_state(month).data[report_blocks.SLOT_NEXT_STEP]
     if edit_mode:
-        insert_block_row(report_blocks.SLOT_NEXT_STEP, index + 1, "note", "다음 달 액션")
+        insert_block_row(report_blocks.SLOT_NEXT_STEP, 0, "note", "다음 달 액션")
+    for index, block in enumerate(list(blocks)):
+        render_note_block(block, month, edit_mode)
+        if edit_mode:
+            insert_block_row(
+                report_blocks.SLOT_NEXT_STEP, index + 1, "note", "다음 달 액션"
+            )
+
+
+_next_step_blocks_section()
 
 footnote(
     "지표 정확도 — 소진액·노출·클릭·설치·열람·코인은 Media_RAW 원본 합계(정확). "

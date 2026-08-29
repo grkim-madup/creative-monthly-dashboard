@@ -244,6 +244,28 @@ header[data-testid="stHeader"] { background: transparent; }
 .kpi-d.is-up { color: #c0392b; }
 .kpi-d.is-down { color: #1f5fa8; }
 
+/* ------------------------------------------------- 블록 잠금 */
+/* 잠긴 블록은 조작 버튼을 감추고 "무엇이 막혔는지 + 어떻게 푸는지"만 남긴다.
+   안내는 전체 폭 알럿이 아니라 제목 줄에 붙는 작은 회색 문구다(2026-08-29). */
+.lock-hint {
+  font-size: 10.5px; color: var(--muted); white-space: nowrap;
+  display: inline-flex; align-items: center;
+}
+[class*="st-key-blocklock_"] [data-testid="stMarkdownContainer"] { margin: 0 !important; }
+[class*="st-key-blocklock_"] .stButton button {
+  min-height: 24px !important; padding: 1px 10px !important;
+  font-size: 10.5px !important; border-radius: 4px !important;
+  white-space: nowrap !important;
+}
+
+/* ------------------------------------------------- 블록 삭제 확인 */
+/* 묻는 말은 버튼 바로 옆에 붙이고, 되돌릴 수 없는 쪽(삭제)만 빨강으로 채운다. */
+.del-ask {
+  font-size: 11.5px; color: #a5342a; white-space: nowrap;
+  display: inline-flex; align-items: center; height: 100%;
+}
+[class*="st-key-blockmenu_"] [data-testid="stMarkdownContainer"] { margin: 0 !important; }
+
 /* ------------------------------------------------- 셀 강조 조작 칩 */
 /* 편집 모드에서 셀을 고르면 **표 제목 줄 오른쪽**에 뜨는 작은 회색 캡슐(2026-08-29 확정).
    - 왜 제목 줄인가: 표가 가로로 꽉 차 있어 표 위에 띄우면 반드시 데이터를 가린다.
@@ -929,15 +951,17 @@ section[data-testid="stSidebar"] h2 {
   background: var(--brand) !important; border-color: var(--brand) !important;
   color: #04331b !important;
 }
-/* 삭제 — 되돌릴 수 없는 동작이라 붉은 톤으로 칠해 다른 버튼과 구분한다 */
-[class*="st-key-blockmenu_"] [class*="st-key-del_"] button {
+/* 삭제(트리거) — 되돌릴 수 없는 동작이라 붉은 톤으로 칠해 다른 버튼과 구분한다.
+   확인 줄의 del_yes_/del_no_는 제외한다 — 같은 컨테이너를 쓰기 때문에 접두사만으로
+   잡으면 "취소"까지 빨갛게 칠해진다(2026-08-29 실제 발생). */
+[class*="st-key-blockmenu_"] [class*="st-key-del_"]:not([class*="st-key-del_yes_"]):not([class*="st-key-del_no_"]) button {
   background: #fdf1f1 !important; border-color: #eec4c1 !important;
   color: #b4453f !important; padding: 1px 10px !important;
 }
-[class*="st-key-blockmenu_"] [class*="st-key-del_"] button p { font-weight: 700 !important; }
-/* 호버는 편집하기와 같은 문법으로 — 옅은 배경에서 진한 배경 + 어두운 글자로 바뀐다
-   (편집: 연한 그린 -> 브랜드 그린 / 삭제: 연한 레드 -> 진한 레드) */
-[class*="st-key-blockmenu_"] [class*="st-key-del_"] button:hover {
+[class*="st-key-blockmenu_"] [class*="st-key-del_"]:not([class*="st-key-del_yes_"]):not([class*="st-key-del_no_"]) button p {
+  font-weight: 700 !important;
+}
+[class*="st-key-blockmenu_"] [class*="st-key-del_"]:not([class*="st-key-del_yes_"]):not([class*="st-key-del_no_"]) button:hover {
   background: #ef6f66 !important; border-color: #ef6f66 !important;
   color: #3d0f0c !important;
 }
@@ -946,22 +970,33 @@ section[data-testid="stSidebar"] h2 {
 [class*="st-key-blockmenu_"] [class*="st-key-down_"] button {
   width: 24px !important; padding: 0 !important;
 }
-/* 삭제 확인 줄 — 안내는 작게, 확정 버튼만 붉게 */
-[class*="st-key-blockdelconfirm_"] { flex: 0 0 auto !important; }
-[class*="st-key-blockdelconfirm_"] [data-testid="stCaptionContainer"] p {
-  font-size: 10.5px !important; color: var(--muted) !important; white-space: nowrap;
+/* 삭제 확인 줄 — 실행(삭제)만 빨강으로 채우고, 취소는 평범한 흰 버튼으로 둔다.
+   컨테이너 키는 평상시 버튼 줄과 같은 blockmenu_다(리런 중 두 줄이 겹쳐 보이던 문제
+   때문에 통일했다). 그래서 버튼 구분은 각 버튼의 키로 한다. */
+[class*="st-key-blockmenu_"] .stButton button {
+  min-height: 24px !important; border-radius: 4px !important;
 }
-[class*="st-key-blockdelconfirm_"] .stButton button {
-  min-height: 24px !important; padding: 1px 10px !important; border-radius: 4px !important;
+[class*="st-key-blockmenu_"] [class*="st-key-del_yes_"] button {
+  background: #a5342a !important; border-color: #a5342a !important;
+  color: #fff !important; padding: 1px 12px !important;
 }
-[class*="st-key-blockdelconfirm_"] .stButton button p {
-  font-size: 10.5px !important; white-space: nowrap !important;
+[class*="st-key-blockmenu_"] [class*="st-key-del_yes_"] button p {
+  color: #fff !important; font-weight: 700 !important; font-size: 10.5px !important;
+  white-space: nowrap !important;
 }
-[class*="st-key-blockdelconfirm_"] [class*="st-key-del_yes_"] button {
-  border-color: #d98b86 !important; color: #b4453f !important;
+[class*="st-key-blockmenu_"] [class*="st-key-del_yes_"] button:hover {
+  background: #8c2b2b !important; border-color: #8c2b2b !important;
 }
-[class*="st-key-blockdelconfirm_"] [class*="st-key-del_yes_"] button:hover {
-  background: #fdf1f1 !important;
+[class*="st-key-blockmenu_"] [class*="st-key-del_no_"] button {
+  background: #fff !important; border-color: var(--line) !important;
+  color: var(--ink-2) !important; padding: 1px 12px !important;
+}
+[class*="st-key-blockmenu_"] [class*="st-key-del_no_"] button p {
+  color: var(--ink-2) !important; font-weight: 400 !important; font-size: 10.5px !important;
+  white-space: nowrap !important;
+}
+[class*="st-key-blockmenu_"] [class*="st-key-del_no_"] button:hover {
+  background: #fafbfc !important; border-color: var(--muted) !important;
 }
 /* 라벨은 Streamlit이 button > p 로 감싸므로 폰트는 p에 직접 지정해야 먹는다 */
 .st-key-google_freeze_done .stButton button p {

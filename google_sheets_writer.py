@@ -128,6 +128,7 @@ def _ensure_tab(service, title: str) -> None:
         body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
     ).execute()
     _clear_tabs_cache()
+    _clear_ids_cache()
 
 
 def month_exists(month: int) -> bool:
@@ -515,11 +516,130 @@ def store_upsert(
     return True, None
 
 
+def store_upsert_many(
+    tab: str, header: list[str], rows: list[dict], expected_revs: dict | None = None,
+    known_read: "StoreRead | None" = None,
+) -> tuple[bool, str | None]:
+    """여러 행을 **한 번의 API 호출로** 갱신한다(없는 키는 새 행으로 덧붙인다).
+
+    블록 순서가 바뀌면 한 번에 여러 행이 달라진다. 행마다 store_upsert를 부르면 매번
+    탭을 다시 읽고 따로 쓰느라 왕복이 몇 배로 늘어난다(실측: 블록 추가 1회에 읽기 3번
+    + 쓰기 2번 = 2.3초). 여기서는 읽기 1번 + 쓰기 1번으로 끝낸다.
+
+    expected_revs를 주면 각 키의 rev를 먼저 대조하고, 하나라도 다르면 아무것도 쓰지
+    않는다 — 부분만 쓰여 절반은 새 값, 절반은 옛 값이 되는 상태를 만들지 않는다.
+    """
+    if not rows:
+        return True, None
+    key_column = header[0]
+    # 방금 같은 탭을 읽은 호출자는 그 결과를 넘겨 왕복 한 번을 아낀다. rev 대조는 이
+    # 값으로 이뤄지므로, 넘기는 쪽이 "그 읽기 이후 자기 외에 아무도 안 썼다"를 전제로
+    # 삼을 수 있을 때만 넘긴다(mutate는 읽고 바로 쓰므로 해당).
+    read = known_read if known_read is not None else store_read(tab)
+    if read.failed:
+        return False, read.reason
+
+    if expected_revs:
+        for key, seen_rev in expected_revs.items():
+            current = store_get(read, header, str(key))
+            current_rev = _as_int(current.get(REV_COLUMN)) if current else 0
+            if current is None and int(seen_rev) != 0:
+                return False, "deleted"
+            if current is not None and current_rev != int(seen_rev):
+                return False, "conflict"
+
+    try:
+        service = _service()
+        _ensure_tab(service, tab)
+        if not read.ok:
+            # 탭이 비어 있으면 헤더부터 놓고 전부 새로 붙인다.
+            body = [header]
+            for values in rows:
+                row = [str(values.get(col, "")) for col in header]
+                row[header.index(REV_COLUMN)] = "1"
+                body.append(row)
+            service.spreadsheets().values().update(
+                spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+                valueInputOption="RAW", body={"values": body},
+            ).execute()
+            return True, None
+
+        updates = []
+        appends = []
+        for values in rows:
+            key = str(values[key_column])
+            current = store_get(read, header, key)
+            current_rev = _as_int(current.get(REV_COLUMN)) if current else 0
+            row = [str(values.get(col, "")) for col in header]
+            row[header.index(REV_COLUMN)] = str(current_rev + 1)
+            numbers = store_row_numbers(read, header, key)
+            if numbers:
+                updates.append({"range": f"{tab}!A{numbers[0]}", "values": [row]})
+                if len(numbers) > 1:
+                    _delete_rows(tab, numbers[1:])  # 중복 줄은 스스로 정리한다
+            else:
+                appends.append(row)
+
+        if updates:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=_sheet_id(),
+                body={"valueInputOption": "RAW", "data": updates},
+            ).execute()
+        if appends:
+            service.spreadsheets().values().append(
+                spreadsheetId=_sheet_id(), range=f"{tab}!A1",
+                valueInputOption="RAW", insertDataOption="INSERT_ROWS",
+                body={"values": appends},
+            ).execute()
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+    return True, None
+
+
+def upsert_block_rows(
+    month: int, rows: list[dict], expected_revs: dict | None = None, known_read=None,
+):
+    """블록 여러 개를 한 번에 저장한다. rows는 [{block_id, slot, seq, payload}]."""
+    payloads = [
+        {
+            "block_id": row["block_id"],
+            "slot": row["slot"],
+            "seq": str(row["seq"]),
+            REV_COLUMN: "",
+            "json": json.dumps(row["payload"], ensure_ascii=False),
+        }
+        for row in rows
+    ]
+    return store_upsert_many(
+        block_rows_tab(month), BLOCK_HEADER, payloads,
+        expected_revs=expected_revs, known_read=known_read,
+    )
+
+
+# 탭 이름 → 시트 id. 행을 지울 때마다 메타를 새로 조회하면 그것만 500ms다(실측).
+# 탭 목록과 같은 수명으로 캐시하고, 탭을 만들 때 함께 비운다.
+_ids_cache: tuple[float, dict] | None = None
+
+
+def _clear_ids_cache() -> None:
+    global _ids_cache
+    with _tabs_lock:
+        _ids_cache = None
+
+
 def _sheet_ids(service) -> dict[str, int]:
+    global _ids_cache
+    with _tabs_lock:
+        cached = _ids_cache
+    if cached and (time.monotonic() - cached[0]) < _TABS_TTL:
+        return cached[1]
     meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute()
-    return {
+    ids = {
         s["properties"]["title"]: s["properties"]["sheetId"] for s in meta.get("sheets", [])
     }
+    with _tabs_lock:
+        _ids_cache = (time.monotonic(), ids)
+    return ids
 
 
 def _delete_rows(tab: str, numbers: list[int]) -> None:
@@ -558,12 +678,35 @@ def has_migration_mark(read: StoreRead, header: list[str]) -> bool:
     return store_get(read, header, MIGRATION_KEY) is not None
 
 
-def store_delete(tab: str, header: list[str], key: str) -> None:
-    """키에 해당하는 행을 (중복이 있으면 전부) 지운다. 없으면 아무것도 하지 않는다."""
-    read = store_read(tab)
+def store_delete(
+    tab: str, header: list[str], key: str, known_read: "StoreRead | None" = None,
+) -> None:
+    """키에 해당하는 행을 (중복이 있으면 전부) 지운다. 없으면 아무것도 하지 않는다.
+
+    방금 같은 탭을 읽은 호출자는 그 결과를 넘겨 왕복 한 번을 아낄 수 있다.
+    """
+    read = known_read if known_read is not None else store_read(tab)
     if not read.ok:
         return
     _delete_rows(tab, store_row_numbers(read, header, key))
+
+
+def delete_block_rows(month: int, block_ids: list[str], known_read=None) -> None:
+    """블록 여러 개를 한 번의 요청으로 지운다.
+
+    행마다 따로 지우면 그때마다 탭을 다시 읽는다. 한 번 읽어 행 번호를 모두 모은 뒤
+    한 요청으로 지운다 — 뒤 행부터 지워야 번호가 밀리지 않는다(_delete_rows가 처리).
+    """
+    if not block_ids:
+        return
+    tab = block_rows_tab(month)
+    read = known_read if known_read is not None else store_read(tab)
+    if not read.ok:
+        return
+    numbers: list[int] = []
+    for block_id in block_ids:
+        numbers.extend(store_row_numbers(read, BLOCK_HEADER, block_id))
+    _delete_rows(tab, numbers)
 
 
 # ----------------------------------------------------------------------------
@@ -579,13 +722,22 @@ def block_rows_tab(month: int) -> str:
     return f"blockrows_{int(month)}"
 
 
-def read_block_rows(month: int) -> tuple[str, list[dict], str | None]:
+def read_block_rows_with_raw(month: int):
+    """read_block_rows에 원본(StoreRead)을 얹어 돌려준다.
+
+    저장할 때 이 원본을 넘기면 같은 탭을 두 번 읽지 않는다(왕복 0.45초 절약).
+    """
+    read = store_read(block_rows_tab(month))
+    return read_block_rows(month, known_read=read) + (read,)
+
+
+def read_block_rows(month: int, known_read=None) -> tuple[str, list[dict], str | None]:
     """(상태, 블록 행 목록, 실패 이유). 상태는 "ok" | "empty" | "error".
 
     각 항목: {"block_id","slot","seq","rev","block"} — block은 파싱된 dict.
     JSON이 깨진 행은 버리지 않고 상태를 error로 올린다(빈 값으로 덮어쓰지 못하게).
     """
-    read = store_read(block_rows_tab(month))
+    read = known_read if known_read is not None else store_read(block_rows_tab(month))
     if read.failed:
         return "error", [], read.reason
     if not read.ok:

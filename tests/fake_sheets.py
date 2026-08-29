@@ -45,6 +45,20 @@ class _Values:
         self.book.updates.append((tab, row))
         return _Execute({})
 
+    def batchUpdate(self, spreadsheetId=None, body=None, **_):  # noqa: N802, N803
+        """여러 범위를 한 번에 갱신한다(실제 values.batchUpdate와 같은 형태).
+
+        블록 저장이 행마다 따로 쓰던 것을 한 번의 호출로 묶으면서 필요해졌다.
+        내부적으로는 update를 여러 번 부른 것과 결과가 같아야 한다.
+        """
+        for entry in (body or {}).get("data", []):
+            self.update(
+                spreadsheetId=spreadsheetId,
+                range=entry["range"],
+                body={"values": entry["values"]},
+            )
+        return _Execute({})
+
     def append(self, spreadsheetId=None, range=None, body=None, **_):  # noqa: A002, N803
         tab, _row = self.book.parse_range(range)
         rows = self.book.tabs.setdefault(tab, [])
@@ -125,8 +139,8 @@ def install(monkeypatch, writer, tabs: dict | None = None) -> FakeSheets:
     # 탭 목록 캐시는 프로세스 전역이라 테스트 사이에 샌다 — 붙일 때 비우고,
     # 테스트가 끝난 뒤에도 비워지도록 monkeypatch 해제 시점에 한 번 더 건다.
     writer._clear_tabs_cache()
-    monkeypatch.setattr(
-        writer, "_tabs_cache", None, raising=False,
-    )
+    writer._clear_ids_cache()
+    monkeypatch.setattr(writer, "_tabs_cache", None, raising=False)
+    monkeypatch.setattr(writer, "_ids_cache", None, raising=False)
     writer.clear_image_cache()
     return book
