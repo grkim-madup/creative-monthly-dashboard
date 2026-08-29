@@ -370,3 +370,26 @@ def test_unreadable_lock_store_never_reports_free(book, monkeypatch):
     assert locks.acquire("block:x", MONTH, "나") is False
     assert locks.status("block:x", MONTH, "나").state == "other"
     assert locks.touch("block:x", MONTH, "나") is False
+
+
+def test_override_save_reports_failure(book, monkeypatch):
+    """수동 분류 저장 실패를 삼키면 화면에는 분류된 것처럼 보이고 시트에는 없다.
+
+    실사용 흉내에서 17건 중 1건이 그렇게 조용히 사라졌다(2026-08-30).
+    """
+    import overrides as manual
+
+    monkeypatch.setattr(
+        writer, "write_override",
+        lambda *a, **k: (False, "HttpError 429 Quota exceeded"),
+    )
+    ok, reason = manual.save(MONTH, "소재-A", {"creative_type": "Highlight"})
+    assert ok is False
+    assert writer.is_quota_error(reason)
+
+
+def test_override_save_returns_success(book):
+    import overrides as manual
+
+    assert manual.save(MONTH, "소재-A", {"creative_type": "Highlight"}) == (True, None)
+    assert manual.load(MONTH)["소재-A"]["creative_type"] == "Highlight"

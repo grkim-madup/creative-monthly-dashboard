@@ -96,15 +96,18 @@ def load(month: int) -> dict[str, dict[str, str]]:
     return local
 
 
-def save(month: int, ad: str, fields: dict[str, str]) -> None:
-    """이 소재의 수동 분류를 저장한다. 값이 있는 필드만 남긴다."""
+def save(month: int, ad: str, fields: dict[str, str]) -> tuple[bool, str | None]:
+    """이 소재의 수동 분류를 저장한다. 값이 있는 필드만 남긴다.
+
+    **(성공 여부, 실패 사유)를 돌려준다.** 예전에는 저장 결과를 버려서, 접속이 몰려
+    429가 나도 화면은 저장된 것처럼 보였다(실사용 흉내에서 17건 중 1건이 조용히
+    사라졌다, 2026-08-30). 호출자는 반드시 결과를 확인해 사용자에게 알려야 한다.
+    """
     cleaned = {k: v.strip() for k, v in fields.items() if k in FIELDS and v and v.strip()}
     if google_sheets_writer.configured():
         if cleaned:
-            google_sheets_writer.write_override(month, ad, cleaned)
-        else:
-            google_sheets_writer.delete_override(month, ad)
-        return
+            return google_sheets_writer.write_override(month, ad, cleaned)
+        return google_sheets_writer.delete_override(month, ad)
 
     data = _read_local(month)
     if cleaned:
@@ -112,15 +115,16 @@ def save(month: int, ad: str, fields: dict[str, str]) -> None:
     else:
         data.pop(ad, None)
     _write_local(month, data)
+    return True, None
 
 
-def remove(month: int, ad: str) -> None:
+def remove(month: int, ad: str) -> tuple[bool, str | None]:
     if google_sheets_writer.configured():
-        google_sheets_writer.delete_override(month, ad)
-        return
+        return google_sheets_writer.delete_override(month, ad)
     data = _read_local(month)
     if data.pop(ad, None) is not None:
         _write_local(month, data)
+    return True, None
 
 
 def apply(df, month: int):

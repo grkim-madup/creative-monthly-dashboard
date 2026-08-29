@@ -279,13 +279,17 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
 
 def release(kind: str, month: int, owner: str) -> None:
     key = _key(kind, month)
-    try:
-        entry = _read(use_cache=False).get(key)
-    except LocksUnavailable:
-        # 못 읽었으면 그냥 둔다 — 최대 잠금 TTL이 지나면 자동으로 풀린다.
+    # 해제에 실패하면 남이 그 블록을 못 만진다(최대 TTL). 한 번 실패했다고 포기하지 않고
+    # 몇 번 더 해본다 — 접속이 몰린 순간은 대개 몇 초면 지나간다.
+    for attempt in range(3):
+        try:
+            entry = _read(use_cache=False).get(key)
+        except LocksUnavailable:
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        if _holder(entry) == owner:
+            _delete_entry(key)
         return
-    if _holder(entry) == owner:
-        _delete_entry(key)
 
 
 def force_release(kind: str, month: int) -> None:

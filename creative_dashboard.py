@@ -1551,14 +1551,21 @@ def render_manual_override_panel(
             usp = pick(c5, "usp", "USP", "usp")
 
             if st.button("저장", type="primary", key=f"{key_prefix}_save"):
-                manual_overrides.save(month, pasted, {
+                ok, reason = manual_overrides.save(month, pasted, {
                     "creative_type": creative_type or "",
                     "format": fmt or "",
                     "producer_group": producer or "",
                     "extra_info": extra_info or "",
                     "usp": usp or "",
                 })
-                st.rerun()
+                if ok:
+                    st.rerun()
+                else:
+                    # 저장 실패를 삼키면 화면에는 분류된 것처럼 보이고 시트에는 없다.
+                    st.error(
+                        "분류를 저장하지 못했습니다 — "
+                        + google_sheets_writer.friendly_error(reason)
+                    )
 
 
 # 드롭다운 후보는 총괄 필터가 걸리기 전의 이 달 전체(scope)에서 뽑는다 — 1번에서 Creative
