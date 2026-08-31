@@ -2366,9 +2366,9 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
             if st.button("완료", type="primary", key=f"next_step_save_{block_id}",
                          width="stretch", disabled=taken_over):
                 # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
-            if locks.status(
-                f"block:{block_id}", month, owner, fresh=True
-            ).state != "mine":
+                if locks.status(
+                    f"block:{block_id}", month, owner, fresh=True
+                ).state != "mine":
                     st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
                 else:
                     images = list(block.get("images", []))
