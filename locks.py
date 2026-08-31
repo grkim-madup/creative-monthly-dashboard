@@ -29,7 +29,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import fs_store
 import google_sheets_writer
+import store
 
 LOCKS_PATH = Path(__file__).resolve().parent / "notes" / "locks.json"
 
@@ -125,7 +127,14 @@ def _read(use_cache: bool = True) -> dict:
     if use_cache and _cache and (time.monotonic() - _cache[0]) < _CACHE_TTL:
         return _cache[1]
 
-    if google_sheets_writer.configured():
+    if store.is_firestore():
+        status, data, _reason = fs_store.read_locks()
+        if status == "error":
+            # 못 읽었다는 사실을 "잠금 없음"으로 뭉개면 두 사람이 같은 블록을 잡는다.
+            if _cache:
+                return _cache[1]
+            raise LocksUnavailable(_reason or "잠금 상태를 읽지 못했습니다")
+    elif google_sheets_writer.configured():
         status, data, _reason = google_sheets_writer.read_locks()
         if status == "error":
             # 잠금 저장소를 못 읽었다. 여기서 "잠금 없음"으로 답하면 두 사람이 같은 블록을
@@ -218,6 +227,16 @@ def _delete_entry(key: str, expected_rev: int | None = None) -> tuple[bool, str 
 def acquire(kind: str, month: int, owner: str, now: datetime | None = None) -> bool:
     now = now or datetime.now()
     key = _key(kind, month)
+
+    if store.is_firestore():
+        # 트랜잭션 하나로 "읽고 판단하고 쓰기"가 끝난다 → claim-then-verify도, 0.5초
+        # 정착 대기도 필요 없다. 겹침이 원리적으로 불가능하다.
+        clear_cache()
+        ok, reason = fs_store.acquire_lock(key, owner, now, LOCK_TTL_MINUTES)
+        if reason:
+            return False          # 저장소를 못 만졌다 — 모르면 안 잡는다
+        return ok
+
     # 획득은 반드시 최신 상태로 판단한다 — 캐시된 "free"를 믿으면 이미 남이 잡은 블록을
     # 잡았다고 착각한다. 아예 못 읽었으면 잡지 않는다(모르면 안 잡는 쪽이 안전하다).
     try:
@@ -270,6 +289,11 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
     now = now or datetime.now()
     key = _key(kind, month)
 
+    if store.is_firestore():
+        clear_cache()
+        ok, _reason = fs_store.touch_lock(key, owner, now, LOCK_TTL_MINUTES)
+        return ok
+
     try:
         entry = _read().get(key)
     except LocksUnavailable:
@@ -298,6 +322,17 @@ def touch(kind: str, month: int, owner: str, now: datetime | None = None) -> boo
 
 def release(kind: str, month: int, owner: str) -> None:
     key = _key(kind, month)
+
+    if store.is_firestore():
+        # 확인과 쓰기가 같은 트랜잭션 안에 있으므로, 사전 확인이 낡아 남의 잠금을 지우는
+        # 일이 생기지 않는다. 실패하면 몇 번 더 시도한다(놓치면 남이 TTL 동안 막힌다).
+        for attempt in range(3):
+            clear_cache()
+            ok, _reason = fs_store.release_lock(key, owner)
+            if ok:
+                return
+            time.sleep(0.4 * (attempt + 1))
+        return
     # 해제에 실패하면 남이 그 블록을 못 만진다(최대 TTL). 한 번 실패했다고 포기하지 않고
     # 몇 번 더 해본다 — 접속이 몰린 순간은 대개 몇 초면 지나간다.
     # 첫 시도는 캐시로 본다. 진짜 방어선은 아래 rev 대조다 — 캐시가 낡아 남이 이미
@@ -321,4 +356,8 @@ def release(kind: str, month: int, owner: str) -> None:
 
 
 def force_release(kind: str, month: int) -> None:
+    if store.is_firestore():
+        clear_cache()
+        fs_store.force_release_lock(_key(kind, month))
+        return
     _delete_entry(_key(kind, month))

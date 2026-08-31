@@ -34,8 +34,10 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+import fs_store
 import google_sheets_writer
 import next_step
+import store
 
 BLOCKS_DIR = Path(__file__).resolve().parent / "notes"
 
@@ -65,6 +67,14 @@ def save_blocks(month: int, data: dict) -> Path | None:
     편집 저장 경로에서는 이 함수를 쓰지 않는다 — `mutate`가 바뀐 행만 갱신한다.
     """
     payload = {slot: [_strip_meta(b) for b in data.get(slot, [])] for slot in SLOTS}
+    if store.is_firestore():
+        rows = [
+            {"block_id": block["id"], "slot": slot, "seq": seq, "payload": block}
+            for slot in SLOTS
+            for seq, block in enumerate(payload[slot])
+        ]
+        fs_store.upsert_block_rows(month, rows)
+        return None
     if google_sheets_writer.configured():
         google_sheets_writer.ensure_block_rows_tab(month)
         for slot in SLOTS:
@@ -200,7 +210,7 @@ def load_state(month: int, use_cache: bool = False) -> BlocksState:
     use_cache=True는 **화면을 그리는 경로 전용**이다. 저장 경로는 기본값(False)으로
     항상 최신을 읽는다.
     """
-    if not google_sheets_writer.configured():
+    if not (store.is_firestore() or google_sheets_writer.configured()):
         return BlocksState(data=_load_blocks_from_disk(month))
 
     if use_cache:
@@ -208,7 +218,10 @@ def load_state(month: int, use_cache: bool = False) -> BlocksState:
         if cached and (monotonic() - cached[0]) < _STATE_TTL:
             return _state_from_rows(copy.deepcopy(cached[1]))
 
-    status, items, reason = google_sheets_writer.read_block_rows(month)
+    if store.is_firestore():
+        status, items, reason = fs_store.read_block_rows(month)
+    else:
+        status, items, reason = google_sheets_writer.read_block_rows(month)
     if status == "error":
         # 여기서 빈 값을 돌려주고 저장까지 하면 그 순간 한 달치가 날아간다. 화면에는
         # 빈 리포트가 아니라 에러가 떠야 하고, 저장은 막혀야 한다.
@@ -224,6 +237,9 @@ def load_state(month: int, use_cache: bool = False) -> BlocksState:
         if again == "ok":
             return _state_from_rows(items)
         return BlocksState(data=_normalize(migrated))
+    if store.is_firestore():
+        # Firestore에는 "탭"도 "이관 표식"도 없다. 컬렉션은 첫 문서를 쓸 때 생긴다.
+        return BlocksState(data=empty_blocks())
     # 옮길 게 없으면 헤더와 이관 표식만 남긴다 — 안 그러면 리런마다 이관 조회를 다시 탄다.
     google_sheets_writer.ensure_block_rows_tab(month)
     google_sheets_writer.mark_migrated(
@@ -237,6 +253,9 @@ def _migrate_into_rows(month: int) -> dict | None:
 
     옮길 게 없으면 None. 원본은 어느 쪽도 지우지 않는다.
     """
+    if store.is_firestore():
+        # 시트의 레거시 탭에서 옮기는 일은 백필 스크립트가 한다(앱이 하지 않는다).
+        return None
     # 어느 경로로 옮겼든(또는 옮길 게 없었든) 표식을 남겨 다시 옮기지 않게 한다.
     legacy_cell = google_sheets_writer.read_blocks(month)
     if legacy_cell is not None and (
@@ -323,7 +342,7 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
     }
     fn(state.data)
 
-    if not google_sheets_writer.configured():
+    if not (store.is_firestore() or google_sheets_writer.configured()):
         save_blocks(month, state.data)
         return True, None
 
@@ -348,15 +367,23 @@ def mutate(month: int, fn, expect: dict | None = None) -> tuple[bool, str | None
             expected[block_id] = state.revs.get(block_id, 0)
 
     if changed:
-        ok, reason = google_sheets_writer.upsert_block_rows(
-            month, changed, expected_revs=expected
-        )
+        if store.is_firestore():
+            ok, reason = fs_store.upsert_block_rows(
+                month, changed, expected_revs=expected
+            )
+        else:
+            ok, reason = google_sheets_writer.upsert_block_rows(
+                month, changed, expected_revs=expected
+            )
         if not ok:
             return False, reason
     removed = sorted(set(baseline) - seen)
     if removed:
         # 삭제 실패를 삼키면 화면은 "지웠다"고 하는데 다음 새로고침에 블록이 되살아난다.
-        ok, reason = google_sheets_writer.delete_block_rows(month, removed)
+        if store.is_firestore():
+            ok, reason = fs_store.delete_block_rows(month, removed)
+        else:
+            ok, reason = google_sheets_writer.delete_block_rows(month, removed)
         if not ok:
             clear_state_cache(month)
             return False, reason

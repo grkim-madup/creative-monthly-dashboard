@@ -22,7 +22,9 @@ import json
 import os
 from pathlib import Path
 
+import fs_store
 import google_sheets_writer
+import store
 
 OVERRIDES_DIR = Path(__file__).resolve().parent / "notes"
 
@@ -75,9 +77,15 @@ def _write_local(month: int, data: dict) -> None:
 
 def load(month: int) -> dict[str, dict[str, str]]:
     """소재명 → {컬럼: 값} 매핑을 돌려준다. 없거나 읽기가 실패하면 빈 dict."""
+    # Firestore 분기가 **먼저** 와야 한다. 예전에는 `configured()`(=시트 자격증명)를
+    # 먼저 봐서, 시트가 설정 안 된 환경에서 Firestore로 저장하면 **저장은 되는데
+    # 화면에는 로컬 파일이 보였다** — 조용히 틀리는 유형이다(계약 테스트가 잡았다).
+    if store.is_firestore():
+        status, data, _reason = fs_store.read_overrides(month)
+        return _normalize(data) if status != "error" else {}
+
     if not google_sheets_writer.configured():
         return _read_local(month)
-
     status, data, _reason = google_sheets_writer.read_overrides(month)
     if status == "ok":
         return _normalize(data)
@@ -104,6 +112,10 @@ def save(month: int, ad: str, fields: dict[str, str]) -> tuple[bool, str | None]
     사라졌다, 2026-08-30). 호출자는 반드시 결과를 확인해 사용자에게 알려야 한다.
     """
     cleaned = {k: v.strip() for k, v in fields.items() if k in FIELDS and v and v.strip()}
+    if store.is_firestore():
+        if cleaned:
+            return fs_store.write_override(month, ad, cleaned)
+        return fs_store.delete_override(month, ad)
     if google_sheets_writer.configured():
         if cleaned:
             return google_sheets_writer.write_override(month, ad, cleaned)
@@ -119,6 +131,8 @@ def save(month: int, ad: str, fields: dict[str, str]) -> tuple[bool, str | None]
 
 
 def remove(month: int, ad: str) -> tuple[bool, str | None]:
+    if store.is_firestore():
+        return fs_store.delete_override(month, ad)
     if google_sheets_writer.configured():
         return google_sheets_writer.delete_override(month, ad)
     data = _read_local(month)

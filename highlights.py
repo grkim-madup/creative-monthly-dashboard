@@ -33,7 +33,9 @@ import os
 import time
 from pathlib import Path
 
+import fs_store
 import google_sheets_writer
+import store
 
 HIGHLIGHTS_DIR = Path(__file__).resolve().parent / "notes"
 
@@ -139,12 +141,16 @@ def load_all(month: int) -> dict:
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL:
         return cached[1]
 
-    if not google_sheets_writer.configured():
+    if store.is_firestore():
+        status, data, _reason = fs_store.read_hl_cells(month)
+        if status == "error":
+            # 읽기 실패를 "강조 없음"으로 오인해 저장하면 전부 사라진다 — 쓰지 않는다.
+            return {}
+    elif not google_sheets_writer.configured():
         data = _read_local_all(month)
     else:
         status, data, _reason = google_sheets_writer.read_hl_cells(month)
         if status == "error":
-            # 읽기 실패를 "강조 없음"으로 오인해 저장하면 전부 사라진다 — 쓰지 않는다.
             return {}
         if status == "empty":
             data = _migrate_from_table_rows(month)
@@ -170,7 +176,7 @@ def apply(month: int, table_key: str, add=(), remove=()) -> tuple[bool, str | No
     if not to_add and not to_remove:
         return True, None
 
-    if not google_sheets_writer.configured():
+    if not (store.is_firestore() or google_sheets_writer.configured()):
         clear_cache(month)
         data = _read_local_all(month)
         merged = (
@@ -183,11 +189,14 @@ def apply(month: int, table_key: str, add=(), remove=()) -> tuple[bool, str | No
         _write_local_all(month, data)
         return True, None
 
-    ok, reason = google_sheets_writer.add_hl_cells(month, table_key, to_add)
+    add = fs_store.add_hl_cells if store.is_firestore() else google_sheets_writer.add_hl_cells
+    drop = (fs_store.remove_hl_cells if store.is_firestore()
+            else google_sheets_writer.remove_hl_cells)
+    ok, reason = add(month, table_key, to_add)
     if not ok:
         clear_cache(month)
         return False, reason
-    ok, reason = google_sheets_writer.remove_hl_cells(month, table_key, to_remove)
+    ok, reason = drop(month, table_key, to_remove)
     if not ok:
         clear_cache(month)
         return False, reason

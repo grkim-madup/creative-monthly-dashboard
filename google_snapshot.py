@@ -29,7 +29,9 @@ from pathlib import Path
 
 import pandas as pd
 
+import fs_store
 import google_sheets_writer
+import store
 from google_ads_report import load_google_ads_folder
 
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "notes" / "google_snapshots"
@@ -42,6 +44,8 @@ def path(month: int) -> Path:
 
 
 def exists(month: int) -> bool:
+    if store.is_firestore():
+        return fs_store.snapshot_exists(month)
     if google_sheets_writer.configured():
         return google_sheets_writer.month_exists(month)
     p = path(month)
@@ -50,6 +54,8 @@ def exists(month: int) -> bool:
 
 def frozen_at(month: int) -> str | None:
     """이 달이 고정된 시각(문자열). 아직 안 고정됐으면 None."""
+    if store.is_firestore():
+        return fs_store.snapshot_frozen_at(month)
     if google_sheets_writer.configured():
         return google_sheets_writer.frozen_at(month)
     stamp = path(month) / _STAMP_FILE
@@ -58,6 +64,8 @@ def frozen_at(month: int) -> str | None:
 
 def source_label(month: int) -> str:
     """사이드바 도움말에 보여줄 "어디서 읽었는지" 문구."""
+    if store.is_firestore():
+        return f"Firestore (reports/{int(month)}/snapmeta)"
     if google_sheets_writer.configured():
         return f"구글시트 스냅샷 탭 (snapshot_{int(month)})"
     return str(path(month))
@@ -68,14 +76,17 @@ def save(month: int, live_folder: Path | str) -> None:
 
     이미 스냅샷이 있으면 덮어쓴다 — 명시적 재고정 버튼도 같은 함수를 쓴다.
     """
-    if google_sheets_writer.configured():
+    if store.is_firestore() or google_sheets_writer.configured():
         df = load_google_ads_folder(live_folder, cost_markup=1.0)
         df = df[df["month"] == month] if not df.empty else df
         if df.empty:
             raise RuntimeError(
                 f"라이브 폴더에 {month}월 데이터가 없어 고정할 수 없습니다: {live_folder}"
             )
-        google_sheets_writer.write_month(month, df)
+        if store.is_firestore():
+            fs_store.write_snapshot(month, df)
+        else:
+            google_sheets_writer.write_month(month, df)
         return
 
     dest = path(month)
@@ -95,10 +106,13 @@ def load(month: int, cost_markup: float) -> pd.DataFrame:
     마크업을 곱하므로, 라이브 경로와 마찬가지로 마크업 슬라이더를 바꾸면 값이 따라
     바뀐다 — 고정되는 건 원본 수치이지 그 시점의 마크업 계산 결과가 아니다.
     """
-    if google_sheets_writer.configured():
-        df = google_sheets_writer.read_month(month)
+    if store.is_firestore() or google_sheets_writer.configured():
+        if store.is_firestore():
+            df = fs_store.read_snapshot(month)
+        else:
+            df = google_sheets_writer.read_month(month)
         if df is None:
-            raise RuntimeError(f"{month}월 스냅샷 탭을 찾을 수 없습니다.")
+            raise RuntimeError(f"{month}월 스냅샷을 찾을 수 없습니다.")
         df = df.copy()
         df["cost"] = df["cost_raw"] * cost_markup
         return df
