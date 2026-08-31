@@ -48,7 +48,12 @@ def test_파일이_파싱된다(path: Path):
 
 
 def test_진입점이_실제로_검사_대상에_들어있다():
-    """이 테스트가 진입점을 빠뜨리면 존재 이유가 없어진다 — 목록에 있는지 못 박는다."""
+    """이 테스트가 진입점을 빠뜨리면 존재 이유가 없어진다 — 목록에 있는지 못 박는다.
+
+    진입점 이름은 배포처마다 다르다: 로컬·Streamlit Cloud는 `creative_dashboard.py`,
+    madup.app 포털은 규칙상 `app.py`로 이름을 바꿔 복사한다. 둘 중 하나는 반드시 있어야
+    한다(이 테스트는 배포 폴더 안에서도 돌기 때문이다 — 실제로 여기서 한 번 오탐이 났다).
+    """
     names = {path.name for path in _python_files()}
-    assert "creative_dashboard.py" in names, "진입점이 검사 대상에서 빠졌다"
+    assert names & {"creative_dashboard.py", "app.py"}, "진입점이 검사 대상에서 빠졌다"
     assert "auth.py" in names and "fs_store.py" in names

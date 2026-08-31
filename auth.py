@@ -1,4 +1,13 @@
-"""공개 배포용 비밀번호 게이트.
+"""공개 배포용 접근 게이트 — Google 로그인 우선, 없으면 비밀번호.
+
+`[google_login]` Secrets가 있으면 **Google 로그인**(`google_login.py`)을 쓰고,
+없으면 아래 비밀번호 게이트로 넘어간다. 두 경로를 함께 두는 이유:
+  - madup.app·Streamlit Cloud 배포는 Google 로그인으로 도메인 허용 목록을 적용한다
+    (매드업 + 광고주 `webtoonscorp.com`). 비밀번호를 공유·회전할 필요가 없다.
+  - 로컬 개발과 Google 로그인을 아직 설정하지 않은 배포는 예전대로 동작한다.
+**둘 다 없으면 통과가 아니라 차단이다**(fail-closed) — 아래 참고.
+
+--- 이하 비밀번호 게이트 설명 (Google 로그인이 없을 때만 쓰인다) ---
 
 Streamlit Community Cloud 무료 요금제는 계정당 프라이빗 앱을 1개까지만 허용하는데,
 그 자리를 이미 다른 대시보드가 쓰고 있어 이 앱은 공개(public)로 배포해야 한다. URL을 아는
@@ -21,6 +30,7 @@ import hmac
 
 import streamlit as st
 
+import google_login
 from ui import logo_data_uri
 
 SESSION_KEY = "_authed"
@@ -55,15 +65,21 @@ def require_password() -> None:
     """
     if _auth_disabled():
         return
+
+    # Google 로그인이 설정돼 있으면 그쪽이 게이트다. 통과하면 그대로 반환한다.
+    if google_login.is_configured():
+        google_login.require_login()
+        return
+
     if st.session_state.get(SESSION_KEY):
         return
 
     password = _configured_password()
     if password is None:
         st.error(
-            "비밀번호가 설정되지 않아 리포트를 열 수 없습니다. "
-            "Secrets에 DASHBOARD_PASSWORD를 등록하거나, 혼자 쓰는 로컬이라면 "
-            "DASHBOARD_NO_AUTH = true 를 넣어 주세요."
+            "접근 제한이 설정되지 않아 리포트를 열 수 없습니다. Secrets에 "
+            "[google_login](권장) 또는 DASHBOARD_PASSWORD를 등록하거나, "
+            "혼자 쓰는 로컬이라면 DASHBOARD_NO_AUTH = true 를 넣어 주세요."
         )
         st.stop()
 
