@@ -887,9 +887,22 @@ with data_card:
 
     stamp = cache_timestamp(sheet_id)
     if stamp:
-        st.caption(
-            f"마지막 동기화: {dt.datetime.fromtimestamp(stamp):%Y-%m-%d %H:%M}"
-        )
+        # 배포 컨테이너(python:3.12-slim)에는 시간대 설정이 없어 서버 시각이 UTC다.
+        # 라벨 없이 그대로 찍으면 한국 사용자에게는 9시간 전으로 보이고, 날짜까지
+        # 하루 전으로 나온다 — 실제로 "다시 불러와도 날짜가 안 바뀐다"는 오해를 낳았다
+        # (2026-09-02). KST로 환산해 찍고, 시간대와 경과 시간을 함께 보여준다.
+        # 한국은 서머타임이 없어 고정 +9 오프셋이 정확하다(slim 이미지에 tzdata가
+        # 없을 수 있어 zoneinfo 대신 이 방식을 쓴다).
+        synced = dt.datetime.fromtimestamp(stamp, dt.timezone.utc)
+        minutes = (dt.datetime.now(dt.timezone.utc) - synced).total_seconds() / 60
+        if minutes < 60:
+            ago = f"{int(minutes)}분 전"
+        elif minutes < 60 * 48:
+            ago = f"{int(minutes // 60)}시간 전"
+        else:
+            ago = f"{int(minutes // 1440)}일 전"
+        local = synced.astimezone(dt.timezone(dt.timedelta(hours=9)))
+        st.caption(f"마지막 동기화: {local:%Y-%m-%d %H:%M} KST ({ago})")
 
 
 try:
@@ -1143,11 +1156,9 @@ def _kpi(label, column, value_text, fmt=None, sub="", primary=False):
 
 
 kpi_cards([
-    # "UA 기준"을 숫자 바로 옆에 붙인다. 이게 없으면 광고주가 Media_RAW 전체 합계와
-    # 대조했을 때 안 맞는다고 본다(2026-09-02 실제로 그렇게 확인 요청이 들어왔다 —
-    # 8월 틱톡 AOS 기준 non-UA 3,756,281원 차이).
-    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}",
-         sub="마크업 포함 · UA 기준", primary=True),
+    # UA 기준이라는 사실은 최하단 각주에서 한 번만 설명한다 — 카드에도 붙였더니
+    # 라벨이 길어져 지저분했다(2026-09-02 사용자 지적).
+    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}", sub="마크업 포함", primary=True),
     _kpi("노출", "impression", f"{totals['impression']:,.0f}"),
     _kpi("CTR", "CTR", f"{totals['CTR']:.2%}"),
     _kpi("인스톨", "total install", f"{totals['total install']:,.0f}"),
