@@ -265,6 +265,9 @@ _LOGIN_CSS = """
 }
 .login-brand {
     padding: 0 6vw; display: flex; flex-direction: column; justify-content: center;
+    /* 로고가 가운데로 밀려 어중간해 보였다 — 제목·본문과 같은 왼쪽 선에 맞춘다.
+       (flex 기본값 align-items:stretch 라 <img>가 컬럼 폭을 다 차지했다.) */
+    align-items: flex-start;
     background: #EAF9F0; position: relative; overflow: hidden;
 }
 /* 기업사이트의 그린 라인 도형 — 장식이라 콘텐츠를 가리지 않게 뒤로 깔고 옅게 둔다. */
