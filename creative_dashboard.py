@@ -1143,7 +1143,11 @@ def _kpi(label, column, value_text, fmt=None, sub="", primary=False):
 
 
 kpi_cards([
-    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}", sub="마크업 포함", primary=True),
+    # "UA 기준"을 숫자 바로 옆에 붙인다. 이게 없으면 광고주가 Media_RAW 전체 합계와
+    # 대조했을 때 안 맞는다고 본다(2026-09-02 실제로 그렇게 확인 요청이 들어왔다 —
+    # 8월 틱톡 AOS 기준 non-UA 3,756,281원 차이).
+    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}",
+         sub="마크업 포함 · UA 기준", primary=True),
     _kpi("노출", "impression", f"{totals['impression']:,.0f}"),
     _kpi("CTR", "CTR", f"{totals['CTR']:.2%}"),
     _kpi("인스톨", "total install", f"{totals['total install']:,.0f}"),
@@ -2454,7 +2458,9 @@ def _next_step_blocks_section() -> None:
 _next_step_blocks_section()
 
 footnote(
-    "지표 정확도 — 소진액·노출·클릭·설치·열람·코인은 Media_RAW 원본 합계(정확). "
+    "집계 기준 — 이 리포트의 모든 수치는 Media_RAW 중 UA(신규 유입) 집행분만 합산한 "
+    "값입니다. 리타겟팅(non-UA)은 제외되므로 Media_RAW 전체 합계와는 다를 수 있습니다. "
+    "지표 정확도 — 소진액·노출·클릭·설치·열람·코인은 그 범위의 원본 합계(정확). "
     "CTR/CPC/CPI/CVR은 그 합계에서 계산한 값(정확). "
     "기존 시트 피벗의 'D0 read CVR' 값과는 차이가 있을 수 있습니다 "
     "(시트 쪽 분모가 원본으로 재현되지 않음 — 분자·분모 자체는 원본과 일치)."
