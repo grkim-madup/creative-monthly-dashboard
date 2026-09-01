@@ -251,8 +251,9 @@ _GOOGLE_G = (
     "</svg>"
 )
 
-#: ASA 로그인 화면(좌우 분할, 2026-08-31 사용자 확정)과 같은 구조·톤. 이 리포트의
-#: 디자인 시스템 값(브랜드 그린 #00DC64, Pretendard, 정수 radius)에 맞춰 옮겼다.
+#: 좌우 분할 구조 + 네이버웹툰 브랜드 톤(2026-09-01 사용자 확정 — 시안 A "코퍼레이트
+#: 라이트"). 네이버웹툰 기업사이트의 민트 배경 + 그린 아웃라인 도형 + 굵은 검정 타이포를
+#: 따랐다. **로그인 버튼(.login-btn)은 기존 모양 그대로 둔다**(사용자 지정).
 _LOGIN_CSS = """
 <style>
 [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
@@ -264,15 +265,27 @@ _LOGIN_CSS = """
 }
 .login-brand {
     padding: 0 6vw; display: flex; flex-direction: column; justify-content: center;
-    border-right: 1px solid #e5e7eb; background: #fafafa;
+    background: #EAF9F0; position: relative; overflow: hidden;
 }
+/* 기업사이트의 그린 라인 도형 — 장식이라 콘텐츠를 가리지 않게 뒤로 깔고 옅게 둔다. */
+.login-brand::before, .login-brand::after {
+    content: ""; position: absolute; border: 3px solid #00DC64; opacity: .3;
+    pointer-events: none;
+}
+.login-brand::before {
+    width: 230px; height: 230px; border-radius: 50%; right: -78px; bottom: -84px;
+}
+.login-brand::after {
+    width: 62px; height: 62px; right: 13%; top: 12%; transform: rotate(18deg);
+}
+.login-brand > * { position: relative; }
 .login-brand img { height: 30px; width: auto; margin-bottom: 26px; }
 .login-brand h2 {
-    font-size: 27px; font-weight: 800; line-height: 1.42; color: #111827; margin: 0;
-    letter-spacing: -0.4px;
+    font-size: 28px; font-weight: 800; line-height: 1.4; color: #111111; margin: 0;
+    letter-spacing: -0.6px;
 }
 .login-brand p {
-    font-size: 13.5px; color: #4b5563; margin-top: 14px; line-height: 1.78; max-width: 380px;
+    font-size: 13.5px; color: #40514a; margin-top: 14px; line-height: 1.78; max-width: 380px;
 }
 .login-form {
     padding: 0 6vw; display: flex; flex-direction: column; justify-content: center;
@@ -293,7 +306,9 @@ _LOGIN_CSS = """
 .login-foot { font-size: 11px; color: #9ca3af; margin-top: 20px; }
 @media (max-width: 820px) {
     .login-stage { grid-template-columns: 1fr; overflow-y: auto; }
-    .login-brand { border-right: none; border-bottom: 1px solid #e5e7eb; padding: 7vh 8vw 5vh; }
+    .login-brand { padding: 7vh 8vw 5vh; }
+    /* 좁은 화면에서는 장식 도형이 글자와 겹친다 — 큰 원만 남기고 사각형은 뺀다. */
+    .login-brand::after { display: none; }
     .login-form { padding: 5vh 8vw 7vh; }
 }
 </style>

@@ -82,6 +82,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 inject_css()
+# 배포판이 **어느 커밋으로 떠 있는지**를 화면에서 확인할 수 있게 숨긴 마커로 내보낸다.
+# 눈에 보이는 요소가 아니다(display:none). "고쳤는데 배포판이 그대로인가?"를 추측하지
+# 않으려고 넣었다 — 2026-09-01에 같은 질문으로 두 번 헤맸다.
+_build_file = Path(__file__).resolve().parent / "BUILD.txt"
+_build = _build_file.read_text(encoding="utf-8").strip() if _build_file.exists() else "dev"
+st.markdown(
+    f'<span data-build="{_build}" style="display:none"></span>',
+    unsafe_allow_html=True,
+)
+
 auth.require_password()
 
 # 구글 애셋 보고서 CSV가 쌓이는 드롭박스 폴더 (사이드바에서 변경 가능)

@@ -9,3 +9,4 @@ dashboard_report.pdf
 
 # 대시보드 비밀번호 등 로컬 secrets — Streamlit Cloud에서는 앱별 Secrets 설정으로 대체한다.
 .streamlit/secrets.toml
+BUILD.txt
