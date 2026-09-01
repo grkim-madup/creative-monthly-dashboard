@@ -41,6 +41,8 @@ import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+import store
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 META_TAB = "_snapshot_meta"
 # 세 번째 컬럼(rev)은 행 단위 upsert용이다. 예전 2컬럼 메타 탭도 그대로 읽힌다.
@@ -283,7 +285,7 @@ def write_month(month: int, df: pd.DataFrame) -> None:
     store_upsert(
         META_TAB, META_HEADER,
         {"month": str(int(month)),
-         "frozen_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+         "frozen_at": store.report_timestamp(),
          REV_COLUMN: ""},
     )
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import threading
+import store
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -499,7 +500,7 @@ def write_snapshot(month: int, df, frozen_at: str | None = None) -> None:
         "chunks": len(chunks),
         "cols": cols,
         "row_count": len(rows),
-        "frozen_at": frozen_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "frozen_at": frozen_at or store.report_timestamp(),
     })
 
     # 3) 옛 세대 청소 — 실패해도 정확성에 영향 없다.

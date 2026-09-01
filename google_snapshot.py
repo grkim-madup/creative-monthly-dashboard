@@ -95,7 +95,7 @@ def save(month: int, live_folder: Path | str) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copytree(live_folder, dest, dirs_exist_ok=True)
     (dest / _STAMP_FILE).write_text(
-        dt.datetime.now().strftime("%Y-%m-%d %H:%M"), encoding="utf-8"
+        store.report_timestamp(), encoding="utf-8"
     )
 
 

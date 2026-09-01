@@ -126,3 +126,45 @@ def test_이관은_원래_고정시각을_보존한다():
     sig = inspect.signature(fs_store.write_snapshot)
     assert "frozen_at" in sig.parameters, "이관용 frozen_at 인자가 사라지면 이력이 덮인다"
     assert sig.parameters["frozen_at"].default is None, "평소 고정은 지금 시각을 찍어야 한다"
+
+
+# --------------------------------------------------------------------------- #
+# 리포트에 보이는 시각은 항상 KST (2026-09-02)
+#
+# 배포 컨테이너(python:3.12-slim)에는 시간대가 없어 서버 시각이 UTC다. 그대로 찍으면
+# 광고주에게 보이는 "N월 데이터 고정됨 · 날짜"가 9시간 어긋난다.
+# --------------------------------------------------------------------------- #
+
+
+def test_리포트_시각은_KST다():
+    import datetime as dt
+
+    import store as store_module
+
+    stamp = store_module.report_timestamp()
+    parsed = dt.datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+    expected = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
+    gap = abs((parsed - expected.replace(tzinfo=None)).total_seconds())
+    assert gap < 120, f"KST가 아니다: {stamp} (UTC+9 기준과 {gap:.0f}초 차이)"
+
+
+def test_KST는_고정_오프셋이다():
+    """slim 이미지에 tzdata가 없을 수 있어 zoneinfo를 쓰지 않는다(한국은 서머타임 없음)."""
+    import datetime as dt
+
+    import store as store_module
+
+    assert store_module.KST.utcoffset(None) == dt.timedelta(hours=9)
+
+
+def test_스냅샷_고정시각이_KST_헬퍼를_쓴다():
+    """두 백엔드가 같은 값을 써야 한다 — 한쪽만 UTC면 월별로 시각이 뒤섞인다."""
+    import inspect
+
+    import fs_store as fs
+    import google_sheets_writer as gw
+
+    for module, func in ((fs, fs.write_snapshot), (gw, gw.write_month)):
+        source = inspect.getsource(func)
+        assert "store.report_timestamp()" in source, f"{module.__name__} 이 KST 헬퍼를 안 쓴다"
+        assert "datetime.now().strftime" not in source, f"{module.__name__} 에 서버 시각이 남아 있다"

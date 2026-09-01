@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 SHEETS = "sheets"
 FIRESTORE = "firestore"
 
@@ -26,3 +28,16 @@ def backend() -> str:
 
 def is_firestore() -> bool:
     return backend() == FIRESTORE
+
+
+#: 한국 표준시. 배포 컨테이너(python:3.12-slim)에는 시간대 설정이 없어 서버 시각이
+#: UTC다. `datetime.now()`를 그대로 쓰면 **광고주에게 보이는 시각이 9시간 어긋난다**
+#: (2026-09-02 확인 — 사이드바 "마지막 동기화"가 하루 전으로 보였다).
+#: 한국은 서머타임이 없어 고정 +9 오프셋이 정확하다. slim 이미지에 tzdata가 없을 수
+#: 있어 zoneinfo 대신 이 방식을 쓴다.
+KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def report_timestamp() -> str:
+    """리포트 화면에 보이는 시각(스냅샷 고정 시각 등). 저장소 백엔드와 무관하게 항상 KST."""
+    return dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M")
