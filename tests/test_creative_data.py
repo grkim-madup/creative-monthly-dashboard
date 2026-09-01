@@ -7,7 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from creative_data import (  # noqa: E402
+from creative_data import (
+    split_extra_info,  # noqa: E402
     add_derived_metrics,
     aggregate_by,
     attach_creative_attributes,
@@ -263,7 +264,38 @@ def test_named_usp_is_kept_verbatim():
 def test_extra_info_label_defaults_to_none_marker():
     df = attach_creative_attributes(parse_raw_values(_raw_values()))
     assert df.loc[0, "extra_info_label"] == "없음"
-    assert df.loc[2, "usp"] == "1-KR"
+    # `1-KR`은 USP `1` + Extra Info `KR`이다. 예전에는 통째로 USP였고, 그 바람에
+    # 같은 USP가 `1`/`1-KR`/`1-kr`/`1-new`로 갈렸다(2026-09-02 수정).
+    assert df.loc[2, "usp"] == "1"
+    assert df.loc[2, "extra_info"] == "KR"
+
+
+def test_hyphen_after_usp_is_extra_info():
+    """실무 표기는 Extra Info를 `_`가 아니라 USP 뒤에 `-`로 붙이기도 한다.
+
+    이걸 안 쪼개서 `comic`·`epn` 같은 태그가 조건 드롭다운에 아예 뜨지 않았다.
+    2월부터 쭉 있던 표기라 8월에 새로 생긴 문제가 아니다.
+    """
+    parsed = parse_ad_name("3510_狂魔重生記_IMG_Madup_SingleImage_1X1_TITLE2-comic")
+    assert parsed["usp"] == "TITLE2"
+    assert parsed["extra_info"] == "comic"
+
+    parsed = parse_ad_name("3510_狂魔重生記_VID_Madup_Highlight_9X16_BACK-6s-text-epn")
+    assert parsed["usp"] == "BACK"
+    assert split_extra_info(parsed["extra_info"]) == ["6s", "text", "epn"]
+
+
+def test_hyphen_and_underscore_extra_info_combine():
+    """`-`로 붙인 것과 `_`로 붙인 것이 한 소재명에 같이 오면 둘 다 살린다."""
+    parsed = parse_ad_name("1234_작품_VID_Madup_Highlight_9X16_BACK-6s_text")
+    assert parsed["usp"] == "BACK"
+    assert split_extra_info(parsed["extra_info"]) == ["6s", "text"]
+
+
+def test_usp_without_hyphen_is_untouched():
+    """하이픈이 없는 USP는 한 글자도 건드리지 않는다 — 이름을 잘라내면 안 된다."""
+    assert parse_ad_name(
+        "9622_不良少年的初戀_VID_Madup_Visual_9X16_BEFOREAFTER")["usp"] == "BEFOREAFTER"
 
 
 def test_normalize_creative_type_covers_convention_vocabulary():

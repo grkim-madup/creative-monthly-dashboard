@@ -201,9 +201,26 @@ def parse_ad_name(ad_name: str) -> dict:
     result["orientation"] = size_orientation(result["size"])
 
     # Dimension 뒤의 첫 토큰이 USP, 그 뒤 최대 3개가 Extra Info1/2/3 (네이밍 컨벤션 Y~AH열 기준).
+    #
+    # ⚠ 실무에서는 Extra Info를 `_`가 아니라 **USP 뒤에 `-`로 붙이는 표기가 섞여 쓰인다**
+    #   (`..._1X1_TITLE2-comic`, `..._9X16_BACK-6s-text-epn`, `..._9X16_1-KR`).
+    #   예전에는 `-`를 안 쪼개서 `TITLE2-comic` 통째가 USP가 됐고, 그 바람에
+    #   ①`comic`·`epn` 같은 태그가 Extra Info 드롭다운에 아예 안 뜨고
+    #   ②같은 USP가 `1`/`1-KR`/`1-kr`/`1-new`/`1-tt`/`1-thumb`로 갈렸다.
+    #   실측(2026-09-02): 8월 USP 144종 → 98종으로 합쳐지고 태그 14종 → 22종으로 늘었다.
+    #   2월부터 쭉 있던 표기라 8월에 새로 생긴 문제가 아니라 처음부터 있던 누락이다.
+    #
+    #   `split_extra_info`가 이미 `-`와 `_`를 같게 다루므로, 여기서만 안 쪼개던 것이
+    #   앞뒤가 안 맞았다. 첫 조각만 USP로 남기고 나머지는 Extra Info 앞에 붙인다.
     if tail:
-        result["usp"] = tail[0]
+        usp_token = tail[0]
         extras = [t for t in tail[1:4] if t.strip()]
+        if "-" in usp_token:
+            chunks = [c for c in usp_token.split("-") if c.strip()]
+            if chunks:
+                usp_token = chunks[0]
+                extras = chunks[1:] + extras
+        result["usp"] = usp_token
         result["extra_info"] = "_".join(extras) if extras else None
 
     variants = []
@@ -648,3 +665,94 @@ def aggregate_by_axis(
     if values:
         result = result[result[axis].astype(str).isin(values)]
     return result.reset_index(drop=True)
+
+
+#: 기간 비교표의 기본 지표 순서. 볼륨 → 효율 순으로, 실제 리포트 표와 같은 흐름이다.
+COMPARE_DEFAULT_METRICS = [
+    "cost", "impression", "click", "CTR", "total install", "CPI",
+    "D0 read", "D0 read CVR", "D0 coin", "D0 coin CVR",
+]
+
+#: **증감을 어떤 단위로 쓸지는 지표마다 다르다.**
+#: 비율 지표(CTR·CVR)는 두 값의 차이를 `%p`로, 금액·건수는 변화율을 `%`로 쓴다.
+#: 49% → 53% 를 "+8.2%"로 쓰면 광고주가 8.2%p 오른 것으로 읽는다. 반대도 마찬가지다.
+#: 이 매핑이 이 표의 유일한 위험 지점이라 상수로 박아 두고 pytest로 고정한다.
+RATIO_METRICS = frozenset({"CTR", "D0 read CVR", "D0 coin CVR", "D7 coin CVR"})
+
+
+def delta_unit(metric: str) -> str:
+    """그 지표의 증감 단위. 비율은 `%p`(차이), 나머지는 `%`(변화율)."""
+    return "%p" if metric in RATIO_METRICS else "%"
+
+
+def compare_periods(
+    df: pd.DataFrame,
+    periods: list[dict],
+    metrics: list[str] | None = None,
+) -> pd.DataFrame:
+    """두 기간을 나란히 놓고 증감을 붙인 표를 만든다.
+
+    `periods`는 `[{"label": ..., "months": [3, 4]}, {"label": ..., "months": [5, 6]}]`.
+    월을 여러 개 주면 그 기간의 **누적**이다(6월 리포트의 `방영 전 (4월 누적)` 같은 표).
+
+    돌려주는 표는 다른 집계표와 축이 반대다 — **행이 지표, 열이 기간**이다.
+    실제 리포트 시트가 그 모양이고, 지표마다 증감 단위가 달라 한 열에 섞을 수 없다.
+
+    데이터가 없는 기간은 **0으로 채우지 않고 NaN으로 둔다.** 0으로 채우면 "집행을
+    안 했다"와 "데이터가 없다"가 같은 숫자가 되고, 증감이 -100%로 찍힌다.
+    """
+    metrics = list(metrics or COMPARE_DEFAULT_METRICS)
+    if len(periods) != 2:
+        raise ValueError("기간 비교는 정확히 두 기간이어야 합니다.")
+
+    columns: list[pd.Series] = []
+    labels: list[str] = []
+    for period in periods:
+        months = [int(m) for m in (period.get("months") or [])]
+        subset = df[df["month"].isin(months)] if months else df.iloc[0:0]
+        if subset.empty:
+            values = pd.Series({m: float("nan") for m in metrics}, dtype="float64")
+        else:
+            rolled = aggregate_by(subset.assign(_all="합계"), ["_all"]).iloc[0]
+            values = pd.Series(
+                {m: float(rolled[m]) if m in rolled.index and pd.notna(rolled[m])
+                 else float("nan") for m in metrics},
+                dtype="float64",
+            )
+        columns.append(values)
+        labels.append(str(period.get("label") or f"{'·'.join(map(str, months))}월"))
+
+    before, after = columns
+    # 같은 라벨을 두 번 쓰면 열이 하나로 뭉개진다 — 사람이 붙이는 값이라 실제로 일어난다.
+    if labels[0] == labels[1]:
+        labels = [f"{labels[0]} (A)", f"{labels[1]} (B)"]
+
+    deltas, units = [], []
+    for metric in metrics:
+        old, new = before[metric], after[metric]
+        if pd.isna(old) or pd.isna(new):
+            deltas.append(float("nan"))
+        elif metric in RATIO_METRICS:
+            # 비율은 차이(%p). 원본이 0~1 스케일이라 100을 곱해 %포인트로 만든다.
+            deltas.append((new - old) * 100)
+        else:
+            deltas.append(relative_change(new, old))
+        units.append(delta_unit(metric))
+
+    return pd.DataFrame({
+        "지표": [METRIC_DISPLAY.get(m, m) for m in metrics],
+        labels[0]: before.to_numpy(),
+        labels[1]: after.to_numpy(),
+        "증감": deltas,
+        "단위": units,
+    })
+
+
+#: 기간 비교표의 행 이름. 다른 표의 컬럼 라벨과 같은 표기를 써야 화면이 어긋나지 않는다.
+METRIC_DISPLAY = {
+    "cost": "소진액", "impression": "노출", "click": "클릭", "CTR": "CTR",
+    "total install": "설치", "CPI": "CPI", "CPC": "CPC",
+    "D0 read": "D0 Read", "D0 read CVR": "D0 Read CVR",
+    "D0 coin": "D0 Coin", "D0 coin CVR": "D0 Coin CVR",
+    "D7 coin": "D7 coin", "D7 coin CVR": "D7 coin CVR",
+}

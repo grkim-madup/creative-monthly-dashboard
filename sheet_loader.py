@@ -34,8 +34,16 @@ def extract_sheet_id(url_or_id: str) -> str:
     raise ValueError("구글시트 URL 또는 시트 ID를 인식하지 못했습니다.")
 
 
+#: 소재명 파서를 고칠 때마다 올린다. 캐시 파일 이름에 들어가므로 **옛 파싱 결과가 그대로
+#: 재사용되는 일을 원천 차단한다.** 예전에는 시트 id만으로 캐시를 잡아서, 파서를 고쳐도
+#: 캐시가 남아 있으면 화면이 조용히 옛 분류를 보여줬다(2026-09-02, USP·Extra Info 하이픈
+#: 수정 때 실제로 겪었다 — 이 프로젝트에서 가장 위험한 실패 유형인 "에러 없이 틀림"이다).
+#: v2: USP 뒤 `-`로 붙은 Extra Info를 분리 (`TITLE2-comic` → USP `TITLE2` + `comic`)
+PARSER_VERSION = "v2"
+
+
 def _cache_path(sheet_id: str) -> Path:
-    return CACHE_DIR / f"{sheet_id}.parquet"
+    return CACHE_DIR / f"{sheet_id}.{PARSER_VERSION}.parquet"
 
 
 def load_media_raw(sheet_id: str, refresh: bool = False) -> pd.DataFrame:

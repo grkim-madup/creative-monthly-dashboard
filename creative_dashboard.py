@@ -40,6 +40,7 @@ from creative_data import (
     add_derived_metrics,
     aggregate_by,
     aggregate_by_axis,
+    compare_periods,
     explode_extra_info,
     month_options,
     pick_best_worst,
@@ -1105,6 +1106,16 @@ overview = manual_overrides.apply(overview, month)
 # 아니다 — 두 섹션의 기준 데이터에서 미리 뺀다(1·2·3번 총괄/매체별 표는 그대로 포함).
 named_overview = overview[overview["ad"] != "-"]
 
+# 기간 비교 뷰는 **리포트 월 하나가 아니라 여러 달**을 본다. `raw`가 이미 전 월치를 들고
+# 있으므로 로딩을 새로 하지 않고, 사이드바 고정 필터만 똑같이 통과시킨 프레임을 하나 더 만든다
+# (한쪽에만 필터가 걸리면 두 기간 비교가 조용히 틀린다 — `_apply_base_filters`와 같은 이유).
+#
+# ⚠ **수동 분류 보정(`manual_overrides`)은 리포트 월에만 적용된다.** 다른 달까지 적용하려면
+#    달마다 저장소를 읽어야 해서(7개월이면 리런마다 7회) 비용이 크다. 보정이 필요한 소재를
+#    조건에 걸어 비교할 때는 이 점을 감안한다.
+all_months = add_derived_metrics(_apply_base_filters(raw))
+all_months_named = all_months[all_months["ad"] != "-"]
+
 totals = aggregate_by(overview.assign(_all="전체"), ["_all"]).iloc[0]
 
 # 전월 대비 델타. 리포트는 다음 달 초에 나가므로 발송 시점에는 그 달이 완결돼 있어
@@ -1903,15 +1914,21 @@ def condition_editor(block_id: str, conditions: dict) -> dict:
     return result
 
 
-def match_conditions(conditions: dict) -> tuple[pd.DataFrame, int]:
+def match_conditions(conditions: dict,
+                     across_months: bool = False) -> tuple[pd.DataFrame, int]:
     """조건에 맞는 소재를 찾는다. (매칭된 원본 스코프, 소재 수)를 돌려준다.
 
     condition_editor의 실시간 요약과 render_view의 표가 같은 매칭 결과를 써야
     "이 조건이 무엇에 걸리는지"가 편집 중에도 어긋나지 않는다 — 로직을 한 곳에 둔다.
+
+    `across_months=True`면 리포트 월이 아니라 **전 기간**에서 찾는다(기간 비교 뷰 전용).
     """
+    named = all_months_named if across_months else named_overview
+    whole = all_months if across_months else overview
+
     # 소재명 규칙 파싱이 있어야 조건이 의미가 있다 — 구글은 소재 단위 태깅이 없어 제외한다.
     # 조건 매칭도 태그를 쓰면 펼친 프레임에서 해야 한다.
-    base = explode_extra_info(named_overview) if "extra_info_tag" in conditions else named_overview
+    base = explode_extra_info(named) if "extra_info_tag" in conditions else named
 
     matched = base
     for field, values in conditions.items():
@@ -1919,7 +1936,7 @@ def match_conditions(conditions: dict) -> tuple[pd.DataFrame, int]:
     matched_ads = matched["ad"].unique()
 
     # 집계는 펼치기 전 원본에서 한다 — 태그를 여러 개 고르면 펼친 프레임에선 같은 소재가 겹친다.
-    scope_of_match = overview[overview["ad"].isin(matched_ads)]
+    scope_of_match = whole[whole["ad"].isin(matched_ads)]
     return scope_of_match, len(matched_ads)
 
 
@@ -1930,7 +1947,13 @@ COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"]
 VIEW_DEFAULTS = {
     "label": "", "kind": "aggregate", "conditions": {}, "months": [],
     "axis": "creative_type", "chart": False, "metric": "CPI", "top_n": 0,
+    # kind == "compare" — 기간 두 개. 라벨은 사람이 붙인다(`방영 전 (4월 누적)`).
+    "periods": [], "metrics": [],
 }
+
+
+def empty_periods() -> list[dict]:
+    return [{"label": "", "months": []}, {"label": "", "months": []}]
 
 
 def view_with_defaults(view: dict) -> dict:
@@ -1966,6 +1989,60 @@ def attribute_chart(frame: pd.DataFrame, axis: str, metric: str):
     return chart
 
 
+def render_compare_view(view: dict) -> None:
+    """기간 비교표 — 행이 지표, 열이 기간 + 증감.
+
+    다른 표와 축이 반대이고 값이 문자열이라, **셀 강조·CPI 히트맵은 붙이지 않는다**
+    (같은 강조 저장소를 쓰면 키가 꼬인다).
+
+    ⚠ 증감 단위는 지표마다 다르다 — 비율은 `%p`(차이), 나머지는 `%`(변화율).
+      판단은 `creative_data.delta_unit`이 하고 여기서는 표기만 한다. 광고주가 숫자를
+      잘못 읽지 않도록 **단위를 숫자 옆에 항상 함께 찍는다.**
+    """
+    periods = [dict(p) for p in (view.get("periods") or [])]
+    if len(periods) != 2 or not all(p.get("months") for p in periods):
+        status_row("warn", "비교할 기간 두 개를 골라 주세요",
+                   "편집 모드에서 기간마다 라벨과 월을 지정합니다.")
+        return
+
+    scope_of_match, matched_count = match_conditions(view["conditions"],
+                                                     across_months=True)
+    if scope_of_match.empty:
+        status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
+        return
+
+    available = set(month_options(raw))
+    missing = sorted({int(m) for p in periods for m in p["months"]} - available)
+    if missing:
+        # 조용히 빈 칸으로 두면 "집행을 안 했다"로 읽힌다 — 이 프로젝트의 사고는
+        # 대부분 에러 없이 조용히 틀린다.
+        status_row("warn", f"데이터가 없는 달이 있습니다: {', '.join(map(str, missing))}월",
+                   "그 달의 값은 표에 '-'로 나옵니다.")
+
+    table = compare_periods(scope_of_match, periods, view.get("metrics") or None)
+    period_columns = [c for c in table.columns if c not in ("지표", "증감", "단위")]
+
+    rows = []
+    for _, line in table.iterrows():
+        ratio = line["단위"] == "%p"
+        cells = [str(line["지표"])]
+        for column in period_columns:
+            value = line[column]
+            cells.append("-" if pd.isna(value)
+                         else (f"{value:.2%}" if ratio else f"{value:,.0f}"))
+        delta = line["증감"]
+        cells.append("-" if pd.isna(delta)
+                     else (f"{delta:+.2f}%p" if ratio else f"{delta:+.1%}"))
+        rows.append(cells)
+
+    report_table(rows, ["지표"] + period_columns + ["증감"], left_columns={"지표"})
+    st.markdown(
+        f'<div class="tbl-note">소재 {matched_count:,}개 · '
+        "비율 지표(CTR·CVR)의 증감은 <b>%p</b>(차이), 나머지는 <b>%</b>(변화율)입니다.</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_view(view: dict, month: int, key_prefix: str) -> None:
     """뷰 하나(기준 라벨 + 표 [+ 그래프])를 그린다.
 
@@ -1979,6 +2056,10 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
             unsafe_allow_html=True,
         )
 
+    if view["kind"] == "compare":
+        render_compare_view(view)
+        return
+
     scope_of_match, matched_count = match_conditions(view["conditions"])
     if scope_of_match.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
@@ -1988,8 +2069,16 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
 
     if view["kind"] == "aggregate":
         axis = view["axis"] if view["axis"] in ATTRIBUTES else "creative_type"
-        base = explode_extra_info(scope_of_match) if axis == "extra_info_tag" else scope_of_match
-        table = aggregate_by_axis(base, axis, min_cost=min_cost)
+        base = scope_of_match
+        # 조건으로 `text`를 골랐는데 표에 `thumb`까지 나오던 문제(2026-09-02).
+        # `match_conditions`는 조건에 맞는 **소재**를 찾아 펼치기 전 원본 행을 돌려준다
+        # (그래야 태그를 여러 개 고를 때 소진액이 중복 집계되지 않는다). 그런데 여기서
+        # 다시 펼치면 `text-thumb` 소재가 `thumb` 행으로도 살아나, 고르지도 않은 태그가
+        # 표에 등장한다. 그 축에 걸린 조건을 집계 단계에서 한 번 더 건다.
+        if axis == "extra_info_tag":
+            base = explode_extra_info(base)
+        table = aggregate_by_axis(base, axis, min_cost=min_cost,
+                                  values=view["conditions"].get(axis))
         if table.empty:
             status_row("warn", "표시할 조합이 없습니다",
                        "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
@@ -2034,7 +2123,8 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
     )
 
 
-VIEW_KINDS = {"aggregate": "속성별 집계", "list": "소재 목록"}
+VIEW_KINDS = {"aggregate": "속성별 집계", "list": "소재 목록",
+              "compare": "기간 비교"}
 QUILL_TOOLBAR = [
     ["bold", "italic", "underline", "strike"],
     [{"header": [2, 3, False]}],
@@ -2050,6 +2140,39 @@ def clear_view_state(block_id: str, view_id: str) -> None:
     view_key = f"{block_id}_{view_id}"
     for key in [k for k in list(st.session_state) if view_key in k]:
         del st.session_state[key]
+
+
+def period_editor(view_key: str, periods: list[dict]) -> list[dict]:
+    """기간 비교 뷰의 기간 두 개(라벨 + 월 여러 개)를 편집한다.
+
+    월을 여러 개 고르면 그 기간의 **누적**이다 — 실제 리포트의
+    `방영 전 (4월 누적)` vs `방영 후 (6월 누적)` 같은 표가 그 형태다.
+    선택지는 데이터에 실제로 있는 달만 보여준다(없는 달을 고르면 표가 '-'가 된다).
+    """
+    saved = list(periods or [])
+    saved += [{"label": "", "months": []}] * (2 - len(saved))
+    choices = month_options(raw)
+
+    with st.container(border=True, key=f"period_box_{view_key}"):
+        st.markdown('<div class="cp-label">비교할 기간 두 개</div>',
+                    unsafe_allow_html=True)
+        result = []
+        for index, side in enumerate(("A", "B")):
+            label_col, months_col = st.columns([2, 3], vertical_alignment="center")
+            current = saved[index] if isinstance(saved[index], dict) else {}
+            label = label_col.text_input(
+                f"기간 {side} 이름", value=str(current.get("label") or ""),
+                key=f"vperiod_label_{view_key}_{index}",
+                placeholder="예: 넷플릭스 방영 전 (4월 누적)",
+            )
+            months = months_col.multiselect(
+                f"기간 {side} 월 (여러 개 = 누적)", choices,
+                default=[m for m in (current.get("months") or []) if m in choices],
+                format_func=lambda m: f"{m}월",
+                key=f"vperiod_months_{view_key}_{index}",
+            )
+            result.append({"label": label, "months": [int(m) for m in months]})
+    return result
 
 
 def views_editor(block_id: str, views: list[dict]) -> list[dict]:
@@ -2085,21 +2208,26 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
                 format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
             )
             axes = list(ATTRIBUTES)
+            axis, top_n = view["axis"], view["top_n"]
             if kind == "aggregate":
                 axis = head[2].selectbox(
                     "분석 축", axes,
                     index=axes.index(view["axis"]) if view["axis"] in ATTRIBUTES else 0,
                     format_func=lambda a: ATTRIBUTES[a], key=f"vaxis_{view_key}",
                 )
-                top_n = view["top_n"]
-            else:
-                axis = view["axis"]
+            elif kind == "list":
                 top_n = head[2].number_input(
                     "상위 N개 (0=전체)", min_value=0, max_value=100,
                     value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
                 )
+            else:
+                head[2].caption("기간 두 개를 아래에서 지정합니다")
             if head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
                 drop_index = position
+
+            periods = view["periods"]
+            if kind == "compare":
+                periods = period_editor(view_key, periods)
 
             conditions = condition_editor(view_key, view["conditions"])
 
@@ -2121,6 +2249,7 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
             "id": view["id"], "label": label, "kind": kind, "conditions": conditions,
             "months": view["months"], "axis": axis, "chart": bool(chart),
             "metric": metric, "top_n": int(top_n or 0),
+            "periods": periods, "metrics": view["metrics"],
         })
 
     if drop_index is not None:
@@ -2232,13 +2361,17 @@ section(
     hint=True,
 )
 
-# 예전 4번 섹션에 있던 수동 분류 패널을 이리로 옷겼다. 블록별로 있으면 블록이 하나도
-# 없을 때 미분류를 고칠 곳이 사라진다. 저장소는 이 달 전체가 공유하므로 한 군데면 충분하다
-# (분류 보정은 데이터 교정이라 보기 모드에서도 항상 노출한다).
-render_manual_override_panel(
-    month, True, set(named_overview["ad"].unique()), key_prefix="sec4_override",
-    options=override_choices,
-)
+# 예전 4번 섹션에 있던 수동 분류 패널을 이리로 옮겼다. 블록별로 두면 블록이 하나도
+# 없을 때 미분류를 고칠 곳이 사라진다. 저장소는 이 달 전체가 공유하므로 한 군데면 충분하다.
+#
+# **보기 모드에서는 감춘다** — 이 화면은 광고주에게 그대로 공유하는 리포트이고,
+# 소재 분류를 고치는 도구는 리포트의 일부가 아니다. 예전에는 "분류 보정은 데이터 교정이라
+# 항상 노출"로 뒀는데, 광고주 화면에 편집 도구가 보이는 게 더 큰 문제다.
+if edit_mode:
+    render_manual_override_panel(
+        month, True, set(named_overview["ad"].unique()), key_prefix="sec4_override",
+        options=override_choices,
+    )
 
 if blocks_unavailable:
     st.error(
