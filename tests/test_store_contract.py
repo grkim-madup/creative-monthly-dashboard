@@ -278,3 +278,41 @@ def test_스냅샷_고정은_지금_시각을_찍는다(backend):
     fs_store.write_snapshot(MONTH, _sample_snapshot())
     stamp = fs_store.snapshot_frozen_at(MONTH)
     assert stamp and len(stamp) == 16 and stamp[4] == "-"
+
+
+# --------------------------------------------------------------------------- #
+# 미리 읽기(prefetch) — 컷오버 후 화면이 시트를 보고 있으면 안 된다
+#
+# 실제 사고(2026-09-01): 편집 모드에서 블록을 지우면 Firestore에서는 정상 삭제되는데,
+# 다음 리런에서 `prefetch.warm`이 **시트**를 읽어 화면 캐시에 다시 심어서 보기 모드에
+# 삭제한 블록이 되살아나 보였다. 저장은 Firestore, 화면은 시트를 보는 상태였다.
+# --------------------------------------------------------------------------- #
+
+
+def test_firestore_백엔드에서는_시트를_미리읽지_않는다(monkeypatch):
+    """이걸 어기면 "지웠는데 되살아난다"가 재현된다."""
+    import prefetch
+
+    fake_sheets.install(monkeypatch, google_sheets_writer)
+    monkeypatch.setattr(google_sheets_writer, "configured", lambda: True)
+    fake_firestore.install(monkeypatch, fs_store)
+    monkeypatch.setattr(store, "backend", lambda: store.FIRESTORE)
+
+    blocks.clear_state_cache()
+    highlights.clear_cache()
+    locks.reset_state()
+
+    # 시트에 예전 블록이 남아 있는 상태를 만든다(컷오버 전 데이터가 그대로 있다).
+    google_sheets_writer.upsert_block_rows(MONTH, [{
+        "block_id": "old123", "slot": blocks.SLOT_ANALYSIS, "seq": 0,
+        "payload": {"id": "old123", "type": "note", "title": "시트에 남은 옛 블록"},
+    }])
+
+    seeded = prefetch.warm(MONTH)
+    assert seeded is False, "Firestore 백엔드인데 시트에서 캐시를 심었다"
+    assert blocks.cache_is_fresh(MONTH) is False, \
+        "시트 데이터가 화면 캐시에 들어갔다 — 삭제한 블록이 되살아난다"
+
+    state = blocks.load_state(MONTH, use_cache=True)
+    ids = [b.get("id") for slot in blocks.SLOTS for b in state.data.get(slot, [])]
+    assert "old123" not in ids, "화면이 시트 데이터를 보여주고 있다"
