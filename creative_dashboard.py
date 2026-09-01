@@ -40,6 +40,8 @@ from creative_data import (
     aggregate_by,
     explode_extra_info,
     month_options,
+    pick_best_worst,
+    spend_pool,
     top_creatives,
 )
 from google_ads_report import (
@@ -521,70 +523,6 @@ def render_table(
 # 행 전체 강조용 색 (기존 시트의 파랑=우수 / 빨강=저조 컨벤션)
 ROW_GOOD = "background-color: #e7f9f0; color: #04703a; font-weight: 700;"
 ROW_BAD = "background-color: #fdf1f1; color: #9b2c2c; font-weight: 700;"
-
-
-def spend_pool(
-    df: pd.DataFrame, spend_quantile: float = 0.5, group_column: str = "media"
-) -> pd.DataFrame:
-    """소진 볼륨 하위 구간을 후보에서 제외한다.
-
-    **기준선은 매체별로 따로 잡는다.** 매체마다 배정 예산의 절대 규모가 크게 달라서, 표 전체에
-    하나의 컷을 걸면 예산이 작은 매체의 소재가 통째로 후보에서 빠져 버린다.
-    """
-    if df.empty or "cost" not in df.columns:
-        return df
-
-    if group_column in df.columns and df[group_column].notna().any():
-        keep = df.groupby(group_column, dropna=False)["cost"].transform(
-            lambda costs: costs >= costs.quantile(spend_quantile)
-        )
-        pool = df[keep.fillna(False)]
-    else:
-        pool = df[df["cost"] >= df["cost"].quantile(spend_quantile)]
-
-    return pool if not pool.empty else df
-
-
-def pick_best_worst(
-    df: pd.DataFrame,
-    metrics: list[tuple[str, bool]],
-    spend_quantile: float = 0.5,
-    group_column: str = "media",
-) -> tuple[dict, dict]:
-    """소진 볼륨이 큰 편인 소재들 중에서만 지표별 최우수/최저조 소재를 하나씩 고른다.
-
-    소액 집행 소재는 우연히 극단적인 효율이 찍히므로 후보에서 뺀다. 컷은 매체별로 잡는다.
-    metrics: [(컬럼, 값이 클수록 좋은가)] — 예 [("CPI", False), ("D0 coin CVR", True)]
-    반환: ({인덱스: 사유}, {인덱스: 사유})
-    """
-    best: dict = {}
-    worst: dict = {}
-    if df.empty or "cost" not in df.columns:
-        return best, worst
-
-    pool = spend_pool(df, spend_quantile, group_column)
-    claimed: set = set()
-
-    def claim(column: str, ascending: bool, target: dict) -> None:
-        """이미 다른 슬롯이 가져간 소재는 건너뛰고 그다음 순위를 고른다."""
-        if column not in pool.columns:
-            return
-        values = pd.to_numeric(pool[column], errors="coerce").dropna()
-        values = values[values > 0]
-        for index in values.sort_values(ascending=ascending).index:
-            if index not in claimed:
-                target[index] = column
-                claimed.add(index)
-                return
-
-    # 지표마다 우수 1개 + 저조 1개 = 총 4개 소재가 서로 겹치지 않게 뽑힌다.
-    # (한 소재가 여러 슬롯의 1등이면 뒤 슬롯은 차순위로 밀려난다)
-    for column, higher_is_better in metrics:
-        claim(column, ascending=not higher_is_better, target=best)
-    for column, higher_is_better in metrics:
-        claim(column, ascending=higher_is_better, target=worst)
-
-    return best, worst
 
 
 def shared_pick_note(
@@ -1256,7 +1194,7 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
 # 우측 구석에 붙는 옅은 각주 한 줄로 낮춘다 — 굳이 안 읽어도 되는 보조 정보로 취급.
 st.markdown(
     '<div class="sec-legend">'
-    f"녹색 = 우수 · 붉은색 = 저조 — 매체별 소진 볼륨 하위 50% 제외 후 "
+    f"녹색 = 우수 · 붉은색 = 저조 — 위 표에 보이는 소재 중 "
     f"{html.escape(METRIC_LABELS.get('CPI', 'CPI'))} · "
     f"{html.escape(METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR'))} "
     f"기준 각 1개씩 선정 · 최소 소진 ₩{min_cost:,.0f} 이상"

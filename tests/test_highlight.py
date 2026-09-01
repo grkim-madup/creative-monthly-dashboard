@@ -7,44 +7,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-# creative_dashboard는 streamlit 스크립트라 통째로 import하면 실행된다 —
-# 선택 로직만 같은 구현으로 떼어 검증한다.
-def spend_pool(df, spend_quantile=0.5, group_column="media"):
-    if df.empty or "cost" not in df.columns:
-        return df
-    if group_column in df.columns and df[group_column].notna().any():
-        keep = df.groupby(group_column, dropna=False)["cost"].transform(
-            lambda costs: costs >= costs.quantile(spend_quantile)
-        )
-        pool = df[keep.fillna(False)]
-    else:
-        pool = df[df["cost"] >= df["cost"].quantile(spend_quantile)]
-    return pool if not pool.empty else df
-
-
-def pick_best_worst(df, metrics, spend_quantile=0.5, group_column="media"):
-    best, worst = {}, {}
-    if df.empty or "cost" not in df.columns:
-        return best, worst
-    pool = spend_pool(df, spend_quantile, group_column)
-    claimed = set()
-
-    def claim(column, ascending, target):
-        if column not in pool.columns:
-            return
-        values = pd.to_numeric(pool[column], errors="coerce").dropna()
-        values = values[values > 0]
-        for index in values.sort_values(ascending=ascending).index:
-            if index not in claimed:
-                target[index] = column
-                claimed.add(index)
-                return
-
-    for column, higher_is_better in metrics:
-        claim(column, not higher_is_better, best)
-    for column, higher_is_better in metrics:
-        claim(column, higher_is_better, worst)
-    return best, worst
+# 이 함수들은 예전에 진입점(creative_dashboard.py)에 있었고, 진입점을 import할 수 없어서
+# 이 파일이 **같은 구현을 복사해** 두고 테스트했다. 복사본이 통과해도 진짜 코드는 검증되지
+# 않는다 — 2026-09-01에 선정 기준을 바꿀 때 그 사실이 드러나, 두 함수를 순수 함수 모듈인
+# creative_data.py로 옮기고 여기서 **실제 구현을 import** 하도록 바꿨다.
+from creative_data import pick_best_worst, spend_pool  # noqa: E402
 
 
 def _two_media():
@@ -72,14 +39,16 @@ def test_global_cut_would_have_dropped_the_small_budget_media():
 
 
 def test_small_spend_creative_within_its_media_is_excluded():
-    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     picked = set(best) | set(worst)
     assert 2 not in picked  # tt-small: CPI 300으로 최저지만 TikTok 내 하위라 제외
     assert 5 not in picked  # meta-small: Meta 내 하위라 제외
 
 
 def test_picks_one_best_and_one_worst_per_metric():
-    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     assert best[0] == "CPI"            # tt-big = 남은 후보 중 CPI 최저
     assert best[3] == "D0 coin CVR"    # meta-big = 남은 후보 중 coin CVR 최고
     assert worst[4] == "CPI"           # meta-mid = CPI 최고(저조)
@@ -88,7 +57,8 @@ def test_picks_one_best_and_one_worst_per_metric():
 
 def test_always_four_distinct_creatives_are_highlighted():
     """CPI 우수/저조 + Coin CVR 우수/저조 = 서로 다른 소재 4개가 하이라이트되어야 한다."""
-    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     assert len(best) == 2 and len(worst) == 2
     assert not (set(best) & set(worst))  # 겹치는 소재 없음
     assert len(set(best) | set(worst)) == 4
@@ -167,14 +137,16 @@ def _same_ad_two_media():
 def test_same_creative_across_media_can_both_be_picked():
     """서로 다른 매체의 같은 소재가 동시에 뽑히는 건 허용한다(막지 않는다)."""
     df = _same_ad_two_media()
-    best, worst = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     picked_ads = df.loc[list(best) + list(worst), "ad"].tolist()
     assert picked_ads.count("shared") == 2  # TikTok/Meta 양쪽이 각각 선정됨
 
 
 def test_note_flags_the_duplicated_creative_with_media_and_slot():
     df = _same_ad_two_media()
-    best, worst = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     note = shared_pick_note(df, best, worst, "ad", "media")
     assert "shared" in note
     assert "TikTok" in note and "Meta" in note
@@ -182,5 +154,43 @@ def test_note_flags_the_duplicated_creative_with_media_and_slot():
 
 
 def test_note_is_empty_when_all_picks_are_different_creatives():
-    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)])
+    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)],
+                                  spend_quantile=0.5)
     assert shared_pick_note(_two_media(), best, worst, "ad", "media") == ""
+
+
+# --------------------------------------------------------------------------- #
+# 기본값은 "표에 보이는 소재 전체에서 고른다" (2026-09-01 변경)
+# --------------------------------------------------------------------------- #
+
+
+def test_기본값은_표_전체에서_고른다():
+    """예전에는 여기서 소진 하위 50%를 또 잘라내 후보가 절반으로 줄었다."""
+    df = _two_media()
+    best, worst = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)])
+    picked = set(best) | set(worst)
+    assert len(picked) == 4, "표 전체가 후보인데도 4개가 안 뽑혔다"
+    # 소액이라 예전 규칙에서 빠졌던 소재도 이제 후보다.
+    assert 2 in picked or 5 in picked
+
+
+def test_후보가_줄면_색칠이_4개보다_적어진다_회귀():
+    """실제로 겪은 결함(7월 AOS · D0 Read 정렬에서 3개만 색칠)을 축소 재현한다.
+
+    지표 하나가 대부분 0이면 후보가 적어지는데, 거기에 풀 필터까지 걸리면 슬롯 하나가
+    비어 색칠이 3개만 나온다. 기본값(표 전체)에서는 4개가 나와야 한다.
+    """
+    df = pd.DataFrame({
+        "ad": [f"a{i}" for i in range(6)],
+        "media": ["TikTok"] * 6,
+        "cost": [600.0, 500.0, 400.0, 300.0, 200.0, 100.0],
+        "CPI": [1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0],
+        # 풀(상위 3행) 안에서 0이 아닌 값이 둘뿐 → 저조 슬롯 하나가 빈다
+        "D0 coin CVR": [0.05, 0.03, 0.0, 0.02, 0.03, 0.04],
+    })
+    old_rule = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)],
+                               spend_quantile=0.5)
+    assert len(set(old_rule[0]) | set(old_rule[1])) == 3, "옛 규칙의 결함이 재현되지 않음"
+
+    new_rule = pick_best_worst(df, [("CPI", False), ("D0 coin CVR", True)])
+    assert len(set(new_rule[0]) | set(new_rule[1])) == 4

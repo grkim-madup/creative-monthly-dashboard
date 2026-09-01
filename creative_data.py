@@ -533,3 +533,82 @@ def display_columns(df, rank_metric: str | None = None) -> list[str]:
     else:
         columns.append(rank_metric)
     return columns
+
+
+# --------------------------------------------------------------------------- #
+# 우수/저조 선정 (2·3번 섹션의 행 색칠)
+#
+# 진입점(creative_dashboard.py)에 있던 것을 여기로 옮겼다 — 진입점은 import하는 순간
+# 화면을 그려서 테스트가 부를 수 없고, 그래서 테스트가 같은 함수를 **복사해** 두고 있었다.
+# 복사본을 테스트해 봐야 진짜 코드는 검증되지 않는다.
+# --------------------------------------------------------------------------- #
+
+
+def spend_pool(
+    df: pd.DataFrame, spend_quantile: float = 0.5, group_column: str = "media"
+) -> pd.DataFrame:
+    """소진 볼륨 하위 구간을 후보에서 제외한다. `spend_quantile <= 0`이면 전부 남긴다.
+
+    **기준선은 매체별로 따로 잡는다.** 매체마다 배정 예산의 절대 규모가 크게 달라서, 표 전체에
+    하나의 컷을 걸면 예산이 작은 매체의 소재가 통째로 후보에서 빠져 버린다.
+    """
+    if df.empty or "cost" not in df.columns or spend_quantile <= 0:
+        return df
+
+    if group_column in df.columns and df[group_column].notna().any():
+        keep = df.groupby(group_column, dropna=False)["cost"].transform(
+            lambda costs: costs >= costs.quantile(spend_quantile)
+        )
+        pool = df[keep.fillna(False)]
+    else:
+        pool = df[df["cost"] >= df["cost"].quantile(spend_quantile)]
+
+    return pool if not pool.empty else df
+
+
+def pick_best_worst(
+    df: pd.DataFrame,
+    metrics: list[tuple[str, bool]],
+    spend_quantile: float = 0.0,
+    group_column: str = "media",
+) -> tuple[dict, dict]:
+    """지표별 최우수/최저조 소재를 하나씩 고른다. **후보는 넘겨받은 표 전체다.**
+
+    2026-09-01 변경: 예전에는 여기서 `spend_pool`로 소진 하위 50%를 또 잘라냈다. 그런데
+    이 함수에 들어오는 표는 **이미** 최소 소진액(₩100,000)으로 거르고 볼륨 상위 N개만
+    남긴 것이라, 한 번 더 자르면 후보가 절반으로 줄어 **색칠이 4개가 아니라 3개만 나오는
+    경우가 생겼다**(실측: 7월 AOS · D0 Read 정렬). 화면에 보이는 10개 중에서 고르는 편이
+    읽는 사람에게도 설명하기 쉽다 — "이 표 안에서 가장 좋고 나쁜 것"이 되기 때문이다.
+    `spend_quantile`을 주면 예전처럼 걸러낼 수 있다(기본값은 걸러내지 않음).
+
+    metrics: [(컬럼, 값이 클수록 좋은가)] — 예 [("CPI", False), ("D0 coin CVR", True)]
+    반환: ({인덱스: 사유}, {인덱스: 사유})
+    """
+    best: dict = {}
+    worst: dict = {}
+    if df.empty or "cost" not in df.columns:
+        return best, worst
+
+    pool = spend_pool(df, spend_quantile, group_column)
+    claimed: set = set()
+
+    def claim(column: str, ascending: bool, target: dict) -> None:
+        """이미 다른 슬롯이 가져간 소재는 건너뛰고 그다음 순위를 고른다."""
+        if column not in pool.columns:
+            return
+        values = pd.to_numeric(pool[column], errors="coerce").dropna()
+        values = values[values > 0]
+        for index in values.sort_values(ascending=ascending).index:
+            if index not in claimed:
+                target[index] = column
+                claimed.add(index)
+                return
+
+    # 지표마다 우수 1개 + 저조 1개 = 총 4개 소재가 서로 겹치지 않게 뽑힌다.
+    # (한 소재가 여러 슬롯의 1등이면 뒤 슬롯은 차순위로 밀려난다)
+    for column, higher_is_better in metrics:
+        claim(column, ascending=not higher_is_better, target=best)
+    for column, higher_is_better in metrics:
+        claim(column, ascending=higher_is_better, target=worst)
+
+    return best, worst
