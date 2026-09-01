@@ -1,3 +1,6 @@
+# ⚠ Streamlit Cloud는 진입점만 리로드하고 import된 모듈은 컨테이너가 재시작할 때까지
+# 옛것을 쓴다. 새 함수를 모듈에 추가하고 진입점에서 import하면 배포판이 ImportError로
+# 죽는다(2026-09-02 실제 발생). 이 파일을 한 줄 고쳐 push하면 환경 재빌드로 강제 재시작된다.
 streamlit==1.60.0
 pandas==3.0.5
 numpy==2.5.1
