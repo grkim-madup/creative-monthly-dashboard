@@ -297,10 +297,12 @@ _LOGIN_CSS = """
 .login-sub { font-size: 13px; color: #6b7280; margin-top: 9px; line-height: 1.7; }
 .login-btn, .login-btn:link, .login-btn:visited, .login-btn:hover, .login-btn:active {
     display: inline-flex; align-items: center; gap: 9px; margin-top: 22px;
-    padding: 11px 18px; border-radius: 3px; background: #00A94C; color: #ffffff !important;
+    padding: 11px 18px; border-radius: 3px; background: #1E7A45; color: #ffffff !important;
+    /* ASA 로그인 버튼과 같은 진한 녹색. 브랜드 그린(#00A94C)은 밝아서
+       버튼 안 흰 원 위의 구글 로고가 뚜렷하게 보이지 않았다. */
     font-size: 13.5px; font-weight: 700; text-decoration: none !important; width: fit-content;
 }
-.login-btn:hover { background: #00913F; }
+.login-btn:hover { background: #176036; }
 .login-fail {
     background: #fdf1f1; border: 1px solid #f3c8c8; color: #8a1f1f; border-radius: 3px;
     padding: 10px 12px; font-size: 12.5px; line-height: 1.6; margin-bottom: 18px;

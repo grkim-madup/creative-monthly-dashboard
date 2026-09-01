@@ -612,3 +612,39 @@ def pick_best_worst(
         claim(column, ascending=higher_is_better, target=worst)
 
     return best, worst
+
+
+def aggregate_by_axis(
+    df: pd.DataFrame,
+    axis: str,
+    *,
+    by_media: bool = True,
+    min_cost: float = 0.0,
+    values: list[str] | None = None,
+) -> pd.DataFrame:
+    """분석 축 하나로 집계한 표를 돌려준다.
+
+    예전에는 이 로직이 진입점(`creative_dashboard.py`)의 4번 섹션 안에
+    인라인으로 있었다. 진입점은 **어떤 테스트도 import하지 않는다**
+    (import하는 순간 화면을 그리기 시작한다) — 그래서 숙자가 광고주에게
+    그대로 가는데도 검증되지 않았다. 여기로 옷기면서 pytest로 고정한다.
+
+    - `extra_info_tag` 축은 **부르는 쪽이 미리 펼쳐서**(`explode_extra_info`) 넣어야
+      한다. 한 소재가 여러 태그에 들어가므로 태그별 합계를 더하면 전체보다 커진다.
+    - 결측은 버리지 않고 `미분류`로 묶는다 — 조용히 사라지면 합계가 안 맞는다.
+    """
+    if df.empty or axis not in df.columns:
+        return df.iloc[0:0]
+
+    frame = df.copy()
+    frame[axis] = frame[axis].fillna("미분류").replace("", "미분류")
+
+    keys = [axis, "media"] if by_media and "media" in frame.columns else [axis]
+    result = aggregate_by(frame, keys)
+    if result.empty:
+        return result
+    if min_cost:
+        result = result[result["cost"].fillna(0) >= min_cost]
+    if values:
+        result = result[result[axis].astype(str).isin(values)]
+    return result.reset_index(drop=True)

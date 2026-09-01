@@ -8,6 +8,7 @@ TOP 소재 / 소재 속성별 성과 / 작품별 성과를 매달 같은 절차�
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import html
 from pathlib import Path
@@ -38,6 +39,7 @@ from creative_data import (
     scope_to_day,
     add_derived_metrics,
     aggregate_by,
+    aggregate_by_axis,
     explode_extra_info,
     month_options,
     pick_best_worst,
@@ -1535,103 +1537,6 @@ def render_manual_override_panel(
 # Type을 하나로 좁혀 보는 중이라고 해서 분류 후보까지 그 하나로 줄어들면 안 된다.
 override_choices = override_options(scope[scope["ad"] != "-"])
 
-section(
-    "4", "소재 속성별 성과",
-    "소재명 규칙(작품코드_작품명_Creative Format_제작주체_Creative Type_Dimension_USP_Extra Info)을 "
-    "자동 분해해 집계합니다. 규칙에 맞지 않는 소재명은 추정하지 않고 '미분류'로 남깁니다.",
-    hint=True,
-)
-
-# 분석 축과 그 축의 값 선택은 한 덩어리로 읽혀야 한다("이 축의 값을 고른다"는 관계). 테두리
-# 상자 하나에 두 위젯을 나란히 담고, 소재 분류를 다루는 도구라는 점에서 결이 같은 수동 분류도
-# 같은 상자 안에 붙인다. 값 선택지는 축을 고른 뒤 집계를 해야 알 수 있으므로, 컬럼만 먼저
-# 만들어 두고 아래에서 계산이 끝난 뒤 가운데 칸을 채운다.
-with st.container(border=True, key="attr_axis_box"):
-    axis_cols = st.columns([1, 3])
-    override_slot = st.container()
-with axis_cols[0]:
-    attribute = st.selectbox(
-        "분석 축", list(ATTRIBUTES), format_func=lambda a: ATTRIBUTES[a]
-    )
-with override_slot:
-    # 상시 필터가 아니라 예외 보정 도구라, 옆에 나란히 두면 축·값 선택과 같은 비중으로 보인다.
-    # 같은 상자 안에서 한 단 아래로 내려 접어 둔다(데이터 분류 보정이므로 편집 모드와
-    # 무관하게 보기 모드에서도 항상 노출한다).
-    render_manual_override_panel(
-        month, True, set(named_overview["ad"].unique()), key_prefix="sec4_override",
-        options=override_choices,
-    )
-
-attr_scope = explode_extra_info(named_overview) if attribute == "extra_info_tag" else named_overview
-attr_scope = attr_scope.copy()
-attr_scope[attribute] = attr_scope[attribute].fillna("미분류").replace("", "미분류")
-by_attribute = aggregate_by(attr_scope, [attribute, "media"])
-by_attribute = by_attribute[by_attribute["cost"].fillna(0) >= min_cost]
-
-# 모든 값을 한 화면에 늘어놓지 않고, 보고 싶은 값만 골라서 비교할 수 있게 한다.
-attr_options = sorted(by_attribute[attribute].astype(str).unique())
-with axis_cols[1]:
-    attr_selection = st.multiselect(
-        "값 선택 (비우면 전체)",
-        attr_options,
-        key=f"attr_values_{attribute}",
-        placeholder="예: 6초 컷다운, SNS형만 골라서 비교",
-    )
-
-# 선택지가 고정이라 드롭다운일 이유가 없다 — 펼쳐 두면 지금 무슨 지표를 보고 있는지
-# 열지 않아도 보이고, 지표를 바꿀 때 클릭이 두 번에서 한 번으로 준다.
-# 소진액(cost)은 효율이 아니라 볼륨 지표라, "어디에 얼마를 썼는지"를 먼저 보고 효율로 넘어가는
-# 순서에 맞춰 맨 앞에 둔다. 값은 집계 프레임의 컬럼명 그대로 쓰고 라벨만 한글로 보여준다.
-compare_metric = st.segmented_control(
-    "비교 지표", ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"],
-    default="CPI", key="sec4_metric",
-    format_func=lambda m: METRIC_LABELS.get(m, m),
-) or "CPI"
-
-if attr_selection:
-    by_attribute = by_attribute[by_attribute[attribute].astype(str).isin(attr_selection)]
-
-if attribute == "extra_info_tag":
-    status_row(
-        "warn", "Extra Info는 태그별로 펼쳐 봅니다",
-        "`text-thumb`처럼 태그가 여러 개인 소재는 각 태그에 모두 들어갑니다. "
-        "따라서 태그별 합계를 전부 더하면 전체 소진액보다 커집니다 — 태그 간 비교용입니다.",
-    )
-
-if by_attribute.empty:
-    status_row("warn", "표시할 조합이 없습니다", "값 선택을 비우거나 최소 소진액 조건을 낮춰 보세요.")
-else:
-    chart = px.bar(
-        by_attribute,
-        x=attribute,
-        y=compare_metric,
-        color="media",
-        barmode="group",
-        labels={
-            attribute: ATTRIBUTES[attribute], "media": "매체",
-            compare_metric: METRIC_LABELS.get(compare_metric, compare_metric),
-        },
-        color_discrete_map=MEDIA_COLORS,
-        color_discrete_sequence=[MEDIA_COLOR_FALLBACK],
-    )
-    chart.update_layout(
-        plot_bgcolor="#fff", paper_bgcolor="#fff",
-        margin=dict(l=10, r=10, t=30, b=10), height=380,
-        font=dict(size=12), legend_title_text="",
-        yaxis=dict(gridcolor="#eef1f3"), xaxis=dict(showgrid=False),
-        font_family="Pretendard, sans-serif",
-    )
-    if compare_metric in ("CTR", "D0 read CVR", "D0 coin CVR"):
-        chart.update_layout(yaxis_tickformat=".1%")
-    elif compare_metric == "cost":
-        # 금액은 자릿수가 커서 기본 지수 표기(30k)로는 규모 감이 안 온다 — 원화 표기로 고정한다.
-        chart.update_layout(yaxis_tickprefix="₩", yaxis_tickformat=",.0f")
-    st.plotly_chart(chart, width="stretch")
-    render_table(
-        by_attribute.rename(columns={attribute: ATTRIBUTES[attribute]}),
-        color_columns=["CPI"], highlight_key=f"sec4_{attribute}_{compare_metric}", month=month,
-    )
-
 # ------------------------------------------------- 5. 소재 분석 (블록 목록)
 
 
@@ -1641,10 +1546,16 @@ def clear_editor_state(block_id: str) -> None:
     조건 행(cond_*) 상태는 위젯이라 잠금을 놓아도 세션에 그대로 남는다. 그냥 두면 취소한
     선택이 다음에 블록을 열 때 되살아나고, 그대로 저장하면 실제로 반영돼 버린다.
     """
+    # 조건 행·뷰 위젯은 키에 `<block_id>_<view_id>`가 섞여 있어 접두사만으로는 못 잡는다
+    # — 블록 id가 포함된 키를 통째로 비운다. 블록 id는 uuid4 앞 6자라 다른 블록을
+    # 건드릴 일이 없다.
     prefixes = (f"cond_rows_{block_id}", f"cond_field_{block_id}_",
                 f"cond_values_{block_id}_", f"cond_panel_{block_id}",
-                f"title_{block_id}", f"comment_{block_id}", f"next_step_md_{block_id}")
-    for key in [k for k in list(st.session_state) if k.startswith(prefixes)]:
+                f"title_{block_id}", f"comment_{block_id}", f"insight_{block_id}",
+                f"views_{block_id}", f"next_step_md_{block_id}")
+    for key in [k for k in list(st.session_state)
+                if k.startswith(prefixes) or f"_{block_id}_" in k
+                or k.endswith(f"_{block_id}")]:
         del st.session_state[key]
     st.session_state.pop(f"held_{block_id}", None)
 
@@ -1887,8 +1798,11 @@ def insert_block_row(slot: str, position: int, block_type: str, default_title: s
                 rerun_local()
 
 
-def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple[dict, bool]:
-    """조건 행 UI + 실시간 결과 요약 + 표 노출 여부. (조건, 표 노출 여부)를 돌려준다.
+def condition_editor(block_id: str, conditions: dict) -> dict:
+    """조건 행 UI + 실시간 결과 요약. 조건 dict를 돌려준다.
+
+    `block_id`는 이제 블록 id가 아니라 **뷰 단위 키**(`<block_id>_<view_id>`)다 —
+    한 블록에 표가 여러 개라, 블록 id를 그대로 쓰면 표끼리 위젯 상태가 섞인다.
 
     이 조건이 "무엇에 걸리는지" 편집 중에 바로 보이지 않는다는 피드백을 받아, 조건과
     결과 요약(소재 수·소진액)과 표 노출 토글을 한 패널 안에 묶는다. 표를 꺼 두면 이 조건이
@@ -1920,7 +1834,7 @@ def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple
 
     with st.container(border=True, key=f"cond_panel_{block_id}"):
         st.markdown(
-            '<div class="cp-label">이 블록의 표에 걸리는 조건</div>',
+            '<div class="cp-label">이 표에 걸리는 조건</div>',
             unsafe_allow_html=True,
         )
         for position, field in enumerate(rows):
@@ -1978,7 +1892,7 @@ def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple
         st.session_state[rows_key] = active_rows
 
         # 실시간 요약 — 저장 전에도 "지금 조건이 몇 개·얼마를 걸러내는지"가 바로 보여야
-        # 조건이 표에 걸리는 필터라는 게 체감된다. 결과 계산은 render_query_result와
+        # 조건이 표에 걸리는 필터라는 게 체감된다. 결과 계산은 render_view와
         # 완전히 같은 match_conditions()를 써서 표와 어긋나지 않게 한다.
         _, live_count = match_conditions(result)
         st.markdown(
@@ -1986,32 +1900,13 @@ def condition_editor(block_id: str, conditions: dict, show_table: bool) -> tuple
             unsafe_allow_html=True,
         )
 
-        # 조건을 보다가 미분류로 빠진 소재를 발견하면 그 자리에서 바로 고칠 수 있게, 이 블록의
-        # 조건 패널 안에 둔다. 저장소는 이 달 전체가 공유하므로(같은 소재는 어느 블록에서 고쳐도
-        # 동일 반영) 여러 블록에 나눠 걸어도 값이 어긋나지 않는다.
-        render_manual_override_panel(
-            month, True, set(named_overview["ad"].unique()),
-            key_prefix=f"sec5_override_{block_id}",
-            options=override_choices,
-        )
-
-        show_table = st.checkbox(
-            "이 표를 리포트에 함께 싣기", value=show_table, key=f"showtbl_{block_id}",
-        )
-        if not show_table:
-            st.markdown(
-                '<div class="cp-hint">표를 꺼 두면 위 조건은 저장해도 리포트에 나오지 않고, '
-                '아래 코멘트만 실립니다.</div>',
-                unsafe_allow_html=True,
-            )
-
-    return result, show_table
+    return result
 
 
 def match_conditions(conditions: dict) -> tuple[pd.DataFrame, int]:
     """조건에 맞는 소재를 찾는다. (매칭된 원본 스코프, 소재 수)를 돌려준다.
 
-    condition_editor의 실시간 요약과 render_query_result의 표가 같은 매칭 결과를 써야
+    condition_editor의 실시간 요약과 render_view의 표가 같은 매칭 결과를 써야
     "이 조건이 무엇에 걸리는지"가 편집 중에도 어긋나지 않는다 — 로직을 한 곳에 둔다.
     """
     # 소재명 규칙 파싱이 있어야 조건이 의미가 있다 — 구글은 소재 단위 태깅이 없어 제외한다.
@@ -2028,31 +1923,101 @@ def match_conditions(conditions: dict) -> tuple[pd.DataFrame, int]:
     return scope_of_match, len(matched_ads)
 
 
-def condition_label(conditions: dict) -> str:
-    """조건을 'Extra Info = mix' 같은 한 줄로 요약한다.
+COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"]
 
-    조건이 없을 때 배지를 아예 숨겼더니 "필터가 걸려 있었는데 표시가 사라졌다"고 읽혔다 —
-    비어 있다는 것도 정보라서 명시한다. 블록 헤더 옆 배지와 조건 편집 패널 양쪽에서
-    같은 문구를 써야 어긋나지 않는다.
-    """
-    if not conditions:
-        return "조건 없음 · 전체 소재"
-    return " · ".join(
-        f"{PIVOT_FIELDS[f]} = {', '.join(map(str, v))}" for f, v in conditions.items()
+#: 빈 뷰를 만들 때의 기본값. 저장된 뷰에 없는 키는 여기서 채운다 — 나중에 필드를
+#: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
+VIEW_DEFAULTS = {
+    "label": "", "kind": "aggregate", "conditions": {}, "months": [],
+    "axis": "creative_type", "chart": False, "metric": "CPI", "top_n": 0,
+}
+
+
+def view_with_defaults(view: dict) -> dict:
+    merged = copy.deepcopy(VIEW_DEFAULTS)
+    merged.update({k: v for k, v in (view or {}).items() if v is not None})
+    if not merged.get("id"):
+        merged["id"] = uuid4().hex[:6]
+    return merged
+
+
+def attribute_chart(frame: pd.DataFrame, axis: str, metric: str):
+    """속성 집계표를 매체별 그룹 막대그래프로. (예전 4번 섹션 코드를 그대로 옮겼다.)"""
+    chart = px.bar(
+        frame, x=axis, y=metric, color="media" if "media" in frame.columns else None,
+        barmode="group",
+        labels={axis: ATTRIBUTES.get(axis, axis), "media": "매체",
+                metric: METRIC_LABELS.get(metric, metric)},
+        color_discrete_map=MEDIA_COLORS,
+        color_discrete_sequence=[MEDIA_COLOR_FALLBACK],
     )
+    chart.update_layout(
+        plot_bgcolor="#fff", paper_bgcolor="#fff",
+        margin=dict(l=10, r=10, t=30, b=10), height=380,
+        font=dict(size=12), legend_title_text="",
+        yaxis=dict(gridcolor="#eef1f3"), xaxis=dict(showgrid=False),
+        font_family="Pretendard, sans-serif",
+    )
+    if metric in ("CTR", "D0 read CVR", "D0 coin CVR"):
+        chart.update_layout(yaxis_tickformat=".1%")
+    elif metric == "cost":
+        # 금액은 자릿수가 커서 기본 지수 표기(30k)로는 규모 감이 안 온다.
+        chart.update_layout(yaxis_tickprefix="₩", yaxis_tickformat=",.0f")
+    return chart
 
 
-def render_query_result(conditions: dict, month: int, highlight_key: str) -> None:
-    """조건에 맞는 소재를 집계해 KPI + 표로 보여준다."""
-    scope_of_match, matched_count = match_conditions(conditions)
-    detail = aggregate_by(scope_of_match, ["ad", "media"]).sort_values("cost", ascending=False)
+def render_view(view: dict, month: int, key_prefix: str) -> None:
+    """뷰 하나(기준 라벨 + 표 [+ 그래프])를 그린다.
 
-    if detail.empty:
+    강조 키에 **뷰 id를 섞는다** — 안 그러면 한 블록 안 두 표가 강조 상태를 공유해서,
+    첫 표의 셀을 칠하면 둘째 표의 같은 자리가 함께 칠해진다.
+    """
+    view = view_with_defaults(view)
+    if view["label"]:
+        st.markdown(
+            f'<div class="view-basis">* {html.escape(view["label"])}</div>',
+            unsafe_allow_html=True,
+        )
+
+    scope_of_match, matched_count = match_conditions(view["conditions"])
+    if scope_of_match.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
         return
 
+    highlight_key = f"{key_prefix}_{view['id']}"
+
+    if view["kind"] == "aggregate":
+        axis = view["axis"] if view["axis"] in ATTRIBUTES else "creative_type"
+        base = explode_extra_info(scope_of_match) if axis == "extra_info_tag" else scope_of_match
+        table = aggregate_by_axis(base, axis, min_cost=min_cost)
+        if table.empty:
+            status_row("warn", "표시할 조합이 없습니다",
+                       "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
+            return
+        if axis == "extra_info_tag":
+            status_row(
+                "warn", "Extra Info는 태그별로 펼쳐 봅니다",
+                "`text-thumb`처럼 태그가 여러 개인 소재는 각 태그에 모두 들어갑니다. "
+                "따라서 태그별 합계를 전부 더하면 전체 소진액보다 커집니다 — 태그 간 비교용입니다.",
+            )
+        if view["chart"]:
+            metric = view["metric"] if view["metric"] in COMPARE_METRICS else "CPI"
+            st.plotly_chart(attribute_chart(table, axis, metric), width="stretch",
+                            key=f"chart_{highlight_key}")
+        render_table(
+            table.rename(columns={axis: ATTRIBUTES[axis]}),
+            color_columns=["CPI"], highlight_key=highlight_key, month=month,
+        )
+        return
+
+    # kind == "list" — 소재 단위 나열
+    detail = aggregate_by(scope_of_match, ["ad", "media"]).sort_values("cost", ascending=False)
+    if detail.empty:
+        status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
+        return
+    if view["top_n"]:
+        detail = detail.head(int(view["top_n"]))
     summary = aggregate_by(scope_of_match.assign(_all="합계"), ["_all"]).iloc[0]
-    # 조건 요약은 이제 블록 헤더 옆 배지로 옮겨서 여기서는 다시 찍지 않는다.
     kpi_cards([
         {"label": "소재 수", "value": f"{matched_count:,}개",
          "sub": "조건에 맞는 소재", "primary": True},
@@ -2069,40 +2034,138 @@ def render_query_result(conditions: dict, month: int, highlight_key: str) -> Non
     )
 
 
+VIEW_KINDS = {"aggregate": "속성별 집계", "list": "소재 목록"}
+QUILL_TOOLBAR = [
+    ["bold", "italic", "underline", "strike"],
+    [{"header": [2, 3, False]}],
+    [{"list": "ordered"}, {"list": "bullet"}],
+    [{"color": []}, {"background": []}],
+    ["link", "blockquote", "code-block"],
+    ["clean"],
+]
+
+
+def clear_view_state(block_id: str, view_id: str) -> None:
+    """지운 표가 남긴 위젯·조건 행 상태를 지운다."""
+    view_key = f"{block_id}_{view_id}"
+    for key in [k for k in list(st.session_state) if view_key in k]:
+        del st.session_state[key]
+
+
+def views_editor(block_id: str, views: list[dict]) -> list[dict]:
+    """이 주제가 담을 표들을 편집한다. 새 views 리스트를 돌려준다.
+
+    실제 리포트는 주제 하나에 표가 2~6개 붙는다(6월 `3) 영상화 작품 성과`가 표 6개).
+    그래서 표를 목록으로 다룬다.
+
+    표를 지울 때는 **위젯 상태를 함께 비워야 한다** — 안 그러면 뒤 표가 앞 표의 조건을
+    물고 온다(조건 행 삭제에서 이미 같은 문제를 겪었다).
+    """
+    state_key = f"views_{block_id}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = [view_with_defaults(v) for v in views]
+    current: list[dict] = st.session_state[state_key]
+
+    result: list[dict] = []
+    drop_index: int | None = None
+    for position, saved in enumerate(list(current)):
+        view = view_with_defaults(saved)
+        view_key = f"{block_id}_{view['id']}"
+        with st.container(border=True, key=f"view_box_{view_key}"):
+            head = st.columns([2.4, 1.4, 1.4, 0.5], vertical_alignment="bottom")
+            label = head[0].text_input(
+                "기준 라벨 (표 위에 표시)", value=view["label"],
+                key=f"vlabel_{view_key}",
+                placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
+            )
+            kinds = list(VIEW_KINDS)
+            kind = head[1].selectbox(
+                "표 종류", kinds,
+                index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
+                format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
+            )
+            axes = list(ATTRIBUTES)
+            if kind == "aggregate":
+                axis = head[2].selectbox(
+                    "분석 축", axes,
+                    index=axes.index(view["axis"]) if view["axis"] in ATTRIBUTES else 0,
+                    format_func=lambda a: ATTRIBUTES[a], key=f"vaxis_{view_key}",
+                )
+                top_n = view["top_n"]
+            else:
+                axis = view["axis"]
+                top_n = head[2].number_input(
+                    "상위 N개 (0=전체)", min_value=0, max_value=100,
+                    value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
+                )
+            if head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
+                drop_index = position
+
+            conditions = condition_editor(view_key, view["conditions"])
+
+            chart = view["chart"]
+            metric = view["metric"]
+            if kind == "aggregate":
+                chart_col, metric_col = st.columns([1, 2], vertical_alignment="center")
+                chart = chart_col.checkbox("그래프 함께 보기", value=bool(chart),
+                                           key=f"vchart_{view_key}")
+                if chart:
+                    metric = metric_col.segmented_control(
+                        "그래프 지표", COMPARE_METRICS,
+                        default=metric if metric in COMPARE_METRICS else "CPI",
+                        key=f"vmetric_{view_key}",
+                        format_func=lambda m: METRIC_LABELS.get(m, m),
+                    ) or "CPI"
+
+        result.append({
+            "id": view["id"], "label": label, "kind": kind, "conditions": conditions,
+            "months": view["months"], "axis": axis, "chart": bool(chart),
+            "metric": metric, "top_n": int(top_n or 0),
+        })
+
+    if drop_index is not None:
+        removed = result.pop(drop_index)
+        clear_view_state(block_id, removed["id"])
+        st.session_state[state_key] = result
+        rerun_local()
+
+    if st.button("+ 표 추가", key=f"vadd_{block_id}"):
+        st.session_state[state_key] = result + [view_with_defaults({})]
+        rerun_local()
+
+    st.session_state[state_key] = result
+    return result
+
+
 def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     block_id = block["id"]
     owner = st.session_state["editor_token"]
-    # 저장된 조건을 제목 옆 배지로 보여준다 — 표 위 캡션에 있을 땐 눈에 잘 안 띄었다.
-    saved_conditions = dict(block.get("conditions") or {})
+    saved_views = [view_with_defaults(v) for v in (block.get("views") or [])]
     editing = lock_gate(
         block_id, month, block.get("title") or "제목 없는 블록", edit_mode,
-        info=condition_label(saved_conditions),
+        info=f"표 {len(saved_views)}개" if saved_views else "표 없음",
         menu=lambda: block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner),
     )
 
-    conditions = saved_conditions
-    show_table = bool(block.get("show_table", True))
+    views = saved_views
 
     if editing:
-        title_value = st.text_input("블록 제목", value=block.get("title", ""),
-                                    key=f"title_{block_id}")
-        conditions, show_table = condition_editor(block_id, conditions, show_table)
-        comment = st_quill(
-            value=block.get("comment", ""), html=True,
-            toolbar=[
-                ["bold", "italic", "underline", "strike"],
-                [{"header": [2, 3, False]}],
-                [{"list": "ordered"}, {"list": "bullet"}],
-                [{"color": []}, {"background": []}],
-                ["link", "blockquote", "code-block"],
-                ["clean"],
-            ],
-            key=f"comment_{block_id}",
-        )
+        title_value = st.text_input("주제 제목", value=block.get("title", ""),
+                                    key=f"title_{block_id}",
+                                    placeholder="예: 정방형 / GIF 소재 성과")
+        views = views_editor(block_id, views)
+
+        st.markdown('<div class="cp-label">분석</div>', unsafe_allow_html=True)
+        comment = st_quill(value=block.get("comment", ""), html=True,
+                           toolbar=QUILL_TOOLBAR, key=f"comment_{block_id}")
+        st.markdown('<div class="cp-label">추후 제작 인사이트</div>',
+                    unsafe_allow_html=True)
+        insight = st_quill(value=block.get("insight", ""), html=True,
+                           toolbar=QUILL_TOOLBAR, key=f"insight_{block_id}")
+
         taken_over = editor_taken_over(block_id, month)
         # 버튼을 하나로 합친다 — 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
-        # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다. 완료는 항상 저장까지
-        # 같이 한다.
+        # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다.
         if st.button("완료", type="primary", key=f"save_{block_id}", disabled=taken_over):
             # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
             if locks.status(
@@ -2116,8 +2179,8 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
                 month,
                 lambda d: report_blocks.update_block(
                     d, report_blocks.SLOT_ANALYSIS, block_id,
-                    title=title_value, conditions=conditions,
-                    show_table=show_table, comment=comment or "",
+                    title=title_value, views=views, comment=comment or "",
+                    insight=insight or "",
                 ),
                 expect={block_id: block.get("_rev", 0)},
             ):
@@ -2125,14 +2188,21 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
                 clear_editor_state(block_id)
                 rerun_local()
 
-    # 편집 중에는 저장된 값이 아니라 화면의 체크박스 값을 따른다 — 안 그러면 체크를 껐는데도
-    # 저장하기 전까지 표가 그대로 남아 반응이 없는 것처럼 보인다.
-    if show_table:
-        render_query_result(conditions, month, f"sec5_{block_id}")
+    # 편집 중에는 저장된 값이 아니라 화면의 현재 값을 따른다 — 안 그러면 조건을 바꿔도
+    # 저장하기 전까지 표가 그대로라 반응이 없는 것처럼 보인다.
+    for view in views:
+        render_view(view, month, f"sec5_{block_id}")
 
     if block.get("comment"):
         st.markdown(
             f'<div class="note-body">{to_preview_html(block["comment"])}</div>',
+            unsafe_allow_html=True,
+        )
+    if block.get("insight"):
+        st.markdown('<div class="insight-head">추후 제작 인사이트</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="note-body">{to_preview_html(block["insight"])}</div>',
             unsafe_allow_html=True,
         )
 
@@ -2154,7 +2224,21 @@ analysis_blocks = page_blocks[report_blocks.SLOT_ANALYSIS]
 
 # 편집 상태는 블록마다 자기 헤더에 이미 표시되므로(편집 중 · 나 / 다른 사람이 편집 중),
 # 섹션 배지에 또 요약하지 않는다 — 중복이다.
-section("5", "소재 분석")
+section(
+    "4", "신규 소재 유형별 성과",
+    "분석 주제를 하나 만들고, 그 안에 필요한 표를 여러 개 붙입니다. 소재명 규칙"
+    "(작품코드_작품명_Creative Format_제작주체_Creative Type_Dimension_USP_Extra Info)을 "
+    "자동 분해해 집계하며, 규칙에 맞지 않는 소재명은 추정하지 않고 '미분류'로 남깁니다.",
+    hint=True,
+)
+
+# 예전 4번 섹션에 있던 수동 분류 패널을 이리로 옷겼다. 블록별로 있으면 블록이 하나도
+# 없을 때 미분류를 고칠 곳이 사라진다. 저장소는 이 달 전체가 공유하므로 한 군데면 충분하다
+# (분류 보정은 데이터 교정이라 보기 모드에서도 항상 노출한다).
+render_manual_override_panel(
+    month, True, set(named_overview["ad"].unique()), key_prefix="sec4_override",
+    options=override_choices,
+)
 
 if blocks_unavailable:
     st.error(
@@ -2190,12 +2274,12 @@ def _analysis_blocks_section() -> None:
         report_blocks.SLOT_ANALYSIS
     ]
     if edit_mode:
-        insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 블록")
+        insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 주제")
     for index, block in enumerate(list(blocks)):
         render_query_block(block, month, edit_mode)
         if edit_mode:
             insert_block_row(
-                report_blocks.SLOT_ANALYSIS, index + 1, "creative_query", "새 분석 블록"
+                report_blocks.SLOT_ANALYSIS, index + 1, "creative_query", "새 분석 주제"
             )
 
 
@@ -2203,7 +2287,7 @@ _analysis_blocks_section()
 
 # --------------------------------------------------------------------------- 6. 작품별
 
-section("6", "작품별 성과")
+section("5", "작품별 성과")
 
 # 작품별 성과는 "이 작품이 iOS에서 잘 도는지 / 메타에서 잘 도는지"를 자주 따로 봐야 해서, 상단 총괄
 # 필터와 별개로 이 섹션 전용 OS·매체 필터를 둔다(비워두면 전체).
@@ -2446,7 +2530,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
 
 next_step_blocks = page_blocks[report_blocks.SLOT_NEXT_STEP]
 
-section("7", "NEXT STEP")
+section("6", "NEXT STEP")
 if not next_step_blocks:
     st.caption("아직 작성된 내용이 없습니다.")
 

@@ -638,12 +638,21 @@ header[data-testid="stHeader"] { background: transparent; }
 /* 4번 비교 지표 세그먼트도 같은 규칙을 쓴다 — Streamlit 기본 선택색(빨강)이 리포트의
    액센트 1색 원칙을 깨기 때문에 브랜드 그린으로 덮는다. */
 .st-key-mode_toggle button[role="radio"][aria-checked="true"],
-.st-key-sec4_metric button[role="radio"][aria-checked="true"] {
+[class*="st-key-vmetric_"] button[role="radio"][aria-checked="true"] {
   background: var(--brand) !important; border-color: var(--brand) !important;
 }
 .st-key-mode_toggle button[role="radio"][aria-checked="true"] p,
-.st-key-sec4_metric button[role="radio"][aria-checked="true"] p {
+[class*="st-key-vmetric_"] button[role="radio"][aria-checked="true"] p {
   color: #fff !important;
+}
+
+/* 표 위 기준 라벨 — 실제 리포트 시트가 표마다 `* 틱톡 AOS`처럼 붙이는 그것. */
+.view-basis {
+  font-size: 12px; color: var(--ink-2); margin: 14px 0 6px 0; font-weight: 600;
+}
+/* 분석 코멘트 다음에 항상 오는 고정 항목. 리포트에서 이 문구가 소제목 역할을 한다. */
+.insight-head {
+  font-size: 12.5px; font-weight: 700; color: var(--ink); margin: 16px 0 4px 0;
 }
 
 /* 조건 패널 — "이 조건이 무엇에 걸리는지"가 편집 중에도 바로 보이게 라벨·실시간 요약을 붙인다 */

@@ -47,7 +47,11 @@ SLOTS = (SLOT_ANALYSIS, SLOT_NEXT_STEP)
 
 # 블록 타입별 기본 형태. update_block은 여기 있는 키만 반영한다.
 BLOCK_DEFAULTS: dict[str, dict] = {
-    "creative_query": {"title": "", "conditions": {}, "show_table": True, "comment": ""},
+    # `views`가 새 본체다 — 표 여러 개를 담는다(실제 리포트가 주제당 표 2~6개다).
+    # `conditions`/`show_table`은 지우지 않는다 — 예전 블록을 읽을 때 승격시키는
+    # 근거가 되고, 되돌릴 수 있게 남겨 둔다.
+    "creative_query": {"title": "", "conditions": {}, "show_table": True, "comment": "",
+                       "views": [], "insight": ""},
     "note": {"title": "", "comment": "", "images": [], "tables": [],
              "image_max_height": next_step.DEFAULT_IMAGE_MAX_HEIGHT},
 }
@@ -144,12 +148,41 @@ class BlocksState:
     reason: str | None = None
 
 
+#: 이 이전에 저장된 블록은 "조건 하나 = 소재 목록 표 하나"였다.
+LEGACY_VIEW_ID = "legacy"
+
+
+def promote_views(block: dict) -> dict:
+    """예전 형식의 `creative_query` 블록을 `views` 형식으로 올려준다.
+
+    **읽는 쪽에서만 변환하고 저장된 원본은 건드리지 않는다** — 되돌리려면
+    코드만 되돌리면 되게 하기 위해서다. 사용자가 한 번이라도 저장하면 그때 새
+    형식으로 굳는다.
+
+    `show_table`이 꺼져 있었으면 표가 없는 것(`views == []`)과 같은 뜻이다.
+    """
+    if block.get("type") != "creative_query" or block.get("views"):
+        return block
+    if not block.get("show_table", True):
+        block["views"] = []
+        return block
+    block["views"] = [{
+        "id": LEGACY_VIEW_ID,
+        "label": "",
+        "kind": "list",
+        "conditions": copy.deepcopy(block.get("conditions") or {}),
+        "months": [],
+    }]
+    return block
+
+
 def _normalize(data: dict) -> dict:
     result = empty_blocks()
     for slot in SLOTS:
         value = data.get(slot)
         if isinstance(value, list):
-            result[slot] = [b for b in value if isinstance(b, dict) and b.get("id")]
+            result[slot] = [promote_views(b) for b in value
+                            if isinstance(b, dict) and b.get("id")]
     return result
 
 
@@ -171,7 +204,7 @@ def _state_from_rows(items: list[dict]) -> BlocksState:
     for item in sorted(items, key=lambda i: (i["slot"], i["seq"])):
         if item["slot"] not in SLOTS:
             continue
-        block = dict(item["block"])
+        block = promote_views(dict(item["block"]))
         block["_rev"] = item["rev"]
         data[item["slot"]].append(block)
         revs[item["block_id"]] = item["rev"]
