@@ -155,3 +155,28 @@ def require_password() -> None:
             st.error("비밀번호가 올바르지 않습니다.")
 
     st.stop()
+
+
+#: 편집(블록 추가·삭제·글 작성·인사이트 초안)을 할 수 있는 도메인.
+#: 광고주(`webtoonscorp.com`)는 **보기만** 한다 — 이 화면은 광고주에게 그대로 공유하는
+#: 리포트이고, 편집 도구·AI 초안 버튼·수동 분류 같은 사내 작업 흔적이 보이면 안 된다.
+EDITOR_DOMAINS = ("madup.com",)
+
+
+def can_edit() -> bool:
+    """지금 로그인한 사람이 편집해도 되는가.
+
+    Google 로그인이 설정돼 있으면 **이메일 도메인**으로 가른다.
+    설정돼 있지 않으면(로컬 개발 · 비밀번호 게이트를 쓰는 Streamlit Cloud 백업판)
+    허용한다 — 그쪽은 애초에 사내만 들어온다.
+
+    ⚠ 로그인은 됐는데 이메일을 못 읽은 경우는 **막는다**(fail-closed).
+      뚫리는 쪽으로 기울면 광고주 화면에 편집 도구가 뜬다.
+    """
+    if not google_login.is_configured():
+        return True
+    email = google_login.current_email()
+    if not email:
+        return False
+    domain = str(email).rsplit("@", 1)[-1].lower()
+    return domain in EDITOR_DOMAINS

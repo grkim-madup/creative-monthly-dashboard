@@ -668,6 +668,51 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-blocktitle_"] { margin-bottom: 2px; }
 
+/* 인사이트 초안 버튼 — 에디터 툴바 오른쪽에 붙어 툴바의 일부처럼 보이게 한다.
+   Streamlit은 위젯을 다른 위젯(Quill) 안에 넣을 수 없어서, 버튼 줄을 아래로 끌어내려
+   툴바와 같은 줄에 겹친다. 툴바 높이(약 42px)만큼 내리고 우측 여백을 맞췄다. */
+[class*="st-key-draftbar_"] {
+  position: relative; z-index: 3;
+  margin: 0 0 -44px 0 !important; padding: 0 8px 0 0 !important;
+  pointer-events: none;                     /* 툴바 클릭을 막지 않는다 */
+}
+[class*="st-key-draftbar_"] > div { pointer-events: auto; }
+[class*="st-key-draftbar_"] .stButton button {
+  height: 28px; min-height: 28px; padding: 0 12px;
+  font-size: 11.5px !important; font-weight: 500;
+  border-radius: 3px; border: 1px solid var(--line) !important;
+  background: #fff !important; color: var(--muted) !important;
+}
+[class*="st-key-draftbar_"] .stButton button:hover {
+  border-color: var(--brand) !important; color: var(--brand-deep) !important;
+  background: #fff !important;
+}
+.draft-off {
+  font-size: 11px; color: var(--faint); text-align: right; padding-top: 6px;
+}
+
+/* 사이드바 접기/펼치기 버튼은 **커서를 가져다 댈 때만** 보인다.
+   광고주에게 링크로 그대로 공유하는 화면이라, 리포트 위에 상시 떠 있는 조작 버튼이
+   시선을 끌면 안 된다. 없애지는 않는다 — 사이드바에 데이터 소스·재불러오기가 있어
+   규리님이 필요할 때 열어야 한다. */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stExpandSidebarButton"],
+[data-testid="collapsedControl"] {
+  opacity: 0; transition: opacity .15s ease;
+}
+[data-testid="stSidebarCollapseButton"]:hover,
+[data-testid="stExpandSidebarButton"]:hover,
+[data-testid="collapsedControl"]:hover,
+[data-testid="stSidebar"]:hover [data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarHeader"]:hover [data-testid="stSidebarCollapseButton"],
+[data-testid="stAppViewContainer"] > section:hover [data-testid="stExpandSidebarButton"] {
+  opacity: 1;
+}
+/* 접힌 상태에서 펼치는 버튼은 화면 왼쪽 끝에 마우스를 대면 나타나게 한다 —
+   아예 안 보이면 여는 방법을 모른다. */
+[data-testid="stSidebarCollapsedControl"] { opacity: 0; transition: opacity .15s ease; }
+[data-testid="stSidebarCollapsedControl"]:hover { opacity: 1; }
+
 /* 피벗 편집기 — 행 / 값 / 필터 세 줄. 라벨은 좁고 조용하게, 칩이 주인공이다. */
 .pv-lab {
   font-size: 11px; font-weight: 700; color: var(--muted);

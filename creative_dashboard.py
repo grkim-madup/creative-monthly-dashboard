@@ -95,9 +95,11 @@ st.set_page_config(
     page_title="네이버웹툰 대만 · 먼슬리 크리에이티브 리포트",
     page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else None,
     layout="wide",
-    # Streamlit은 접힘 상태를 브라우저 localStorage에 저장한다. 항상 펼친 상태로 시작하게 고정해서
-    # 이전 세션에서 접어둔 탓에 필터가 안 보이는 상황을 막는다.
-    initial_sidebar_state="expanded",
+    # **접힌 채로 시작한다.** 이 화면은 광고주에게 링크로 그대로 공유하는 리포트라,
+    # 처음 열었을 때 사내 작업용 사이드바(데이터 소스·마크업 배율 등)가 먼저 보이면 안 된다.
+    # 예전에는 "이전 세션에서 접어둔 탓에 필터가 안 보이는 것"을 막으려고 펼침으로
+    # 고정했는데, 사이드바에서 필터를 다 걷어낸 뒤로는 그 이유가 사라졌다.
+    initial_sidebar_state="collapsed",
 )
 inject_css()
 # 배포판이 **어느 커밋으로 떠 있는지**를 화면에서 확인할 수 있게 숨긴 마커로 내보낸다.
@@ -963,14 +965,21 @@ with month_slot:
 
 # 로그인이 없으므로 브라우저 세션이 곧 편집자 신원이다
 st.session_state.setdefault("editor_token", uuid4().hex)
-with mode_slot:
-    mode_choice = st.segmented_control(
-        "모드", ["보기", "편집"], default="보기", key="mode_toggle",
-        label_visibility="collapsed",
-        help="편집을 선택하면 블록 추가·삭제·이동과 글 편집 버튼이 보입니다. "
-             "보기는 고객사가 보는 화면 그대로입니다.",
-    )
-edit_mode = mode_choice == "편집"
+# 편집은 매드업 계정만 — 광고주(`webtoonscorp.com`)에게는 토글 자체를 보여주지 않는다.
+# 버튼만 숨기고 편집 경로를 열어두면 세션 상태를 만지는 것만으로 들어갈 수 있으니,
+# `edit_mode`를 아예 False로 못 박는다.
+editor_allowed = auth.can_edit()
+if editor_allowed:
+    with mode_slot:
+        mode_choice = st.segmented_control(
+            "모드", ["보기", "편집"], default="보기", key="mode_toggle",
+            label_visibility="collapsed",
+            help="편집을 선택하면 블록 추가·삭제·이동과 글 편집 버튼이 보입니다. "
+                 "보기는 고객사가 보는 화면 그대로입니다.",
+        )
+    edit_mode = mode_choice == "편집"
+else:
+    edit_mode = False
 # 블록 저장소를 못 읽은 상태에서는 아래에서 편집 모드를 강제로 끈다(blocks_unavailable).
 
 # 아래 조건은 사이드바 위젯을 없애고 고정값으로 둔다(사용자 요청 — 사이드바를 비우기로 함).
@@ -1585,7 +1594,7 @@ def clear_editor_state(block_id: str) -> None:
     # 조건 행·뷰 위젯은 키에 `<block_id>_<view_id>`가 섞여 있어 접두사만으로는 못 잡는다
     # — 블록 id가 포함된 키를 통째로 비운다. 블록 id는 uuid4 앞 6자라 다른 블록을
     # 건드릴 일이 없다.
-    prefixes = (f"cdraft_{block_id}", f"cnonce_{block_id}",
+    prefixes = (f"cdraft_{block_id}", f"cnonce_{block_id}", f"askcancel_{block_id}",
                 f"cond_rows_{block_id}", f"cond_field_{block_id}_",
                 f"cond_values_{block_id}_", f"cond_panel_{block_id}",
                 f"title_{block_id}", f"blocktitle_{block_id}", f"comment_{block_id}", f"insight_{block_id}",
@@ -2758,11 +2767,13 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
               for v in views if v["kind"] != "compare"]
     scopes = [frame for frame in scopes if not frame.empty]
     if not scopes:
-        st.caption("표를 먼저 만들면 초안을 만들 수 있습니다.")
+        st.markdown('<div class="draft-off">표를 먼저 만들면 초안을 쓸 수 있어요</div>',
+                    unsafe_allow_html=True)
         return
-    if not st.button("초안 만들기", key=f"draft_{block_id}",
-                     help="표 데이터로 인사이트 초안을 씁니다. 숫자에 없는 해석은 "
-                          "'확인 필요'로 남겨 둡니다."):
+    if not st.button("초안 쓰기", key=f"draft_{block_id}",
+                     use_container_width=True,
+                     help="위 표 데이터로 인사이트 초안을 씁니다. 숫자에 없는 해석은 "
+                          "'확인 필요'로 남겨 두니 그 부분만 고쳐 주세요."):
         return
 
     scope = pd.concat(scopes).drop_duplicates()
@@ -2885,6 +2896,31 @@ def save_block(block: dict, month: int, views: list[dict], owner: str) -> None:
         rerun_local()
 
 
+def cancel_confirm(block: dict, month: int, owner: str) -> None:
+    """취소 확인 — 무엇이 날아가는지 말하고 나서 묻는다.
+
+    "취소"라는 말만으로는 **저장 안 된 글이 사라진다**는 게 전달되지 않는다.
+    이 프로젝트에서 코멘트 유실은 복구 경로가 없는 실패라(`3ece147`), 한 번 확인받는다.
+    """
+    block_id = block["id"]
+    status_row("warn", "저장하지 않고 편집을 끝낼까요?",
+               "이번에 쓴 글·표 설정·인사이트 초안은 **저장되지 않고 사라집니다.** "
+               "남겨두려면 `완료`를 누르세요.")
+    keep, discard = st.columns([1, 1])
+    if keep.button("계속 편집", key=f"cancel_no_{block_id}", use_container_width=True):
+        st.session_state.pop(f"askcancel_{block_id}", None)
+        rerun_local()
+    if discard.button("저장 안 하고 끝내기", key=f"cancel_yes_{block_id}",
+                      use_container_width=True):
+        # 잠금을 놓고 위젯 상태를 비운다 — 저장은 하지 않는다.
+        # `clear_editor_state`가 초안·조건 행·뷰 목록까지 함께 지우므로, 다음에 열면
+        # 저장소에 있는 내용으로 다시 시작한다.
+        locks.release(f"block:{block_id}", month, owner)
+        st.session_state.pop(f"askcancel_{block_id}", None)
+        clear_editor_state(block_id)
+        rerun_local()
+
+
 def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     """주제 하나. 읽는 순서 = 숫자 → 표 → 해석.
 
@@ -2912,10 +2948,18 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         taken_over = editor_taken_over(block_id, month)
         # 완료 = 저장이다. 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
         # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다.
-        _, action = st.columns([6, 1.4], vertical_alignment="center")
+        _, cancel, action = st.columns([5, 1.1, 1.4], vertical_alignment="center")
+        asking = bool(st.session_state.get(f"askcancel_{block_id}"))
+        if cancel.button("취소", key=f"cancel_{block_id}",
+                         use_container_width=True, disabled=asking):
+            # 한 번 물어본다 — 누르는 순간 되돌릴 수 없이 날아가기 때문이다.
+            st.session_state[f"askcancel_{block_id}"] = True
+            rerun_local()
         if action.button("완료", type="primary", key=f"save_{block_id}",
-                         disabled=taken_over, use_container_width=True):
+                         disabled=taken_over or asking, use_container_width=True):
             save_block(block, month, views, owner)
+        if asking:
+            cancel_confirm(block, month, owner)
 
     if views:
         render_block_kpis(views, month)
@@ -2924,11 +2968,14 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
 
     if editing:
         add_view_button(block_id)
-        label_col, draft_col = st.columns([5, 1.4], vertical_alignment="bottom")
-        label_col.markdown('<div class="cp-label">인사이트</div>',
-                           unsafe_allow_html=True)
-        with draft_col:
-            insight_button(block, views, month)
+        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
+        # 버튼을 에디터 **바로 위 오른쪽**에 두고 CSS로 툴바 줄까지 끌어내린다
+        # (`.st-key-draftbar_`). Streamlit은 위젯을 다른 위젯 안에 넣을 수 없어서,
+        # 붙어 보이게 하려면 이렇게 겹치는 수밖에 없다.
+        with st.container(key=f"draftbar_{block_id}"):
+            _, draft_col = st.columns([6, 1.3], vertical_alignment="center")
+            with draft_col:
+                insight_button(block, views, month)
         draft = st.session_state.get(f"cdraft_{block_id}")
         st_quill(value=draft or merged_note_html(block), html=True,
                  toolbar=QUILL_TOOLBAR, key=comment_key(block_id))
