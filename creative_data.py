@@ -1042,6 +1042,17 @@ def pivot_frame(
         # 태그별 합계를 전부 더하면 전체보다 커진다 — 태그 간 비교용이지 구성비가 아니다.
         frame = explode_extra_info(frame)
 
+    # 필터가 걸린 필드를 **행으로도** 쓰면, 펼친 뒤에 그 값으로 한 번 더 좁혀야 한다.
+    # 안 그러면 `epn`으로 걸렀는데 표에 `epn·6s·new`가 다 나온다 — `..._10-epn-new`
+    # 소재가 여러 태그 줄에 들어가기 때문이다(사용자가 스샷으로 지적한 화면).
+    # 태그 필터는 중복 집계를 막으려고 소재 이름으로 되받아 걸렀으므로, 행 값 정리는
+    # 펼친 다음인 여기서 해야 한다.
+    for field, chosen in (filters or {}).items():
+        if chosen and field in fields and field in frame.columns:
+            frame = frame[frame[field].astype(str).isin([str(v) for v in chosen])]
+    if frame.empty:
+        return frame.iloc[0:0]
+
     keys = [f for f in fields if f in frame.columns]
     if not keys:
         return frame.iloc[0:0]

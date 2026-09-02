@@ -208,3 +208,44 @@ class TestIncludeAds:
     def test_empty_list_changes_nothing(self):
         assert pivot_frame(frame(), ["ad"], ["cost"], include_ads=[])[
             "cost"].sum() == 1100
+
+
+class TestFilterOnARowField:
+    """필터가 걸린 필드를 **행으로도** 쓰면, 행 값도 그 필터로 좁혀져야 한다.
+
+    실제로 겪은 것(2026-09-02): `Extra Info = epn`으로 걸렀는데 표에 `epn·6s·new`가
+    다 나왔다. `..._10-epn-new` 소재가 태그마다 한 줄씩 들어가기 때문이다.
+    태그 필터는 중복 집계를 막으려고 **소재 이름으로 되받아** 걸러서, 그다음 펼치면
+    다른 태그가 되살아난다 — 펼친 뒤에 한 번 더 좁혀야 한다.
+    """
+
+    def test_tag_filter_narrows_the_tag_row_too(self):
+        table = pivot_frame(frame(), ["extra_info_tag"], ["cost"],
+                            filters={"extra_info_tag": ["thumb"]})
+        assert list(table["extra_info_tag"]) == ["thumb"]
+
+    def test_the_row_total_matches_the_filtered_total(self):
+        """행 합계가 그 필터의 소재 합계와 같아야 한다 — 카드 숫자와 대조되는 값이다."""
+        table = pivot_frame(frame(), ["extra_info_tag"], ["cost"],
+                            filters={"extra_info_tag": ["thumb"]})
+        assert table["cost"].sum() == 1000          # a1 의 매체 두 곳 합계
+
+    def test_several_filter_values_keep_several_rows(self):
+        table = pivot_frame(frame(), ["extra_info_tag"], ["cost"],
+                            filters={"extra_info_tag": ["text", "thumb"]})
+        assert sorted(table["extra_info_tag"]) == ["text", "thumb"]
+
+    def test_no_filter_still_shows_every_tag(self):
+        """필터가 없으면 태그 전부 — 태그 간 비교가 그 표의 목적이다."""
+        table = pivot_frame(frame(), ["extra_info_tag"], ["cost"])
+        assert sorted(table["extra_info_tag"]) == ["text", "thumb"]
+
+    def test_it_also_holds_for_a_plain_field(self):
+        table = pivot_frame(frame(), ["media"], ["cost"],
+                            filters={"media": ["Meta"]})
+        assert list(table["media"]) == ["Meta"]
+
+    def test_filter_on_a_field_that_is_not_a_row_is_unaffected(self):
+        table = pivot_frame(frame(), ["ad"], ["cost"], filters={"media": ["Meta"]})
+        assert list(table["ad"]) == ["a1"]
+        assert table["cost"].sum() == 700
