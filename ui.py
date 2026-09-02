@@ -434,7 +434,11 @@ header[data-testid="stHeader"] { background: transparent; }
    "무엇에 대한 줄인지"와 "얼마인지"의 경계가 표에서 가장 굵어야 한다.
    회색 배경을 깔지 않는 이유: 이 표에는 CPI 히트맵과 우수/저조 강조가 이미 얹혀서,
    행 컬럼에 배경을 더하면 두 겹이 된다(강조 색을 세 번 갈아엎은 그 문제다). */
-.rt .vs-start { border-left: 1.5px solid var(--ink); }
+.rt .vs-start { border-left: 2px solid var(--ink) !important; }
+/* 헤더에서만 행 부분을 한 톤 진하게 — 본문은 건드리지 않는다.
+   본문 셀에는 CPI 힐트맵과 우수/저조 강조가 이밌 옆혀서, 거기에 배경을 더하면 두 겹이 된다.
+   헤더는 강조가 당지 않으므로 거기서 구분을 만든다. */
+.rt th.dim { background: #e2e8ee; color: var(--ink); }
 /* 행 컬럼은 굵게 — 배경 없이 위계를 만든다. 편집 모드의 st.dataframe에서도
    font-weight는 반영되므로 두 모드가 같게 보인다(border는 캔버스에서 무시된다). */
 .rt .dim { font-weight: 600; color: var(--ink); }

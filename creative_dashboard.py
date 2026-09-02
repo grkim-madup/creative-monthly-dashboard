@@ -28,6 +28,7 @@ import dropbox_source
 import google_sheets_writer
 import google_snapshot
 import highlights
+import insight_draft
 import locks
 import overrides as manual_overrides
 import prefetch
@@ -1584,7 +1585,8 @@ def clear_editor_state(block_id: str) -> None:
     # 조건 행·뷰 위젯은 키에 `<block_id>_<view_id>`가 섞여 있어 접두사만으로는 못 잡는다
     # — 블록 id가 포함된 키를 통째로 비운다. 블록 id는 uuid4 앞 6자라 다른 블록을
     # 건드릴 일이 없다.
-    prefixes = (f"cond_rows_{block_id}", f"cond_field_{block_id}_",
+    prefixes = (f"cdraft_{block_id}", f"cnonce_{block_id}",
+                f"cond_rows_{block_id}", f"cond_field_{block_id}_",
                 f"cond_values_{block_id}_", f"cond_panel_{block_id}",
                 f"title_{block_id}", f"blocktitle_{block_id}", f"comment_{block_id}", f"insight_{block_id}",
                 f"views_{block_id}", f"next_step_md_{block_id}")
@@ -2731,6 +2733,72 @@ def add_view_button(block_id: str) -> None:
         rerun_local()
 
 
+def comment_key(block_id: str) -> str:
+    """코멘트 에디터의 위젯 키.
+
+    Quill은 한 번 만들어지면 `value`를 바꿔도 화면이 안 바뀐다. 초안을 넣을 때
+    nonce를 올려 **새 위젯으로 갈아끼워야** 한다. 저장 경로도 이 함수로 키를 얻는다 —
+    두 곳이 갈라지면 초안을 넣은 뒤 저장이 빈 값을 쓴다.
+    """
+    nonce = int(st.session_state.get(f"cnonce_{block_id}", 0))
+    return f"comment_{block_id}_{nonce}"
+
+
+def insight_button(block: dict, views: list[dict], month: int) -> None:
+    """`초안 만들기` — 이 주제의 표 데이터로 인사이트 초안을 써 넣는다.
+
+    **LLM을 쓰지 않는다.** 앱에서 Anthropic 호출이 막혀 있는 것도 이유지만
+    (`client-recap-bot`이 같은 이유로 대기 중), 더 큰 이유는 **지어낼 수 없어야**
+    한다는 것이다 — 이 문구는 광고주에게 그대로 간다. 계산으로만 만들면 표에 있는
+    것만 말하고, 해석이 필요한 자리는 `(확인 필요)`로 비워 사람에게 넘긴다.
+    """
+    block_id = block["id"]
+    label = block.get("title") or ""
+    scopes = [filtered_scope(named_overview, v["filters"], v["include_ads"])
+              for v in views if v["kind"] != "compare"]
+    scopes = [frame for frame in scopes if not frame.empty]
+    if not scopes:
+        st.caption("표를 먼저 만들면 초안을 만들 수 있습니다.")
+        return
+    if not st.button("초안 만들기", key=f"draft_{block_id}",
+                     help="표 데이터로 인사이트 초안을 씁니다. 숫자에 없는 해석은 "
+                          "'확인 필요'로 남겨 둡니다."):
+        return
+
+    scope = pd.concat(scopes).drop_duplicates()
+    st.session_state[f"cdraft_{block_id}"] = insight_draft.draft_html(
+        scope, named_overview, month, label=label,
+        links=drive_links_for(scope),
+    )
+    # 새 위젯으로 갈아끼워 초안이 실제로 보이게 한다.
+    st.session_state[f"cnonce_{block_id}"] = int(
+        st.session_state.get(f"cnonce_{block_id}", 0)) + 1
+    rerun_local()
+
+
+def drive_links_for(scope: pd.DataFrame, limit: int = 6) -> dict[str, str]:
+    """소재명 → 광고주 Drive 링크. 소진 상위 몇 개만 찾는다.
+
+    Drive 목록 조회는 캐시되지만 매칭은 소재 수만큼 돈다 — 초안에서 실제로 언급할
+    후보만 찾으면 충분하다.
+    """
+    if scope.empty or "ad" not in scope.columns:
+        return {}
+    try:
+        exact, flat = _drive_material_index()
+    except Exception:  # noqa: BLE001 — Drive가 안 되면 링크 없이 초안을 낸다
+        return {}
+    top = (scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
+           .head(limit).index)
+    links: dict[str, str] = {}
+    for ad in top:
+        matches = drive_materials.find_matches(str(ad), exact, flat)
+        url = (matches[0].get("webViewLink") if matches else None)
+        if url:
+            links[str(ad)] = url
+    return links
+
+
 def merged_note_html(block: dict) -> str:
     """`comment`와 `insight`를 하나의 HTML로 잇는다.
 
@@ -2804,7 +2872,7 @@ def save_block(block: dict, month: int, views: list[dict], owner: str) -> None:
             title=st.session_state.get(f"blocktitle_{block_id}",
                                        block.get("title", "")),
             views=[view_from_widgets(v, f"{block_id}_{v['id']}") for v in views],
-            comment=st.session_state.get(f"comment_{block_id}") or "",
+            comment=st.session_state.get(comment_key(block_id)) or "",
             # 텍스트 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드는 남겨 둔다 —
             # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
             insight="",
@@ -2856,9 +2924,14 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
 
     if editing:
         add_view_button(block_id)
-        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
-        st_quill(value=merged_note_html(block), html=True,
-                 toolbar=QUILL_TOOLBAR, key=f"comment_{block_id}")
+        label_col, draft_col = st.columns([5, 1.4], vertical_alignment="bottom")
+        label_col.markdown('<div class="cp-label">인사이트</div>',
+                           unsafe_allow_html=True)
+        with draft_col:
+            insight_button(block, views, month)
+        draft = st.session_state.get(f"cdraft_{block_id}")
+        st_quill(value=draft or merged_note_html(block), html=True,
+                 toolbar=QUILL_TOOLBAR, key=comment_key(block_id))
         return
 
     body = merged_note_html(block)
