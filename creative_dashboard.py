@@ -46,9 +46,12 @@ from creative_data import (
     compare_periods,
     dumbbell_frame,
     explode_extra_info,
+    grouping_keys,
     metric_benchmark,
     month_options,
     pick_best_worst,
+    pick_columns,
+    SELECTABLE_COLUMNS,
     spend_pool,
     top_creatives,
 )
@@ -1972,6 +1975,10 @@ VIEW_DEFAULTS = {
     "label": "", "kind": "aggregate", "conditions": {}, "months": [],
     "axis": "creative_type", "chart": False, "chart_kind": "", "metric": "CPI",
     "top_n": 0,
+    # 표에 그릴 컬럼. **차원 컬럼은 곧 집계 키**라서, 빼면 가려지는 게 아니라
+    # 그 축을 합쳐 숫자가 다시 계산된다(피벗과 같은 동작).
+    # 비우면 기본 세트 — 빈 목록을 '컬럼 0개'로 읽으면 표가 통째로 사라진다.
+    "columns": [],
     # kind == "compare" — 기간 두 개. 라벨은 사람이 붙인다(`방영 전 (4월 누적)`).
     "periods": [], "metrics": [],
 }
@@ -2274,7 +2281,7 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         render_compare_view(view)
         return
 
-    scope_of_match, _ = match_conditions(view["conditions"])
+    scope_of_match, matched_count = match_conditions(view["conditions"])
     if scope_of_match.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
         return
@@ -2291,8 +2298,11 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         # 표에 등장한다. 그 축에 걸린 조건을 집계 단계에서 한 번 더 건다.
         if axis == "extra_info_tag":
             base = explode_extra_info(base)
-        table = aggregate_by_axis(base, axis, min_cost=min_cost,
-                                  values=view["conditions"].get(axis))
+        # 매체를 컬럼에서 빼면 매체를 합쳐 집계한다 — 가리기가 아니라 다시 계산.
+        table = aggregate_by_axis(
+            base, axis, min_cost=min_cost, values=view["conditions"].get(axis),
+            by_media="media" in grouping_keys(view["columns"], [axis], base.columns),
+        )
         if table.empty:
             status_row("warn", "표시할 조합이 없습니다",
                        "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
@@ -2300,13 +2310,17 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         if view["chart_kind"]:
             render_axis_chart(view, table, axis, month, highlight_key)
         render_table(
-            table.rename(columns={axis: ATTRIBUTES[axis]}),
+            table[pick_columns(table, view["columns"], always=[axis])]
+            .rename(columns={axis: ATTRIBUTES[axis]}),
             color_columns=["CPI"], highlight_key=highlight_key, month=month,
         )
         return
 
-    # kind == "list" — 소재 단위 나열
-    detail = aggregate_by(scope_of_match, ["ad", "media"]).sort_values("cost", ascending=False)
+    # kind == "list" — 소재 단위 나열.
+    # **고른 차원 컬럼이 곧 집계 키**다. 매체를 빼면 소재 하나가 한 줄로 합쳐지고
+    # 비율도 합계에서 다시 계산된다("소재 4개인데 표는 8줄"이라는 지적에서 나왔다).
+    keys = grouping_keys(view["columns"], ["ad"], scope_of_match.columns)
+    detail = aggregate_by(scope_of_match, keys).sort_values("cost", ascending=False)
     if detail.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
         return
@@ -2315,9 +2329,17 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
     # 요약 카드는 이 표가 아니라 **주제 전체**의 것이라 블록 맨 위에서 그린다
     # (`render_block_kpis`). 예전에는 여기 있어서 두 번째 표에 딸린 숫자처럼 보였다.
     render_table(
-        detail[[c for c in DISPLAY_COLUMNS if c in detail.columns]],
+        detail[pick_columns(detail, view["columns"], always=["ad"])],
         color_columns=["CPI"], highlight_key=highlight_key, month=month,
     )
+    if len(detail) != matched_count:
+        st.markdown(
+            f'<div class="tbl-note">소재 {matched_count:,}개를 '
+            f"{' · '.join(COLUMN_LABELS.get(k, k) for k in keys)} 기준으로 나눠 "
+            f"{len(detail):,}줄입니다. 설정에서 컬럼을 빼면 그 축을 합쳐 다시 집계합니다."
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
 
 VIEW_KINDS = {"aggregate": "속성별 집계", "list": "소재 목록",
@@ -2434,6 +2456,8 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
     for position, saved in enumerate(list(current)):
         view = view_with_defaults(saved)
         view_key = f"{block_id}_{view['id']}"
+        # 표 종류에 따라 안 그리는 위젯이 있어서, 먼저 저장값으로 채워 둔다.
+        columns = view["columns"]
         with st.container(key=f"view_box_{view_key}"):
             # 요약 줄: 무엇이 걸려 있는지만 읽히면 된다. 고치는 건 '설정' 안에서 한다.
             summary_col, drop_col = st.columns([9, 1], vertical_alignment="center")
@@ -2520,11 +2544,26 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
                             format_func=lambda m: METRIC_LABELS.get(m, m),
                         ) or "CPI"
 
+                if kind in ("aggregate", "list"):
+                    columns = st.multiselect(
+                        "표시할 컬럼 (비우면 기본)", SELECTABLE_COLUMNS,
+                        default=[c for c in (columns or []) if c in SELECTABLE_COLUMNS],
+                        format_func=lambda c: COLUMN_LABELS.get(c, c),
+                        key=f"vcols_{view_key}", placeholder="기본 컬럼 사용",
+                    )
+                    st.markdown(
+                        '<div class="cp-hint">매체·OS·작품처럼 <b>구분 컬럼</b>을 빼면 '
+                        "가려지는 게 아니라 그 축을 합쳐 숫자가 다시 계산됩니다"
+                        "(피벗과 같은 동작).</div>",
+                        unsafe_allow_html=True,
+                    )
+
         result.append({
             "id": view["id"], "label": label, "kind": kind, "conditions": conditions,
             "months": view["months"], "axis": axis, "chart_kind": chart_kind,
             "chart": bool(chart_kind), "metric": metric, "top_n": int(top_n or 0),
             "periods": periods, "metrics": view["metrics"],
+            "columns": list(columns or []),
         })
 
     if drop_index is not None:
@@ -2650,6 +2689,10 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
 
     body = merged_note_html(block)
     if body:
+        # 소제목을 함께 찍는다 — 편집할 때만 `인사이트` 라벨이 보이고 정작
+        # 광고주가 보는 화면에는 제목 없는 본문만 떨어지 있었다.
+        st.markdown('<div class="insight-head">인사이트</div>',
+                    unsafe_allow_html=True)
         st.markdown(f'<div class="note-body">{body}</div>', unsafe_allow_html=True)
 
 

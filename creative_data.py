@@ -870,3 +870,67 @@ def dumbbell_frame(table: pd.DataFrame, axis: str, metric: str) -> pd.DataFrame:
     })
     result["gap"] = (result["value_b"] - result["value_a"]).abs()
     return result.sort_values("gap", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 표 컬럼 커스터마이즈 (순수 함수 — pytest 대상)
+
+#: **차원** 컬럼 — 고르면 집계 키가 된다. 즉 빼면 단순히 가려지는 게 아니라
+#: 그 축을 합쳐서 **숫자가 다시 계산된다**(피벗과 같은 동작).
+#: 매체를 빼면 소재 한 줄에 매체 합계가 들어가고, 매체를 넣으면 소재가 매체별로 쪼개진다.
+DIMENSION_COLUMNS = [
+    "ad", "media", "os", "title_kr", "creative_type", "format",
+    "size", "orientation", "producer_group", "usp",
+]
+
+#: **지표** 컬럼 — 집계 결과를 보여줄 뿐 집계 키에 영향을 주지 않는다.
+METRIC_COLUMNS = [
+    "cost", "impression", "click", "total install",
+    "D0 read", "D0 coin", "D7 coin",
+    "CTR", "CPC", "CPI", "D0 read CVR", "D0 coin CVR", "D7 coin CVR",
+]
+
+#: 화면에 내보이는 순서 = 이 목록의 순서. 사용자가 고른 순서를 쓰지 않는다 —
+#: 표마다 컬럼 순서가 달라지면 여러 표를 나란히 놓고 비교할 때 눈이 매번 헤맨다.
+SELECTABLE_COLUMNS = DIMENSION_COLUMNS + METRIC_COLUMNS
+
+
+def _chosen_or_default(chosen: list[str] | None,
+                       fallback: list[str] | None = None) -> list[str]:
+    """빈 목록을 '컬럼 0개'로 읽지 않는다 — 그러면 표가 통째로 사라진다."""
+    return list(chosen) if chosen else list(fallback or DISPLAY_COLUMNS)
+
+
+def grouping_keys(chosen: list[str] | None, always: list[str],
+                  available, fallback: list[str] | None = None) -> list[str]:
+    """이 표를 무엇으로 묶을지 — **고른 차원 컬럼이 곧 집계 키**다.
+
+    `always`(소재 목록의 `ad`, 집계표의 축)는 사용자가 빼도 되살린다. 그게 없으면
+    표가 무엇의 집계인지 알 수 없는 숫자 덩어리가 된다.
+    """
+    columns = set(available)
+    keep = {c for c in _chosen_or_default(chosen, fallback)
+            if c in DIMENSION_COLUMNS and c in columns}
+    keep |= {c for c in always if c in columns}
+    ordered = [c for c in always if c in keep]
+    ordered += [c for c in DIMENSION_COLUMNS if c in keep and c not in ordered]
+    return ordered
+
+
+def pick_columns(df, chosen: list[str] | None, always: list[str] | None = None,
+                 fallback: list[str] | None = None) -> list[str]:
+    """표에 그릴 컬럼 순서. 집계가 끝난 프레임에 대해 부른다.
+
+    집계 키에서 빠진 차원 컬럼은 프레임에 아예 없으므로 자동으로 제외된다 —
+    "가리기"가 아니라 "다시 계산"이라는 점이 여기서 자연스럽게 지켜진다.
+    """
+    available = list(df.columns)
+    always = list(always or [])
+    keep = {c for c in _chosen_or_default(chosen, fallback) if c in available}
+    keep |= {c for c in always if c in available}
+
+    ordered = [c for c in always if c in keep]
+    ordered += [c for c in SELECTABLE_COLUMNS if c in keep and c not in ordered]
+    # 목록에 없는 컬럼(집계 축 등)은 always로 들어오지 않았다면 버린다 — 화면 순서를
+    # 정의할 수 없는 컬럼이 끼면 표가 예측 불가능해진다.
+    return ordered

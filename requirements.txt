@@ -11,4 +11,4 @@ google-api-python-client==2.198.0
 google-auth==2.56.2
 google-cloud-firestore==2.29.0
 imageio-ffmpeg==0.6.0
-# 재시작 마커: 2026-09-02 chart_frame/dumbbell_frame 추가
+# 재시작 마커: 2026-09-02 grouping_keys/pick_columns 추가
