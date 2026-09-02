@@ -141,3 +141,32 @@ class TestBlockSchema:
         report_blocks.find_block(data, report_blocks.SLOT_ANALYSIS, first)["views"].append({})
         assert report_blocks.find_block(
             data, report_blocks.SLOT_ANALYSIS, second)["views"] == []
+
+
+class TestMergedNote:
+    """텍스트 칸 두 개를 '인사이트' 하나로 합쳤다 — 기존 내용을 버리지 않는지 본다.
+
+    코멘트 유실은 이 프로젝트에서 복구 경로가 없는 실패다(`3ece147`).
+    """
+
+    def merged(self, block: dict) -> str:
+        # 진입점은 import할 수 없으므로(화면을 그린다) 같은 규약을 여기서 재현한다.
+        from next_step import to_preview_html
+        return "".join(to_preview_html(block.get(f) or "")
+                       for f in ("comment", "insight")
+                       if (block.get(f) or "").strip())
+
+    def test_keeps_both_fields(self):
+        body = self.merged({"comment": "<p>분석</p>", "insight": "<p>다음 달</p>"})
+        assert "분석" in body and "다음 달" in body
+
+    def test_plain_text_and_html_can_be_mixed(self):
+        """한쪽은 Quill HTML, 다른 쪽은 예전 text_area의 순수 텍스트일 수 있다.
+
+        먼저 이어 붙이면 HTML 여부 판별이 깨져 줄바꿈이 통째로 사라진다.
+        """
+        body = self.merged({"comment": "<p>에이치티엠엘</p>", "insight": "첫 줄\n둘째 줄"})
+        assert "<br" in body and "에이치티엠엘" in body
+
+    def test_empty_fields_produce_nothing(self):
+        assert self.merged({"comment": "", "insight": "   "}) == ""

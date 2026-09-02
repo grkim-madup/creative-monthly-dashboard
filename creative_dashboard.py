@@ -2274,7 +2274,7 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         render_compare_view(view)
         return
 
-    scope_of_match, matched_count = match_conditions(view["conditions"])
+    scope_of_match, _ = match_conditions(view["conditions"])
     if scope_of_match.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
         return
@@ -2312,17 +2312,8 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         return
     if view["top_n"]:
         detail = detail.head(int(view["top_n"]))
-    summary = aggregate_by(scope_of_match.assign(_all="합계"), ["_all"]).iloc[0]
-    kpi_cards([
-        {"label": "소재 수", "value": f"{matched_count:,}개",
-         "sub": "조건에 맞는 소재", "primary": True},
-        {"label": "소진액", "value": f"₩{summary['cost']:,.0f}", "sub": "마크업 포함"},
-        {"label": "CTR", "value": f"{summary['CTR']:.2%}", "sub": "클릭 ÷ 노출"},
-        {"label": "인스톨", "value": f"{summary['total install']:,.0f}", "sub": "Total install"},
-        {"label": "CPI", "value": f"₩{summary['CPI']:,.0f}", "sub": "소진 ÷ 인스톨"},
-        {"label": "D0 Read CVR", "value": f"{summary['D0 read CVR']:.2%}",
-         "sub": "D0 Read ÷ 인스톨"},
-    ])
+    # 요약 카드는 이 표가 아니라 **주제 전체**의 것이라 블록 맨 위에서 그린다
+    # (`render_block_kpis`). 예전에는 여기 있어서 두 번째 표에 딸린 숫자처럼 보였다.
     render_table(
         detail[[c for c in DISPLAY_COLUMNS if c in detail.columns]],
         color_columns=["CPI"], highlight_key=highlight_key, month=month,
@@ -2346,6 +2337,24 @@ def clear_view_state(block_id: str, view_id: str) -> None:
     view_key = f"{block_id}_{view_id}"
     for key in [k for k in list(st.session_state) if view_key in k]:
         del st.session_state[key]
+
+
+def live_view(view: dict, view_key: str) -> dict:
+    """저장된 뷰에 **지금 화면 위젯의 값**을 덮어씌운다.
+
+    Streamlit 위젯은 `key`가 세션에 있으면 `index`/`value` 인자를 무시하고 세션 값을
+    쓴다. 그래서 요약 줄을 저장된 값으로 그리면 사용자가 드롭다운을 바꾼 직후 한 번은
+    **요약과 드롭다운이 서로 다른 값을 보여준다**(실제로 축이 `Creative Type`인데
+    드롭다운은 `Extra Info`로 보이는 화면을 받았다). 요약도 같은 세션 값을 읽게 한다.
+    """
+    merged = dict(view)
+    for field, widget in (("label", "vlabel"), ("kind", "vkind"), ("axis", "vaxis"),
+                          ("chart_kind", "vchart"), ("metric", "vmetric"),
+                          ("top_n", "vtop")):
+        key = f"{widget}_{view_key}"
+        if key in st.session_state and st.session_state[key] is not None:
+            merged[field] = st.session_state[key]
+    return merged
 
 
 def view_summary(view: dict) -> str:
@@ -2428,13 +2437,21 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
         with st.container(key=f"view_box_{view_key}"):
             # 요약 줄: 무엇이 걸려 있는지만 읽히면 된다. 고치는 건 '설정' 안에서 한다.
             summary_col, drop_col = st.columns([9, 1], vertical_alignment="center")
-            summary_col.markdown(view_summary(view), unsafe_allow_html=True)
+            summary_col.markdown(view_summary(live_view(view, view_key)),
+                                 unsafe_allow_html=True)
             if drop_col.button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
                 drop_index = position
 
             # 갓 추가한 표는 펼쳐 둔다 — 만들자마자 접혀 있으면 뭘 해야 할지 모른다.
-            fresh = not view["label"] and not view["conditions"]
-            with st.expander("설정", expanded=fresh):
+            #
+            # ⚠ 이 값을 매 리런마다 "라벨이 비었나"로 계산하면, 라벨 첫 글자를 치는 순간
+            #   조건이 뒤집혀 **타이핑 중에 설정이 저절로 접힌다**. 처음 판정을 세션에
+            #   붙잡아 둔다(그 뒤로는 사용자가 직접 여닫는다).
+            open_key = f"vopen_{view_key}"
+            if open_key not in st.session_state:
+                st.session_state[open_key] = (
+                    not view["label"] and not view["conditions"])
+            with st.expander("설정", expanded=st.session_state[open_key]):
                 head = st.columns([2.4, 1.4, 1.4], vertical_alignment="bottom")
                 label = head[0].text_input(
                     "기준 라벨", value=view["label"], key=f"vlabel_{view_key}",
@@ -2467,6 +2484,18 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
                     periods = period_editor(view_key, periods)
 
                 conditions = condition_editor(view_key, view["conditions"])
+
+                # 축과 조건이 같은 구분자이고 값이 하나뿐이면 표가 한 줄이 된다.
+                # 조건은 WHERE, 축은 GROUP BY라서 원래 다른 역할인데, 같은 걸 고르면
+                # 축이 아무 일도 하지 않는다 — 막지는 않고(의도적일 수 있다) 알린다.
+                if kind == "aggregate" and len(conditions.get(axis) or []) == 1:
+                    st.markdown(
+                        f'<div class="cp-hint">분석 축과 조건이 모두 '
+                        f'<b>{html.escape(ATTRIBUTES.get(axis, axis))}</b>입니다 — '
+                        "값이 하나로 고정돼 표가 한 줄이 됩니다. "
+                        "다른 축(예: 작품·매체·Creative Type)으로 묶으면 비교가 됩니다.</div>",
+                        unsafe_allow_html=True,
+                    )
 
                 chart_kind = view["chart_kind"]
                 metric = view["metric"]
@@ -2512,6 +2541,56 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
     return result
 
 
+def merged_note_html(block: dict) -> str:
+    """`comment`와 `insight`를 하나의 HTML로 잇는다.
+
+    텍스트 칸을 둘로 나눠 둘 이유가 없다는 피드백을 받아 하나로 합쳤다(2026-09-02).
+    **이미 두 칸에 나눠 쓴 내용이 있으므로 버리지 않고 이어 붙인다** — 코멘트 유실은
+    이 프로젝트에서 복구 경로가 없는 실패다.
+
+    각 칸을 따로 `to_preview_html`에 통과시킨 뒤 잇는다. 한쪽은 Quill HTML이고 다른
+    쪽은 예전 `text_area`의 순수 텍스트일 수 있어서, 먼저 이어 붙이면 그 판별이 깨진다.
+    """
+    parts = [to_preview_html(block.get(field) or "")
+             for field in ("comment", "insight") if (block.get(field) or "").strip()]
+    return "".join(parts)
+
+
+def render_block_kpis(views: list[dict], month: int) -> None:
+    """주제 전체의 요약 카드. 표들보다 **위**에 온다.
+
+    카드가 무엇의 합인지가 가장 헷갈리기 쉬운 지점이다 — 이 주제가 담은 표들이 각각
+    다른 조건을 걸 수 있으므로, **표들이 다루는 소재의 합집합**으로 계산한다.
+    소재 이름으로 합집합을 만든 뒤 원본에서 한 번만 집계하므로 겹쳐도 두 번 세지 않는다.
+
+    기간 비교 뷰는 리포트 월이 아닌 달을 보므로 제외한다 — 섞으면 카드가 어느 기간의
+    숫자인지 알 수 없다.
+    """
+    ads: set[str] = set()
+    for view in views:
+        if view["kind"] == "compare":
+            continue
+        matched, _ = match_conditions(view["conditions"])
+        ads |= set(matched["ad"].unique())
+    if not ads:
+        return
+
+    scope_of_block = overview[overview["ad"].isin(ads)]
+    if scope_of_block.empty:
+        return
+    summary = aggregate_by(scope_of_block.assign(_all="합계"), ["_all"]).iloc[0]
+    kpi_cards([
+        {"label": "소재 수", "value": f"{len(ads):,}개",
+         "sub": "이 주제가 다루는 소재", "primary": True},
+        {"label": "소진액", "value": f"₩{summary['cost']:,.0f}", "sub": "마크업 포함"},
+        {"label": "CTR", "value": f"{summary['CTR']:.2%}", "sub": "클릭 ÷ 노출"},
+        {"label": "인스톨", "value": f"{summary['total install']:,.0f}", "sub": "Total install"},
+        {"label": "CPI", "value": f"₩{summary['CPI']:,.0f}", "sub": "소진 ÷ 인스톨"},
+        {"label": "D0 Read CVR", "value": f"{summary['D0 read CVR']:.2%}",
+         "sub": "D0 Read ÷ 인스톨"},
+    ])
+
+
 def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     block_id = block["id"]
     owner = st.session_state["editor_token"]
@@ -2530,13 +2609,12 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         title_value = st.session_state.get(f"blocktitle_{block_id}", block.get("title", ""))
         views = views_editor(block_id, views)
 
-        st.markdown('<div class="cp-label">분석</div>', unsafe_allow_html=True)
-        comment = st_quill(value=block.get("comment", ""), html=True,
+        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
+        comment = st_quill(value=merged_note_html(block), html=True,
                            toolbar=QUILL_TOOLBAR, key=f"comment_{block_id}")
-        st.markdown('<div class="cp-label">추후 제작 인사이트</div>',
-                    unsafe_allow_html=True)
-        insight = st_quill(value=block.get("insight", ""), html=True,
-                           toolbar=QUILL_TOOLBAR, key=f"insight_{block_id}")
+        # 두 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드 자체는 남겨 둔다 —
+        # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
+        insight = ""
 
         taken_over = editor_taken_over(block_id, month)
         # 버튼을 하나로 합친다 — 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
@@ -2565,21 +2643,14 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
 
     # 편집 중에는 저장된 값이 아니라 화면의 현재 값을 따른다 — 안 그러면 조건을 바꿔도
     # 저장하기 전까지 표가 그대로라 반응이 없는 것처럼 보인다.
+    if views:
+        render_block_kpis([view_with_defaults(v) for v in views], month)
     for view in views:
         render_view(view, month, f"sec5_{block_id}")
 
-    if block.get("comment"):
-        st.markdown(
-            f'<div class="note-body">{to_preview_html(block["comment"])}</div>',
-            unsafe_allow_html=True,
-        )
-    if block.get("insight"):
-        st.markdown('<div class="insight-head">추후 제작 인사이트</div>',
-                    unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="note-body">{to_preview_html(block["insight"])}</div>',
-            unsafe_allow_html=True,
-        )
+    body = merged_note_html(block)
+    if body:
+        st.markdown(f'<div class="note-body">{body}</div>', unsafe_allow_html=True)
 
 
 # 블록·강조·잠금을 한 번의 호출로 미리 읽어 둔다. 따로 읽으면 조작 한 번에 시트 조회가
