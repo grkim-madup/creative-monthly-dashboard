@@ -372,6 +372,7 @@ def rerun_local() -> None:
 
 def render_html_table(
     renamed: pd.DataFrame, color_columns: list[str], saved_cells: set,
+    dim_columns: set[str] | None = None,
 ) -> None:
     """보기 모드용 HTML 표. 히트맵과 저장된 셀 강조를 그대로 옮겨 칠한다."""
     headers = list(renamed.columns)
@@ -397,10 +398,14 @@ def render_html_table(
                 + highlight_cell_style(marked, headers, position, column)
             )
 
+    # 행 블록이 끝나는 자리 = 값 블록의 첫 컬럼. 거기에만 굵은 경계선을 세운다.
+    dims = {c for c in (dim_columns or set()) if c in headers}
+    value_start = next((c for c in headers if c not in dims), None) if dims else None
     report_table(
         rows, headers,
         left_columns=LEFT_ALIGNED_COLUMNS,
         group_starts=GROUP_START_COLUMNS,
+        dim_columns=dims, value_start=value_start,
         cell_styles=styles,
     )
 
@@ -409,6 +414,7 @@ def render_table(
     df: pd.DataFrame, color_columns: list[str] | None = None,
     highlight_key: str | None = None, month: int | None = None,
     column_order: list[str] | None = None,
+    dim_columns: set[str] | None = None,
 ) -> None:
     """표를 그린다. highlight_key를 주면 셀을 클릭·드래그해 그때그때 강조할 수 있다.
 
@@ -431,10 +437,16 @@ def render_table(
     # 강조는 원래 편집 모드에서만 바꿀 수 있으므로 보기 모드에서 잃는 기능은 없다.
     if not edit_mode:
         saved = highlights.load(month, highlight_key) if (highlight_key and month) else set()
-        render_html_table(renamed, colors, saved)
+        render_html_table(renamed, colors, saved, dim_columns)
         return
 
     styler = style_table(renamed, colors)
+    if dim_columns:
+        # st.dataframe은 캔버스라 border를 무시한다(실측). 굵기만이라도 맞춰 두 모드가
+        # 비슷하게 보이게 한다 — 보기 모드는 위 `report_table`이 경계선까지 그린다.
+        marked = [c for c in (dim_columns or set()) if c in renamed.columns]
+        if marked:
+            styler = styler.set_properties(subset=marked, **{"font-weight": "600"})
 
     if not highlight_key or month is None:
         st.dataframe(
@@ -2396,6 +2408,7 @@ def render_view(view: dict, month: int, key_prefix: str,
     render_table(
         table.rename(columns={f: field_label(f) for f in fields}),
         color_columns=["CPI"], highlight_key=highlight_key, month=month,
+        dim_columns={field_label(f) for f in fields},
     )
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.

@@ -430,6 +430,14 @@ header[data-testid="stHeader"] { background: transparent; }
 .rt .l { text-align: left; }
 /* 규모/효율처럼 성격이 다른 지표 묶음 사이에만 세로선 */
 .rt .gs { border-left: 1px solid var(--line); }
+/* 피벗 표: **행(묶는 기준)과 값(지표)의 경계**. 지표 묶음 구분선보다 진하게 —
+   "무엇에 대한 줄인지"와 "얼마인지"의 경계가 표에서 가장 굵어야 한다.
+   회색 배경을 깔지 않는 이유: 이 표에는 CPI 히트맵과 우수/저조 강조가 이미 얹혀서,
+   행 컬럼에 배경을 더하면 두 겹이 된다(강조 색을 세 번 갈아엎은 그 문제다). */
+.rt .vs-start { border-left: 1.5px solid var(--ink); }
+/* 행 컬럼은 굵게 — 배경 없이 위계를 만든다. 편집 모드의 st.dataframe에서도
+   font-weight는 반영되므로 두 모드가 같게 보인다(border는 캔버스에서 무시된다). */
+.rt .dim { font-weight: 600; color: var(--ink); }
 .rt tbody tr:hover td { background: #fafbfc; }
 .rt-link { color: var(--brand-deep); text-decoration: none; font-weight: 500; }
 .rt-link:hover { text-decoration: underline; }
@@ -1338,6 +1346,8 @@ def report_table(
     headers: list[str],
     left_columns: set[str] | None = None,
     group_starts: set[str] | None = None,
+    dim_columns: set[str] | None = None,
+    value_start: str | None = None,
     row_classes: list[str] | None = None,
     cell_styles: list[dict[str, str]] | None = None,
     link_columns: set[str] | None = None,
@@ -1362,9 +1372,17 @@ def report_table(
     # 텍스트다 — 임의의 HTML이 표 안으로 들어오지 않게 한다.
     link_columns = link_columns or set()
 
+    dim_columns = dim_columns or set()
+
     def cell_class(name: str) -> str:
-        classes = ["l" if name in left_columns else "c"]
-        if name in group_starts:
+        # 행(묶는 기준) 컬럼은 왼쪽 정렬 + 굵게. 값보다 "무엇에 대한 줄인지"가
+        # 먼저 읽혀야 한다.
+        classes = ["l" if (name in left_columns or name in dim_columns) else "c"]
+        if name in dim_columns:
+            classes.append("dim")
+        if name == value_start:
+            classes.append("vs-start")
+        elif name in group_starts:
             classes.append("gs")
         return " ".join(classes)
 
