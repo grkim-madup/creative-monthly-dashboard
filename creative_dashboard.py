@@ -85,6 +85,7 @@ from next_step import (
 from ui import (
     LOGO_PATH,
     footnote,
+    collapse_sidebar_once,
     inject_css,
     kpi_cards,
     note_header,
@@ -118,6 +119,9 @@ st.markdown(
 )
 
 auth.require_password()
+# 로그인은 `st.rerun()`으로 같은 세션을 이어가는데, 그때 사이드바가 펼쳐진다
+# (`initial_sidebar_state`는 세션 첫 렌더에만 적용된다). 탭당 한 번만 접어 준다.
+collapse_sidebar_once()
 
 # 구글 애셋 보고서 CSV가 쌓이는 드롭박스 폴더 (사이드바에서 변경 가능)
 DEFAULT_GOOGLE_FOLDER = (
@@ -2413,43 +2417,70 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
     if len(label) > 20:
         label = label[:19] + "…"
 
-    for card in contrast_by_media(subject, rest, view["values"] or None):
-        share = f" · 소진 비중 {card['share']:.1%}" if card["share"] is not None else ""
-        st.markdown(
-            f'<div class="ct-head">'
-            f'<i style="background:{media_color(card["media"])}"></i>'
-            f'<b>{html.escape(card["media"])}</b>'
-            f'<span class="ct-verdict">{html.escape(card["verdict"])}</span>'
-            f'<span class="ct-meta">소재 {card["ads"]}개{share}</span></div>',
-            unsafe_allow_html=True,
+    cards = contrast_by_media(subject, rest, view["values"] or None)
+    if not cards:
+        status_row("warn", "비교할 매체가 없습니다", "필터를 완화해 보세요.")
+        return
+
+    # B안 — 매체까지 **한 표**에 담는다. 같은 지표를 두 매체가 위아래로 붙어 있어
+    # "이 지표가 매체별로 갈리나"가 한눈에 보인다. 대조군 비교의 원래 질문이 그것이다.
+    # 행은 매체마다 `대상 / 그 외 / 차이` 3줄 고정 — 지표를 몇 개 고르든 세로로
+    # 안 늘어난다(예전에는 지표 7개면 7줄 × 매체 수였다).
+    metrics = [line["metric"] for line in cards[0]["table"].to_dict("records")]
+    headers = ["매체", "구분"] + [METRIC_DISPLAY.get(m, m) for m in metrics]
+    rows: list[list[str]] = []
+    row_classes: list[str] = []
+    styles: list[dict[str, str]] = []
+
+    for index, card in enumerate(cards):
+        share = (f"소재 {card['ads']}개 · 소진 {card['share']:.1%}"
+                 if card["share"] is not None else f"소재 {card['ads']}개")
+        # 이 셀만 마크업을 직접 넣는다(`html_columns`) — 매체 색 점과 판정 문구.
+        # 값은 전부 우리가 만든 것이고 밖에서 온 문자열은 매체명뿐이라 이스케이프한다.
+        media_cell = (
+            f'<span class="ct-dot" style="background:{media_color(card["media"])}">'
+            f"</span><b>{html.escape(card['media'])}</b>"
+            f'<span class="ct-sub">{html.escape(card["verdict"])}<br>{share}</span>'
         )
-        rows, styles = [], []
+
+        subject_row = [media_cell, label]
+        rest_row = ["", "그 외"]
+        delta_row = ["", "차이"]
+        delta_style: dict[str, str] = {}
         for _, line in card["table"].iterrows():
             metric = line["metric"]
+            name = METRIC_DISPLAY.get(metric, metric)
+            subject_row.append(fmt_metric(metric, line["subject"]))
+            rest_row.append(fmt_metric(metric, line["rest"]))
             if pd.notna(line["share"]):
                 # 그냥 `0.7%`로 두면 "7% 줄었다"로 읽힌다 — 볼륨은 변화율이 아니라
                 # 전체 중 이 소재군이 차지한 **비중**이다. 단위를 값 옆에 못 박는다.
-                diff, tone = f"비중 {line['share']:.1%}", ""
+                delta_row.append(f"비중 {line['share']:.1%}")
+                delta_style[name] = "color:#9aa4ae"
             elif line["delta"] is None or pd.isna(line["delta"]):
-                diff, tone = "-", ""
-            elif line["unit"] == "%p":
-                diff = f"{line['delta']:+.2f}%p"
-                tone = "good" if line["better"] else "bad"
+                delta_row.append("-")
             else:
-                diff = f"{line['delta']:+.1%}"
-                tone = "good" if line["better"] else "bad"
-            rows.append([
-                METRIC_DISPLAY.get(metric, metric),
-                fmt_metric(metric, line["subject"]),
-                fmt_metric(metric, line["rest"]),
-                diff,
-            ])
-            styles.append({"차이": {"good": "background-color:#eefaf4;color:#0F6E56;"
-                                          "font-weight:600",
-                                   "bad": "background-color:#fdf3f3;color:#8a1f1f;"
-                                          "font-weight:600"}.get(tone, "")})
-        report_table(rows, ["지표", label, "그 외", "차이"],
-                     left_columns={"지표"}, cell_styles=styles)
+                delta_row.append(f"{line['delta']:+.2f}%p" if line["unit"] == "%p"
+                                 else f"{line['delta']:+.1%}")
+                # 색 기준은 **좋고 나쁨**이다 — CPI·CPC는 올라가면 빨강.
+                # 판단은 `creative_data.LOWER_IS_BETTER` 한 곳에서만 한다.
+                delta_style[name] = (
+                    "background-color:#eefaf4;color:#0F6E56;font-weight:600"
+                    if line["better"] else
+                    "background-color:#fdf3f3;color:#8a1f1f;font-weight:600")
+
+        rows += [subject_row, rest_row, delta_row]
+        # 첫 묶음 위에는 선을 긋지 않는다 — 헤더 아래 선과 두 줄로 겹친다.
+        row_classes += ["" if index == 0 else "ct-grp", "", "ct-delta"]
+        styles += [{}, {}, delta_style]
+
+    report_table(
+        rows, headers,
+        left_columns={"매체", "구분"},
+        row_classes=row_classes,
+        cell_styles=styles,
+        html_columns={"매체"},
+    )
     st.markdown(
         '<div class="tbl-note">차이 — 비율 지표는 <b>%p</b>, 금액·건수 지표는 '
         "<b>%</b>입니다. 노출·클릭·설치는 좋고 나쁨이 아니라 <b>비중</b>을 표시합니다."

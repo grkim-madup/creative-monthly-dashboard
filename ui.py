@@ -658,52 +658,69 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* 블록 액션 두 개(`취소` / `완료`) — **같은 기하**로 묶는다.
    `완료`는 Streamlit `type="primary"`, `취소`는 기본 버튼이라 그냥 두면 높이·패딩·
-   글자 크기가 서로 달라 정렬이 안 맞아 보인다(실제로 그렇게 보였다).
-   톤: `완료`만 브랜드 그린으로 채우고(액센트 1곳), `취소`는 같은 크기의 중성 외곽선. */
-[class*="st-key-cancel_"] button,
-[class*="st-key-save_"] button,
-[class*="st-key-nscancel_"] button,
-[class*="st-key-next_step_save_"] button {
+   글자 크기가 서로 달라 정렬이 안 맞아 보인다.
+
+   ⚠ 여기서 네 번 실패했다. 원인은 CSS 구체도다. 아래 "기본 primary 버튼이 빨강이라"
+     규칙이 `.stApp .stButton button[kind="primary"]`(0,3,1)이고 `!important`까지 붙어
+     있어서, `[class*="st-key-save_"] button`(0,1,1) 같은 셀렉터를 통째로 눌렀다.
+     **!important끼리는 구체도로 승부가 갈린다.**
+     그리고 `st-key-*`는 `.stButton`이 아니라 그 **부모**(`.stElementContainer`)에
+     붙는다 — 브라우저에서 직접 확인했다. 그래서 형태를 이렇게 고정한다:
+
+         .stApp [class*="st-key-<키>"] .stButton button[kind]      → (0,4,1)
+
+     `[kind]`는 primary·secondary 모두 갖고 있어 둘 다 잡힌다.
+     **이 형태를 단순화하지 말 것.** 실측: 고치기 전 취소 pad 0 14px / 완료 6px 20px,
+     완료 배경이 --brand(#00DC64)로 남아 있었고 두 버튼 top이 6px 어긋났다. */
+.stApp [class*="st-key-cancel_"] .stButton button[kind],
+.stApp [class*="st-key-save_"] .stButton button[kind],
+.stApp [class*="st-key-nscancel_"] .stButton button[kind],
+.stApp [class*="st-key-next_step_save_"] .stButton button[kind] {
   height: 34px !important; min-height: 34px !important;
-  padding: 0 14px !important; border-radius: 3px !important;
+  padding: 0 14px !important; margin: 0 !important;
+  border-radius: 3px !important; line-height: 1 !important;
   font-size: 12.5px !important; font-weight: 500 !important;
   box-shadow: none !important;
 }
-[class*="st-key-cancel_"] button p,
-[class*="st-key-save_"] button p,
-[class*="st-key-nscancel_"] button p,
-[class*="st-key-next_step_save_"] button p {
-  font-size: 12.5px !important; font-weight: 500 !important;
+.stApp [class*="st-key-cancel_"] .stButton button[kind] p,
+.stApp [class*="st-key-save_"] .stButton button[kind] p,
+.stApp [class*="st-key-nscancel_"] .stButton button[kind] p,
+.stApp [class*="st-key-next_step_save_"] .stButton button[kind] p {
+  font-size: 12.5px !important; font-weight: 500 !important; line-height: 1 !important;
 }
-[class*="st-key-save_"] button,
-[class*="st-key-next_step_save_"] button {
-  background: var(--brand-deep) !important; border: 1px solid var(--brand-deep) !important;
-  color: #fff !important;
+.stApp [class*="st-key-save_"] .stButton button[kind],
+.stApp [class*="st-key-next_step_save_"] .stButton button[kind] {
+  background-color: var(--brand-deep) !important;
+  border: 1px solid var(--brand-deep) !important;
+  color: #ffffff !important;
 }
-[class*="st-key-save_"] button:hover,
-[class*="st-key-next_step_save_"] button:hover {
-  background: #009243 !important; border-color: #009243 !important;
+.stApp [class*="st-key-save_"] .stButton button[kind]:hover,
+.stApp [class*="st-key-next_step_save_"] .stButton button[kind]:hover {
+  background-color: #009243 !important; border-color: #009243 !important;
+  color: #ffffff !important;
 }
-[class*="st-key-cancel_"] button,
-[class*="st-key-nscancel_"] button {
-  background: #fff !important; border: 1px solid var(--line) !important;
-  color: var(--muted) !important;
+/* 취소는 되돌릴 수 없는 폐기라 **붉은 톤**으로 둔다(규리님 요청). 채우지는 않는다 —
+   화면에서 가장 눈에 띄는 자리를 파괴적 동작에 주면 오히려 잘못 누른다. */
+.stApp [class*="st-key-cancel_"] .stButton button[kind],
+.stApp [class*="st-key-nscancel_"] .stButton button[kind] {
+  background-color: #ffffff !important; border: 1px solid #e3aeae !important;
+  color: #a32d2d !important;
 }
-[class*="st-key-cancel_"] button:hover,
-[class*="st-key-nscancel_"] button:hover {
-  border-color: #e0a2a2 !important; color: #8a1f1f !important; background: #fff !important;
+.stApp [class*="st-key-cancel_"] .stButton button[kind]:hover,
+.stApp [class*="st-key-nscancel_"] .stButton button[kind]:hover {
+  border-color: #a32d2d !important; color: #8a1f1f !important;
+  background-color: #fdf5f5 !important;
 }
-/* 확인 줄 — `계속 편집`이 안전한 쪽이라 그쪽이 기본으로 읽히게 한다. */
-[class*="st-key-cancel_no_"] button,
-[class*="st-key-cancel_yes_"] button {
+/* 확인 줄 — `계속 편집`이 안전한 쪽이라 그쪽이 기본으로 읽히게 한다.
+   `cancel_no_`/`cancel_yes_`는 위 `cancel_` 규칙에도 걸리므로 뒤에 와야 한다. */
+.stApp [class*="st-key-cancel_no_"] .stButton button[kind],
+.stApp [class*="st-key-cancel_yes_"] .stButton button[kind] {
   height: 32px !important; min-height: 32px !important;
   font-size: 12px !important; font-weight: 500 !important; border-radius: 3px !important;
 }
-[class*="st-key-cancel_no_"] button {
-  border: 1px solid #cfd6dd !important; color: var(--ink) !important; background: #fff !important;
-}
-[class*="st-key-cancel_yes_"] button {
-  border: 1px solid #e0a2a2 !important; color: #8a1f1f !important; background: #fff !important;
+.stApp [class*="st-key-cancel_no_"] .stButton button[kind] {
+  border: 1px solid #cfd6dd !important; color: var(--ink) !important;
+  background-color: #ffffff !important;
 }
 
 /* 인사이트 초안 버튼 — `인사이트` 라벨과 같은 줄 오른쪽. 보조 액션이라 작고 조용하게.
@@ -813,8 +830,12 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* 표 위 기준 라벨 — 실제 리포트 시트가 표마다 `* 틱톡 AOS`처럼 붙이는 그것. */
 .view-basis {
-  font-size: 12px; color: var(--ink-2); margin: 14px 0 6px 0; font-weight: 600;
+  font-size: 12px; color: var(--ink-2); margin: 30px 0 2px 0; font-weight: 600;
 }
+/* ⚠ 위아래 여백을 같게 두면 이 줄이 위 블록의 꼬리인지 아래 표의 제목인지
+   구분되지 않는다(실제 피드백). 아래는 붙이고 위는 넉넉히 띄운다.
+   앞에 소재 카드가 오는 경우 카드 자신의 아래 여백까지 겹쳐 더 벌어진다. */
+.mat-cards + div .view-basis, .view-basis:first-child { margin-top: 34px; }
 /* 분석 코멘트 다음에 항상 오는 고정 항목. 리포트에서 이 문구가 소제목 역할을 한다. */
 .insight-head {
   font-size: 12.5px; font-weight: 700; color: var(--ink); margin: 16px 0 4px 0;
@@ -1227,8 +1248,17 @@ section[data-testid="stSidebar"] h2 {
 .stApp div[data-testid="stVerticalBlock"][class*="st-emotion"] {
   border-radius: 4px;
 }
+/* ⚠ `:has(primary 버튼)`은 "primary 버튼이 든 블록은 카드다"라는 가정인데,
+   `완료` 버튼이 들어 있는 **컬럼**도 여기 걸려서 위쪽에 18px 패딩이 붙었다.
+   그 때문에 `완료`가 `취소`보다 6px 아래로 내려가 두 버튼이 어긋나 보였다
+   (브라우저에서 실측: 취소 top=5855 / 완료 top=5861, 완료 쪽 블록 height 58).
+   블록 액션 버튼이 든 블록은 카드가 아니므로 제외한다. */
 .stApp div[data-testid="stVerticalBlock"][style*="border"],
-.stApp div[data-testid="stVerticalBlock"]:has(> div [data-testid="stBaseButton-primary"]) {
+.stApp div[data-testid="stVerticalBlock"]:has(> div [data-testid="stBaseButton-primary"]):not(
+  :has(> div[class*="st-key-save_"]),
+  :has(> div[class*="st-key-next_step_save_"]),
+  :has(> div[class*="st-key-cancel_yes_"])
+) {
   border-color: var(--line) !important;
   background: var(--surface);
   border-radius: 4px !important;
@@ -1253,21 +1283,35 @@ section[data-testid="stSidebar"] h2 {
   border-left: 3px solid var(--line);
   font-size: 11.5px; color: var(--muted); line-height: 1.75;
 }
-/* 대조군 비교(B-3) — 매체 = 소제목, 지표 = 행. 실제 리포트 시트가 표마다
-   `* 틱톡 AOS` 라벨을 붙이는 것과 같은 문법이다. */
-.ct-head {
-  display: flex; align-items: center; gap: 8px;
-  margin: 14px 0 6px; font-size: 12.5px; color: var(--ink);
+/* 대조군 비교(B안) — 매체까지 **한 표**. 매체 = 행 묶음(3줄), 지표 = 열.
+   실제 리포트 시트가 표마다 `* 틱톡 AOS` 라벨을 붙이는 것과 같은 문법인데,
+   매체를 컬럼으로 끌어들여 같은 지표를 매체끼리 위아래로 붙여 놓았다.
+   ⚠ `.ct-head`/`.ct-verdict`/`.ct-meta`(매체별 소제목 줄)는 이 구조로 오면서
+     쓰이지 않게 됐다 — 규칙을 남겨 두면 다음에 "왜 안 먹지"로 헤맨다. */
+/* 매체 묶음의 첫 줄 — 위에 굵은 선을 그어 세 줄이 한 덩어리로 읽히게 한다.
+   `rowspan`으로 셀을 병합하지 않는다: 병합하면 행마다 스타일을 넣는 지금 구조
+   (`cell_styles[행][컬럼]`)가 어긋나고, 나중에 셀 강조를 붙일 때도 막힌다. */
+.rt tr.ct-grp td { border-top: 2px solid #cfd6dd; }
+.rt tr.ct-delta td { border-top: 1px solid var(--line); }
+/* 매체 셀만 마크업을 직접 넣는다(`report_table`의 `html_columns`).
+   `cell_class`는 정렬 클래스만 붙이므로 컬럼 이름으로는 못 잡는다 — 대조군 표에서
+   매체는 항상 첫 컬럼이라 `:first-child`로 겨냥한다. */
+.rt tbody tr.ct-grp > td:first-child,
+.rt tbody tr:first-child > td:first-child { white-space: nowrap; }
+.rt tbody td:first-child .ct-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 5px; vertical-align: middle;
 }
-.ct-head i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
-.ct-head b { font-weight: 700; }
-.ct-verdict {
-  padding: 1px 7px; border: 1px solid var(--line); border-radius: 3px;
-  background: #f6f8fa; color: #4b5563; font-size: 11.5px;
+.rt tbody td:first-child b { font-weight: 700; }
+/* 사이드바 접기용 iframe(`collapse_sidebar_once`). `st.iframe`이 height=0을 거부해서
+   1px이고, 그 1px은 여기서 더 줄지 않는다(`height: 0 !important`를 걸어도 계산값이
+   1px로 남는 것을 실측했다 — 안 먹는 규칙을 남기면 다음에 헤맨다). 눈에 보이지 않는
+   높이라 그대로 두고, 여백만 없애 다음 요소가 밀리지 않게 한다. */
+.st-key-sbcollapse { overflow: hidden !important; margin: 0 !important; }
+.rt tbody td:first-child .ct-sub {
+  display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted);
+  font-weight: 400;
 }
-.ct-meta { color: var(--muted); font-size: 11.5px; }
-
-
 </style>
 
 """
@@ -1449,6 +1493,7 @@ def report_table(
     row_classes: list[str] | None = None,
     cell_styles: list[dict[str, str]] | None = None,
     link_columns: set[str] | None = None,
+    html_columns: set[str] | None = None,
 ) -> None:
     """리포트용 HTML 표. `st.dataframe`으로 못 하는 것들을 하기 위해 직접 그린다.
 
@@ -1469,6 +1514,10 @@ def report_table(
     # 값이 URL인 컬럼만 링크로 심는다(구글 표의 소재 링크). 나머지 셀은 항상 이스케이프된
     # 텍스트다 — 임의의 HTML이 표 안으로 들어오지 않게 한다.
     link_columns = link_columns or set()
+    # ⚠ `html_columns`의 값은 **이스케이프하지 않는다.** 우리가 조립한 마크업만
+    #   넣어야 한다(색 점·배지 같은 것). 소재명·시트 값처럼 밖에서 온 문자열을
+    #   이 컬럼에 넣으면 표 안으로 임의의 HTML이 들어온다.
+    html_columns = html_columns or set()
 
     def cell_class(name: str) -> str:
         classes = ["l" if name in left_columns else "c"]
@@ -1485,7 +1534,7 @@ def report_table(
         for name, value in zip(headers, values):
             style = styles.get(name, "")
             attr = f' style="{_e(style)}"' if style else ""
-            text = _e(value)
+            text = str(value) if name in html_columns else _e(value)
             if name in link_columns and str(value).startswith("http"):
                 text = (
                     f'<a class="rt-link" href="{_e(value)}" target="_blank" '
@@ -1520,3 +1569,64 @@ def chips(items: list[str]) -> None:
 
 def footnote(text: str) -> None:
     st.markdown(f'<div class="foot">{_e(text)}</div>', unsafe_allow_html=True)
+
+
+def collapse_sidebar_once() -> None:
+    """이 브라우저 탭에서 **한 번만** 사이드바를 접는다.
+
+    왜 필요한가: `st.set_page_config(initial_sidebar_state="collapsed")`는
+    **세션의 첫 렌더에만** 적용된다. 그런데 Google 로그인은 코드 교환을 마친 뒤
+    `st.rerun()`으로 같은 세션을 이어가고, 그 순간 사이드바가 "내용 없음 →
+    내용 있음"으로 바뀐다. Streamlit은 그때 사이드바를 **펼친다** — 그래서 로그인해서
+    들어오면 항상 열린 채로 보였다(규리님 지적). 로컬(로그인 없음)에서는 첫 렌더부터
+    내용이 있어서 재현되지 않는다.
+
+    전체 새로고침으로 해결할 수 없다 — `st.session_state`는 브라우저 새로고침을
+    넘기지 못해서 방금 한 로그인이 풀린다.
+
+    `st.markdown`의 `<script>`는 실행되지 않는다(살균된다). 그래서 iframe 컴포넌트
+    (`components.html`)로 넣고 `window.parent`를 통해 접기 버튼을 누른다 — 실제 DOM에서
+    이 선택자가 동작하는 것을 확인했다(펼침 aria-expanded=true → 클릭 → false).
+
+    `sessionStorage`로 탭당 한 번만 실행한다. 안 그러면 규리님이 일부러 열어도
+    다음 리런에서 다시 닫혀 사이드바를 쓸 수 없다.
+    """
+    # `st.components.v1.html`은 2026-06-01 이후 제거 예고가 붙었다(실행 시 경고를
+    # 찍는다). `st.iframe`이 있으면 그걸 쓰고, 없는 버전에서는 예전 API로 떨어진다.
+    render = getattr(st, "iframe", None) or st.components.v1.html
+    with st.container(key="sbcollapse"):
+        render(
+            """
+<script>
+(function () {
+  var doc = window.parent && window.parent.document;
+  if (!doc) return;
+  try {
+    if (window.parent.sessionStorage.getItem("sbCollapsedOnce")) return;
+  } catch (e) { /* 저장소가 막힌 브라우저 — 그냥 한 번 접는다 */ }
+
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    var bar = doc.querySelector('[data-testid="stSidebar"]');
+    var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button');
+    if (bar && bar.getAttribute("aria-expanded") === "false") {
+      // 이미 접혀 있다(로컬처럼 첫 렌더부터 내용이 있던 경우) — 할 일 없음.
+      done();
+      return;
+    }
+    if (bar && btn) { btn.click(); done(); return; }
+    if (tries > 40) { clearInterval(timer); }   // 4초 뒤 포기
+  }, 100);
+
+  function done() {
+    clearInterval(timer);
+    try { window.parent.sessionStorage.setItem("sbCollapsedOnce", "1"); } catch (e) {}
+  }
+})();
+</script>
+            """,
+            # ⚠ `st.iframe`은 height=0을 거부한다(StreamlitInvalidHeightError — 화면이
+            #   통째로 죽었다). 1px로 두고 `.st-key-sbcollapse`를 CSS로 감춘다.
+            height=1,
+        )
