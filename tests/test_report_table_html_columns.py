@@ -56,3 +56,29 @@ def test_대조군_표는_매체마다_3줄이다(rendered):
             ["", "차이"] + ["-"] * 7]
     ui.report_table(rows, ["매체", "구분"] + metrics, html_columns={"매체"})
     assert rendered[0].count("<tr") == 4  # 헤더 1 + 본문 3
+
+
+def test_rowspan으로_셀을_병합한다(rendered):
+    """대조군 표의 매체 셀 — 세 줄이 한 매체라는 걸 병합으로 보여준다.
+
+    0은 "위 행이 덮는 자리"라 `<td>`를 아예 그리지 않는다. 빈 문자열로 두면
+    빈 칸이 그려져서 병합이 안 된다.
+    """
+    ui.report_table(
+        [["Meta", "epn"], ["", "그 외"], ["", "차이"]],
+        ["매체", "구분"],
+        row_spans=[{"매체": 3}, {"매체": 0}, {"매체": 0}],
+    )
+    html = rendered[0]
+    assert 'rowspan="3"' in html
+    # 첫 줄 2칸(매체+구분) + 나머지 두 줄 각 1칸 = 4. 병합이 안 되면 6이 된다.
+    assert html.count("<td") == 4
+
+
+def test_병합해도_셀_스타일이_어긋나지_않는다(rendered):
+    ui.report_table(
+        [["Meta", "-"], ["", "차이"]], ["매체", "구분"],
+        row_spans=[{"매체": 2}, {"매체": 0}],
+        cell_styles=[{}, {"구분": "background-color:#fdf3f3"}],
+    )
+    assert "background-color:#fdf3f3" in rendered[0]

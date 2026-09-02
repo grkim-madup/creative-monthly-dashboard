@@ -2431,6 +2431,7 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
     rows: list[list[str]] = []
     row_classes: list[str] = []
     styles: list[dict[str, str]] = []
+    spans: list[dict[str, int]] = []
 
     for index, card in enumerate(cards):
         share = (f"소재 {card['ads']}개 · 소진 {card['share']:.1%}"
@@ -2473,6 +2474,8 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         # 첫 묶음 위에는 선을 긋지 않는다 — 헤더 아래 선과 두 줄로 겹친다.
         row_classes += ["" if index == 0 else "ct-grp", "", "ct-delta"]
         styles += [{}, {}, delta_style]
+        # 매체 셀은 세 줄에 걸쳐 병합한다 — 빈 칸 두 개가 아니라 한 덩어리로 읽힌다.
+        spans += [{"매체": 3}, {"매체": 0}, {"매체": 0}]
 
     report_table(
         rows, headers,
@@ -2480,6 +2483,7 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         row_classes=row_classes,
         cell_styles=styles,
         html_columns={"매체"},
+        row_spans=spans,
     )
     st.markdown(
         '<div class="tbl-note">차이 — 비율 지표는 <b>%p</b>, 금액·건수 지표는 '

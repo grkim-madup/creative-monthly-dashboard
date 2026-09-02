@@ -1308,6 +1308,8 @@ section[data-testid="stSidebar"] h2 {
    1px로 남는 것을 실측했다 — 안 먹는 규칙을 남기면 다음에 헤맨다). 눈에 보이지 않는
    높이라 그대로 두고, 여백만 없애 다음 요소가 밀리지 않게 한다. */
 .st-key-sbcollapse { overflow: hidden !important; margin: 0 !important; }
+/* 병합된 매체 셀 — 세 줄 가운데에 오게 한다(위로 붙으면 빈 칸이 크게 남는다). */
+.rt tbody td[rowspan] { vertical-align: middle; border-right: 1px solid var(--line); }
 .rt tbody td:first-child .ct-sub {
   display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted);
   font-weight: 400;
@@ -1494,6 +1496,7 @@ def report_table(
     cell_styles: list[dict[str, str]] | None = None,
     link_columns: set[str] | None = None,
     html_columns: set[str] | None = None,
+    row_spans: list[dict[str, int]] | None = None,
 ) -> None:
     """리포트용 HTML 표. `st.dataframe`으로 못 하는 것들을 하기 위해 직접 그린다.
 
@@ -1518,6 +1521,12 @@ def report_table(
     #   넣어야 한다(색 점·배지 같은 것). 소재명·시트 값처럼 밖에서 온 문자열을
     #   이 컬럼에 넣으면 표 안으로 임의의 HTML이 들어온다.
     html_columns = html_columns or set()
+    # row_spans[행][컬럼] = 몇 줄에 걸칠지. 0이면 그 칸을 **아예 그리지 않는다**
+    # (위 행의 rowspan이 덮는 자리다). 대조군 표의 매체 셀이 이걸 쓴다 —
+    # 세 줄(대상/그 외/차이)이 한 매체라는 걸 병합으로 보여준다.
+    # ⚠ 병합해도 `cell_styles[행][컬럼]`은 그대로 쓸 수 있다. 스타일은 컬럼 이름으로
+    #   찾으므로, 그리지 않은 칸에 스타일이 있어도 조용히 무시될 뿐이다.
+    row_spans = row_spans or [{} for _ in rows]
 
     def cell_class(name: str) -> str:
         classes = ["l" if name in left_columns else "c"]
@@ -1529,11 +1538,16 @@ def report_table(
         f'<th class="{cell_class(name)}">{_e(name)}</th>' for name in headers
     )
     body = []
-    for values, klass, styles in zip(rows, row_classes, cell_styles):
+    for values, klass, styles, spans in zip(rows, row_classes, cell_styles, row_spans):
         cells = []
         for name, value in zip(headers, values):
+            span = spans.get(name)
+            if span == 0:
+                continue          # 위 행의 rowspan이 덮는 자리
             style = styles.get(name, "")
             attr = f' style="{_e(style)}"' if style else ""
+            if span and span > 1:
+                attr += f' rowspan="{int(span)}"'
             text = str(value) if name in html_columns else _e(value)
             if name in link_columns and str(value).startswith("http"):
                 text = (
