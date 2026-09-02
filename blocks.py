@@ -52,7 +52,9 @@ BLOCK_DEFAULTS: dict[str, dict] = {
     # 근거가 되고, 되돌릴 수 있게 남겨 둔다.
     "creative_query": {"title": "", "conditions": {}, "show_table": True, "comment": "",
                        "views": [], "insight": ""},
-    "note": {"title": "", "comment": "", "images": [], "tables": [],
+    # `views`는 4번 섹션과 같은 피벗 표다. NEXT STEP에서도 실데이터 표를 붙일 수
+    # 있어야 한다는 요청(2026-09-02) — 붙여넣기(`tables`)와 나란히 쓴다.
+    "note": {"title": "", "comment": "", "images": [], "tables": [], "views": [],
              "image_max_height": next_step.DEFAULT_IMAGE_MAX_HEIGHT},
 }
 

@@ -170,3 +170,39 @@ class TestMergedNote:
 
     def test_empty_fields_produce_nothing(self):
         assert self.merged({"comment": "", "insight": "   "}) == ""
+
+
+class TestNoteBlockPivot:
+    """NEXT STEP 노트 블록도 피벗 표를 가질 수 있다 — 붙여넣기와 나란히."""
+
+    def test_note_defaults_include_views(self):
+        data = report_blocks.empty_blocks()
+        block_id = report_blocks.add_block(data, report_blocks.SLOT_NEXT_STEP, "note")
+        block = report_blocks.find_block(data, report_blocks.SLOT_NEXT_STEP, block_id)
+        assert block["views"] == []
+        assert block["tables"] == []          # 붙여넣기 표는 그대로 남는다
+
+    def test_views_survive_update_block(self):
+        """`BLOCK_DEFAULTS`에 없는 키는 조용히 버려진다 — 그 회귀를 막는다."""
+        data = report_blocks.empty_blocks()
+        block_id = report_blocks.add_block(data, report_blocks.SLOT_NEXT_STEP, "note")
+        views = [{"id": "v1", "kind": "pivot", "rows": [{"field": "ad"}]}]
+        report_blocks.update_block(data, report_blocks.SLOT_NEXT_STEP, block_id,
+                                   views=views, tables=["a\tb"])
+        block = report_blocks.find_block(data, report_blocks.SLOT_NEXT_STEP, block_id)
+        assert block["views"] == views
+        assert block["tables"] == ["a\tb"]
+
+    def test_note_blocks_do_not_share_the_views_list(self):
+        data = report_blocks.empty_blocks()
+        first = report_blocks.add_block(data, report_blocks.SLOT_NEXT_STEP, "note")
+        second = report_blocks.add_block(data, report_blocks.SLOT_NEXT_STEP, "note")
+        report_blocks.find_block(
+            data, report_blocks.SLOT_NEXT_STEP, first)["views"].append({})
+        assert report_blocks.find_block(
+            data, report_blocks.SLOT_NEXT_STEP, second)["views"] == []
+
+    def test_promote_views_leaves_note_blocks_alone(self):
+        """노트 블록은 예전 `conditions` 개념이 없다 — 승격 대상이 아니다."""
+        block = {"id": "n1", "type": "note", "comment": "", "tables": []}
+        assert "views" not in report_blocks.promote_views(dict(block))

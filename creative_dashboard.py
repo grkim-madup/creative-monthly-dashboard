@@ -3044,16 +3044,33 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                 key=f"next_step_md_{block_id}",
             )
 
-            # 표 붙여넣기는 '첨부' 레일 안에 있으면 이미지 업로드와 헷갈린다 — 본문 아래로 뺀다
-            st.markdown('<div class="ns-label">표 붙여넣기</div>', unsafe_allow_html=True)
-            pasted = st.text_area(
-                "표 붙여넣기",
-                height=96,
-                key=f"next_step_tbl_{block_id}_{nonce}",
-                placeholder="엑셀·시트에서 표를 복사해 그대로 붙여넣으세요. 첫 줄은 헤더로 봅니다.",
-                label_visibility="collapsed",
-                help="첫 줄을 헤더로 봅니다. 탭·쉼표 구분을 자동으로 가려냅니다.",
+            # 표는 두 갈래다 — **실데이터에서 뽑는 피벗**과 **밖에서 복사해 온 표**.
+            # 하나로 합칠 수 없다(피벗은 이 달 데이터, 붙여넣기는 임의의 숫자).
+            # 그래서 어느 쪽인지 먼저 고르게 한다.
+            st.markdown('<div class="ns-label">표</div>', unsafe_allow_html=True)
+            table_mode = st.radio(
+                "표 넣는 방식", ["피벗", "붙여넣기"], horizontal=True,
+                key=f"ns_tblmode_{block_id}", label_visibility="collapsed",
+                captions=["이 달 데이터에서 행·값·필터로 뽑는다",
+                          "엑셀·시트에서 복사해 온 표를 그대로 싣는다"],
             )
+
+            pasted = ""
+            note_views = [view_with_defaults(v) for v in (block.get("views") or [])]
+            if table_mode == "붙여넣기":
+                pasted = st.text_area(
+                    "표 붙여넣기",
+                    height=96,
+                    key=f"next_step_tbl_{block_id}_{nonce}",
+                    placeholder="엑셀·시트에서 표를 복사해 그대로 붙여넣으세요. 첫 줄은 헤더로 봅니다.",
+                    label_visibility="collapsed",
+                    help="첫 줄을 헤더로 봅니다. 탭·쉼표 구분을 자동으로 가려냅니다.",
+                )
+            else:
+                note_views = views_editor(block_id, note_views)
+                for view in note_views:
+                    render_view(view, month, f"sec7_{block_id}", editing=True)
+                add_view_button(block_id)
 
         with side_col:
             st.markdown('<div class="ns-label">레퍼런스 이미지</div>', unsafe_allow_html=True)
@@ -3098,6 +3115,8 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                             d, report_blocks.SLOT_NEXT_STEP, block_id,
                             title=title_value, comment=draft_markdown or "",
                             images=images, tables=tables,
+                            views=[view_from_widgets(v, f"{block_id}_{v['id']}")
+                                   for v in note_views],
                             image_max_height=image_max_height,
                         ),
                         expect={block_id: block.get("_rev", 0)},
@@ -3107,7 +3126,8 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                         clear_editor_state(block_id)
                         rerun_local()
 
-            attachments = list(block.get("images", [])) + list(block.get("tables", []))
+            attachments = (list(block.get("images", [])) + list(block.get("tables", []))
+                           + list(block.get("views", [])))
             if attachments:
                 st.markdown(
                     f'<div class="ns-label">첨부된 항목 {len(attachments)}개</div>',
@@ -3192,6 +3212,11 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
             table = parse_pasted_table(raw_table)
             if not table.empty:
                 render_pasted_table(table)
+
+        # 피벗 표는 4번 섹션과 완전하 같은 렌더러를 쓴다 — 둘이 다를 이유가 없고,
+        # 갈라지면 숫자가 달라질 수 있다. 키 접두사만 `sec7_`로 다를게 해 강조가 섞이지 않게 한다.
+        for view in (block.get("views") or []):
+            render_view(view, month, f"sec7_{block_id}")
 
 
 next_step_blocks = page_blocks[report_blocks.SLOT_NEXT_STEP]
