@@ -1007,33 +1007,7 @@ def pivot_frame(
     fields = [r["field"] for r in rows]
     metrics = list(values) if values else list(DEFAULT_PIVOT_VALUES)
 
-    source = df
-    frame = df
-    tag_filter: list[str] = []
-    for field, chosen in (filters or {}).items():
-        if not chosen:
-            continue
-        if field == "extra_info_tag" and field not in frame.columns:
-            # 태그는 펼치기 전에는 컬럼이 아니다. 그냥 건너뛰면 **필터가 통째로 무시된다**
-            # (실측: 소진 99만이어야 하는 표가 2억으로 나왔다). 펼친 프레임에서 해당
-            # **소재 이름**을 찾아 원본을 거른다 — 펼친 상태로 집계하면 중복 집계된다.
-            tag_filter = [str(v) for v in chosen]
-            continue
-        if field not in frame.columns:
-            continue
-        frame = frame[frame[field].astype(str).isin([str(v) for v in chosen])]
-
-    if tag_filter and "ad" in frame.columns:
-        exploded = explode_extra_info(frame)
-        matched = exploded[exploded["extra_info_tag"].astype(str).isin(tag_filter)]
-        frame = frame[frame["ad"].isin(matched["ad"].unique())]
-
-    # 손으로 고른 소재를 더한다. 필터가 걸러낸 뒤에 붙이므로 **합집합**이 된다.
-    picked = [str(a) for a in (include_ads or [])]
-    if picked and "ad" in source.columns:
-        extra = source[source["ad"].astype(str).isin(picked)]
-        frame = pd.concat([frame, extra]).drop_duplicates()
-
+    frame = filtered_scope(df, filters, include_ads)
     if frame.empty:
         return frame.iloc[0:0]
 
@@ -1072,3 +1046,38 @@ def pivot_frame(
 
     keep = keys + [m for m in SELECTABLE_COLUMNS if m in metrics and m in table.columns]
     return table[keep].reset_index(drop=True)
+
+
+def filtered_scope(df: pd.DataFrame, filters: dict | None = None,
+                   include_ads: list[str] | None = None) -> pd.DataFrame:
+    """필터를 적용한 **행 단위** 프레임. 집계하지 않는다.
+
+    `pivot_frame`이 표를 만들 때 쓰는 것과 **같은 필터 규칙**을 쓴다. 요약 카드가
+    이걸 써야 표와 숫자가 어긋나지 않는다.
+
+    ⚠ 예전 카드는 필터로 **소재 이름**을 뽑은 뒤 원본을 그 이름으로 되받았다.
+      그러면 `매체 = Meta` 같은 행 단위 필터가 풀려서, 표는 751,459인데 카드는
+      990,538(TikTok까지 포함)이 됐다. 이름으로 되받는 것은 태그 필터에만 필요하다.
+    """
+    frame = df
+    tag_filter: list[str] = []
+    for field, chosen in (filters or {}).items():
+        if not chosen:
+            continue
+        if field == "extra_info_tag" and field not in frame.columns:
+            tag_filter = [str(v) for v in chosen]
+            continue
+        if field not in frame.columns:
+            continue
+        frame = frame[frame[field].astype(str).isin([str(v) for v in chosen])]
+
+    if tag_filter and "ad" in frame.columns:
+        exploded = explode_extra_info(frame)
+        matched = exploded[exploded["extra_info_tag"].astype(str).isin(tag_filter)]
+        frame = frame[frame["ad"].isin(matched["ad"].unique())]
+
+    picked = [str(a) for a in (include_ads or [])]
+    if picked and "ad" in df.columns:
+        frame = pd.concat([frame, df[df["ad"].astype(str).isin(picked)]])
+        frame = frame.drop_duplicates()
+    return frame

@@ -49,6 +49,7 @@ from creative_data import (
     metric_benchmark,
     month_options,
     pick_best_worst,
+    filtered_scope,
     normalize_rows,
     pivot_frame,
     DIMENSION_COLUMNS,
@@ -2372,8 +2373,14 @@ def render_view(view: dict, month: int, key_prefix: str,
         return
 
     highlight_key = f"{key_prefix}_{view['id']}"
+    # ⚠ **최소 소진액을 걸지 않는다.** 예전에 `min_cost`(₩100,000)를 넘겼더니
+    #    `epn` 소재 8줄 중 2줄만 남고 표 합계가 636,185가 됐다 — 같은 화면의 요약
+    #    카드는 990,538이었다. 사용자가 필터로 의도를 명시했는데 숨은 문턱이 그걸
+    #    조용히 뒤집는 것은 이 프로젝트에서 가장 위험한 실패다.
+    #    노이즈를 줄이려면 필터를 쓰거나(예: 소진액 하위 제외는 그래프의 저볼륨 흐리기로),
+    #    표는 필터가 말한 것을 그대로 보여준다.
     table = pivot_frame(named_overview, view["rows"], view["values"],
-                        filters=view["filters"], min_cost=min_cost,
+                        filters=view["filters"],
                         include_ads=view["include_ads"])
     if table.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다",
@@ -2734,26 +2741,23 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     기간 비교 뷰는 리포트 월이 아닌 달을 보므로 제외한다 — 섞으면 카드가 어느 기간의
     숫자인지 알 수 없다.
     """
-    ads: set[str] = set()
-    for view in views:
-        if view["kind"] == "compare":
-            continue
-        # 카드는 **그 주제의 표들이 다루는 소재의 합집합**이다. 표마다 필터가 다를 수
-        # 있으므로 소재 이름으로 합집합을 만든 뒤 원본에서 한 번만 집계한다.
-        matched = pivot_frame(named_overview, ["ad"], ["cost"],
-                              filters=view["filters"],
-                              include_ads=view["include_ads"])
-        if not matched.empty:
-            ads |= set(matched["ad"].unique())
-    if not ads:
+    # 카드는 **그 주제의 표들이 다루는 것의 합집합**이다.
+    #
+    # ⚠ 예전에는 필터로 소재 **이름**을 뽑고 원본을 그 이름으로 되받았다. 그러면
+    #   `매체 = Meta` 같은 행 단위 필터가 풀려서 표는 751,459인데 카드는
+    #   990,538(TikTok까지)이 됐다. 표가 쓰는 것과 **같은 필터 함수**로 행을 고른 뒤
+    #   그 행들을 합쳐야 숫자가 어긋나지 않는다.
+    parts = [filtered_scope(named_overview, view["filters"], view["include_ads"])
+             for view in views if view["kind"] != "compare"]
+    parts = [frame for frame in parts if not frame.empty]
+    if not parts:
         return
-
-    scope_of_block = overview[overview["ad"].isin(ads)]
+    scope_of_block = pd.concat(parts).drop_duplicates()
     if scope_of_block.empty:
         return
     summary = aggregate_by(scope_of_block.assign(_all="합계"), ["_all"]).iloc[0]
     kpi_cards([
-        {"label": "소재 수", "value": f"{len(ads):,}개",
+        {"label": "소재 수", "value": f"{scope_of_block['ad'].nunique():,}개",
          "sub": "이 주제가 다루는 소재", "primary": True},
         {"label": "소진액", "value": f"₩{summary['cost']:,.0f}", "sub": "마크업 포함"},
         {"label": "CTR", "value": f"{summary['CTR']:.2%}", "sub": "클릭 ÷ 노출"},

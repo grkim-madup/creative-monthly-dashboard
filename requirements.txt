@@ -11,4 +11,4 @@ google-api-python-client==2.198.0
 google-auth==2.56.2
 google-cloud-firestore==2.29.0
 imageio-ffmpeg==0.6.0
-# 재시작 마커: 2026-09-02 pivot include_ads
+# 재시작 마커: 2026-09-02 filtered_scope 추가
