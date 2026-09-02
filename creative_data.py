@@ -1263,11 +1263,16 @@ def contrast_split(scope: pd.DataFrame, filters: dict | None,
 #   2. Extra Info 태그에 `mix`
 #   3. Title ID = `0000`  (여러 작품을 섞은 소재라 작품 코드가 비어 있다)
 #
-# ⚠ `MixTitle`은 **제외**다 — Creative Type 어휘에 따로 존재하는 별개 값이고
-#   규리님이 지정한 것은 `Mix`다. 8월 실측으로 1개 소재가 여기 걸린다.
+# `MixTitle`도 **포함**한다(2026-09-03 규리님 확인). 처음에는 Creative Type 어휘에
+# 따로 있는 별개 값이라 제외했는데, 실물을 확인하고 포함으로 결정했다 —
+# `2401_極權教師_VID_Webtoon-VS_MixTitle_9X16_1` 하나뿐이고 6·7·8월 3개월 연속
+# 집행(누적 소진 ₩13,359,182 · 설치 6,415 · CPI ₩2,082)된 소재다.
+# ⚠ 이 소재의 Title ID는 `0000`이 아니라 `2401`(참교육 단일 작품)이다. 즉 "여러
+#   작품 믹스"가 아니라 한 작품 안에서 장면을 섞은 것이라, 세 조건 중 어디에도
+#   안 걸려서 명시적으로 넣어야 한다.
 
-#: MIX 판정에 쓰는 Creative Type(정규화 후 대문자). `MIXTITLE`은 넣지 않는다.
-MIX_CREATIVE_TYPES = frozenset({"MIX"})
+#: MIX 판정에 쓰는 Creative Type(정규화 후 대문자).
+MIX_CREATIVE_TYPES = frozenset({"MIX", "MIXTITLE"})
 #: 여러 작품을 섞은 소재의 Title ID. `parse_ad_name`이 4자리로 정규화한다.
 MIX_TITLE_CODES = frozenset({"0000"})
 MIX_LABEL = "MIX"
@@ -1291,7 +1296,7 @@ def mix_group(df: pd.DataFrame) -> pd.Series:
     by_type = column("creative_type").str.strip().str.upper().isin(MIX_CREATIVE_TYPES)
     # 태그는 `_`와 `-` 둘 다로 이어 붙는다(`Mix_12anniversary`, `TITLE2-mix`).
     # `split_extra_info`와 같은 규칙으로 쪼개 **토큰 일치**를 본다 — 부분 문자열로
-    # 보면 `MixTitle`이나 `remix` 같은 값이 딸려 들어온다.
+    # 보면 `remix`·`mixed` 처럼 뜻이 다른 태그가 딸려 들어온다.
     by_tag = column("extra_info").str.lower().str.split(r"[_\-]").apply(
         lambda parts: "mix" in [p.strip() for p in parts]
     )

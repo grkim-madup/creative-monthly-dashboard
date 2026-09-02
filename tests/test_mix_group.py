@@ -25,10 +25,15 @@ def test_대소문자를_가리지_않는다():
     assert list(got) == [MIX_LABEL, MIX_LABEL]
 
 
-def test_MixTitle은_제외한다():
-    """Creative Type 어휘에 따로 있는 별개 값이다 — 규리님이 지정한 건 `Mix`다."""
-    got = mix_group(frame([{"creative_type": "MixTitle", "title_code": "1234"}]))
-    assert list(got) == [NON_MIX_LABEL]
+def test_MixTitle도_포함한다():
+    """2026-09-03 규리님 확인. 실물이 하나뿐이고(`2401_極權教師_..._MixTitle_9X16_1`),
+    Title ID가 `0000`이 아니라 `2401`이라 세 조건 중 어디에도 안 걸린다 —
+    그래서 Creative Type으로 명시적으로 넣어야 한다."""
+    got = mix_group(frame([
+        {"creative_type": "MixTitle", "title_code": "2401"},
+        {"creative_type": "MIXTITLE", "title_code": "2401"},
+    ]))
+    assert list(got) == [MIX_LABEL, MIX_LABEL]
 
 
 def test_extra_info_태그가_mix면_잡는다():
@@ -44,7 +49,7 @@ def test_태그는_토큰_일치다():
     """부분 문자열로 보면 `remix`·`mixtitle` 같은 값이 딸려 들어온다."""
     got = mix_group(frame([
         {"extra_info": "remix", "title_code": "1234"},
-        {"extra_info": "mixtitle", "title_code": "1234"},
+        {"extra_info": "mixed", "title_code": "1234"},
     ]))
     assert list(got) == [NON_MIX_LABEL, NON_MIX_LABEL]
 
