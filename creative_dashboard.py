@@ -50,7 +50,11 @@ from creative_data import (
     metric_benchmark,
     month_options,
     pick_best_worst,
+    contrast_by_media,
+    contrast_split,
     filtered_scope,
+    METRIC_DISPLAY,
+    RATIO_METRICS,
     normalize_rows,
     pivot_frame,
     DIMENSION_COLUMNS,
@@ -2008,6 +2012,11 @@ VIEW_DEFAULTS = {
     #: 선택을 붙였더니 하는 일이 같아져서 "왜 두 군데서 좁히나"가 됐다.
     #: 행으로 쓰는 구분자도 여기서 고를 수 있다(시트 피벗도 그렇다).
     "filters": {},
+    #: 대조군 비교 — 켜면 "동일 조건에서 이 소재군을 제외한 나머지"와 매체별로 견준다.
+    #: 규리님 요구: "효율이 좋았냐 안 좋았냐. 그 기준은 그걸 제외한 다른 소재들의 평균."
+    "contrast": False,
+    #: 표 위에 소재 썸네일 줄을 보여줄지. 광고주 Drive 조회가 필요해 기본은 꺼 둔다.
+    "thumbs": False,
     #: 필터 결과에 **더할** 소재. 필터를 두 개 걸면 교집합이라 "이 조건에 맞는 소재
     #: + 손으로 고른 소재"는 필터로 표현할 수 없다. 실제 리포트도 대상 소재를
     #: 파일명으로 나열하는 칸을 따로 둔다(8월 시트 148~175행).
@@ -2367,6 +2376,132 @@ def render_compare_view(view: dict) -> None:
     )
 
 
+def render_contrast(view: dict, month: int, key_prefix: str) -> None:
+    """대조군 비교 표(B-3) — 매체마다 소제목 + `지표 / 대상 / 그 외 / 차이` 표 하나.
+
+    지표가 **행**이라 지표를 늘려도 세로로만 자란다(열로 두면 가로 스크롤이 생긴다).
+    실제 리포트 시트도 표마다 `* 틱톡 AOS` 소제목을 붙이고 그 아래 표를 놓는다.
+
+    소제목에 **표본 크기와 소진 비중**을 함께 찍는다 — 그게 없으면 "CPI +36.7% 나쁨"만
+    크게 보이는데 실제로는 소진 0.7%짜리 실험이다. 광고주가 과한 판단을 하게 된다.
+    """
+    if not view["filters"]:
+        status_row("warn", "대조군을 만들 필터가 없습니다",
+                   "필터를 하나 이상 걸면 '그 외'와 견줄 수 있습니다.")
+        return
+
+    # 대조군 규칙은 `creative_data.contrast_split` 한 곳에만 있다 — 화면에서 다시
+    # 정의하면 감사 도구가 검증하는 것과 다른 값이 광고주에게 간다.
+    subject, rest = contrast_split(named_overview, view["filters"],
+                                   view["include_ads"])
+    if subject.empty:
+        status_row("warn", "필터에 맞는 소재가 없습니다", "필터를 완화해 보세요.")
+        return
+    if rest.empty:
+        status_row("warn", "대조군을 만들 수 없습니다",
+                   "매체·OS만 좁힌 상태입니다. 소재 속성(유형·포맷·태그 등) 필터를 "
+                   "하나 걸면 '그 외 소재'와 견줄 수 있습니다.")
+        return
+
+    label = " · ".join(
+        f"{field_label(f)} {', '.join(map(str, v))}"
+        for f, v in view["filters"].items()) or "대상"
+
+    for card in contrast_by_media(subject, rest, view["values"] or None):
+        share = f" · 소진 비중 {card['share']:.1%}" if card["share"] is not None else ""
+        st.markdown(
+            f'<div class="ct-head">'
+            f'<i style="background:{media_color(card["media"])}"></i>'
+            f'<b>{html.escape(card["media"])}</b>'
+            f'<span class="ct-verdict">{html.escape(card["verdict"])}</span>'
+            f'<span class="ct-meta">소재 {card["ads"]}개{share}</span></div>',
+            unsafe_allow_html=True,
+        )
+        rows, styles = [], []
+        for _, line in card["table"].iterrows():
+            metric = line["metric"]
+            if pd.notna(line["share"]):
+                diff, tone = f"{line['share']:.1%}", ""
+            elif line["delta"] is None or pd.isna(line["delta"]):
+                diff, tone = "-", ""
+            elif line["unit"] == "%p":
+                diff = f"{line['delta']:+.2f}%p"
+                tone = "good" if line["better"] else "bad"
+            else:
+                diff = f"{line['delta']:+.1%}"
+                tone = "good" if line["better"] else "bad"
+            rows.append([
+                METRIC_DISPLAY.get(metric, metric),
+                fmt_metric(metric, line["subject"]),
+                fmt_metric(metric, line["rest"]),
+                diff,
+            ])
+            styles.append({"차이": {"good": "background-color:#eefaf4;color:#0F6E56;"
+                                          "font-weight:600",
+                                   "bad": "background-color:#fdf3f3;color:#8a1f1f;"
+                                          "font-weight:600"}.get(tone, "")})
+        report_table(rows, ["지표", label[:22], "그 외", "차이"],
+                     left_columns={"지표"}, cell_styles=styles)
+    st.markdown(
+        '<div class="tbl-note">차이 — 비율 지표는 <b>%p</b>, 금액·건수 지표는 '
+        "<b>%</b>입니다. 노출·클릭·설치는 좋고 나쁨이 아니라 <b>비중</b>을 표시합니다."
+        "</div>", unsafe_allow_html=True,
+    )
+
+
+def fmt_metric(metric: str, value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "-"
+    if metric in RATIO_METRICS:
+        return f"{value:.2%}"
+    if metric in ("cost", "CPI", "CPC"):
+        return f"₩{value:,.0f}"
+    return f"{value:,.0f}"
+
+
+def render_thumbs(scope: pd.DataFrame, key: str, limit: int = 12) -> None:
+    """표에 담긴 소재의 첫 프레임을 한 줄로 보여준다.
+
+    소진 큰 순으로 자른다 — 소재가 300개인 표에서 전부 받으면 화면이 안 뜬다.
+    Drive 조회·프레임 추출이 몇 초 걸리므로 **기본은 꺼져 있다**(뷰의 `thumbs`).
+    """
+    if scope.empty or "ad" not in scope.columns:
+        return
+    top = (scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
+           .head(limit).index.tolist())
+    try:
+        exact, flat = _drive_material_index()
+    except Exception as error:  # noqa: BLE001
+        status_row("warn", "소재 목록을 불러오지 못했습니다", str(error))
+        return
+
+    # spec 모양은 2번 섹션 카드와 **같아야** 한다 — 다르면 캐시가 갈라져 같은 소재를
+    # 두 번 받는다(`_drive_material_thumbnails`는 파일 id 단위로 캐시한다).
+    specs, labels = [], {}
+    for ad in top:
+        matches = drive_materials.find_matches(str(ad), exact, flat)
+        if matches:
+            hit = matches[0]
+            file_id = hit.get("id", "")
+            specs.append((file_id, hit.get("name", ""), hit.get("thumbnailLink", "")))
+            labels[file_id] = str(ad)
+    if not specs:
+        st.markdown('<div class="tbl-note">이 표의 소재와 이름이 맞는 Drive 파일을 '
+                    "찾지 못했습니다.</div>", unsafe_allow_html=True)
+        return
+
+    thumbnails = _drive_material_thumbnails(tuple(specs))
+    cards = "".join(
+        f'<figure class="th-card"><img src="{uri}" alt="">'
+        f'<figcaption>{html.escape(labels[file_id].split("_", 2)[-1][:38])}'
+        f"</figcaption></figure>"
+        for file_id, _n, _t in specs
+        if (uri := thumbnails.get(file_id))
+    )
+    if cards:
+        st.markdown(f'<div class="th-strip">{cards}</div>', unsafe_allow_html=True)
+
+
 def render_view(view: dict, month: int, key_prefix: str,
                 editing: bool = False) -> None:
     """뷰 하나(기준 라벨 + 편집기 + 표 [+ 그래프])를 그린다.
@@ -2389,6 +2524,12 @@ def render_view(view: dict, month: int, key_prefix: str,
         return
 
     highlight_key = f"{key_prefix}_{view['id']}"
+    if view["thumbs"]:
+        render_thumbs(filtered_scope(named_overview, view["filters"],
+                                     view["include_ads"]), highlight_key)
+    if view["contrast"]:
+        render_contrast(view, month, key_prefix)
+        return
     # ⚠ **최소 소진액을 걸지 않는다.** 예전에 `min_cost`(₩100,000)를 넘겼더니
     #    `epn` 소재 8줄 중 2줄만 남고 표 합계가 636,185가 됐다 — 같은 화면의 요약
     #    카드는 990,538이었다. 사용자가 필터로 의도를 명시했는데 숨은 문턱이 그걸
@@ -2464,6 +2605,8 @@ def view_from_widgets(view: dict, view_key: str) -> dict:
     merged["rows"] = normalize_rows([{"field": f} for f in row_fields])
     merged["values"] = list(take(f"pvvals_{view_key}", merged["values"]))
     merged["include_ads"] = list(take(f"pvads_{view_key}", merged["include_ads"]))
+    merged["contrast"] = bool(take(f"pvct_{view_key}", merged["contrast"]))
+    merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
 
     filter_fields = take(f"pvfilters_{view_key}", list(merged["filters"] or {}))
     merged["filters"] = {
@@ -2690,11 +2833,23 @@ def pivot_editor(view: dict, view_key: str) -> dict:
             placeholder="필터 결과만 사용 · 손으로 더할 소재가 있으면 고르세요",
         )
 
+        # 딸깍 두 개 — 규리님 요구는 "피벗으로 하나하나 구축하지 않고 원클릭"이었다.
+        left, right = st.columns(2)
+        contrast = left.toggle(
+            "대조군 비교", value=bool(view["contrast"]), key=f"pvct_{view_key}",
+            help="같은 조건에서 이 소재군을 **제외한 나머지**와 매체별로 견줍니다.",
+        )
+        thumbs = right.toggle(
+            "썸네일 미리보기", value=bool(view["thumbs"]), key=f"pvth_{view_key}",
+            help="이 표에 담긴 소재의 첫 프레임을 소진 상위 12개까지 보여줍니다.",
+        )
+
     filters = {f: list(filter_values[f]) for f in filter_fields
                if filter_values.get(f)}
     return {**view, "rows": [{"field": f} for f in row_fields],
             "values": list(metrics), "filters": filters,
-            "include_ads": list(include)}
+            "include_ads": list(include),
+            "contrast": bool(contrast), "thumbs": bool(thumbs)}
 
 
 @st.cache_data(show_spinner=False)
@@ -2940,7 +3095,8 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         taken_over = editor_taken_over(block_id, month)
         # 완료 = 저장이다. 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
         # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다.
-        _, cancel, action = st.columns([5, 1.1, 1.4], vertical_alignment="center")
+        # 폭을 **똑같이** 준다 — 다르면 두 버튼이 서로 다른 크기로 보인다.
+        _, cancel, action = st.columns([5, 1.3, 1.3], vertical_alignment="center")
         asking = bool(st.session_state.get(f"askcancel_{block_id}"))
         if cancel.button("취소", key=f"cancel_{block_id}",
                          use_container_width=True, disabled=asking):
@@ -2960,14 +3116,14 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
 
     if editing:
         add_view_button(block_id)
-        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
-        # 버튼을 에디터 **바로 위 오른쪽**에 두고 CSS로 툴바 줄까지 끌어내린다
-        # (`.st-key-draftbar_`). Streamlit은 위젯을 다른 위젯 안에 넣을 수 없어서,
-        # 붙어 보이게 하려면 이렇게 겹치는 수밖에 없다.
-        with st.container(key=f"draftbar_{block_id}"):
-            _, draft_col = st.columns([6, 1.3], vertical_alignment="center")
-            with draft_col:
-                insight_button(block, views, month)
+        # 라벨과 같은 줄 오른쪽에 둔다. 예전에는 CSS로 에디터 툴바 줄까지 끌어내려
+        # 겹쳐 놓았는데, 툴바 밖으로 반쯤 튀어나와 위치가 어중간해 보였다.
+        # 보통 흐름에 두면 라벨과 짝으로 읽히고 잘리지도 않는다.
+        label_col, draft_col = st.columns([6, 1.3], vertical_alignment="center")
+        label_col.markdown('<div class="cp-label">인사이트</div>',
+                           unsafe_allow_html=True)
+        with draft_col:
+            insight_button(block, views, month)
         draft = st.session_state.get(f"cdraft_{block_id}")
         st_quill(value=draft or merged_note_html(block), html=True,
                  toolbar=QUILL_TOOLBAR, key=comment_key(block_id))
@@ -3142,15 +3298,14 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
     editing = lock_gate(
         block_id, month, block.get("title") or "노트", edit_mode,
         menu=lambda: block_menu(report_blocks.SLOT_NEXT_STEP, block_id, month, owner),
+        # 섹션 4와 같은 방식 — 별도 "블록 제목" 칸을 두지 않고 보이는 제목을 그 자리에서 고친다.
+        editable_title=True,
     )
 
     if editing:
         # 업로더·텍스트영역은 rerun으로 비워지지 않는다. 저장에 성공할 때마다 키의 nonce를 올려
         # 새 위젯으로 갈아끼워야, 같은 이미지·표가 저장할 때마다 다시 append되지 않는다.
         nonce = int(st.session_state.get(f"attach_nonce_{block_id}", 0))
-        title_value = st.text_input("블록 제목", value=block.get("title", ""),
-                                    key=f"title_{block_id}")
-
         editor_col, side_col = st.columns([2.1, 1], gap="large")
 
         with editor_col:
@@ -3218,8 +3373,16 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
             taken_over = editor_taken_over(block_id, month)
             # 버튼 하나로 합친다 — "저장"과 "작성 완료"가 따로 있으면 완료를 먼저 눌러
             # 저장 안 된 글이 날아가기 쉽다. 완료는 항상 저장부터 하고 잠금을 놓는다.
-            if st.button("완료", type="primary", key=f"next_step_save_{block_id}",
-                         width="stretch", disabled=taken_over):
+            # 노트 블록도 분석 블록과 같은 짝을 맞춘다 — 취소가 한쪽에만 있으면
+            # 같은 편집 화면인데 동작이 달라 보인다.
+            ns_cancel, ns_save = st.columns([1, 1], vertical_alignment="center")
+            if ns_cancel.button("취소", key=f"nscancel_{block_id}",
+                                use_container_width=True):
+                locks.release(f"block:{block_id}", month, owner)
+                clear_editor_state(block_id)
+                rerun_local()
+            if ns_save.button("완료", type="primary", key=f"next_step_save_{block_id}",
+                              use_container_width=True, disabled=taken_over):
                 # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
                 if locks.status(
                     f"block:{block_id}", month, owner, fresh=True
@@ -3238,7 +3401,9 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
                         month,
                         lambda d: report_blocks.update_block(
                             d, report_blocks.SLOT_NEXT_STEP, block_id,
-                            title=title_value, comment=draft_markdown or "",
+                            title=st.session_state.get(
+                                f"blocktitle_{block_id}", block.get("title", "")),
+                            comment=draft_markdown or "",
                             images=images, tables=tables,
                             views=[view_from_widgets(v, f"{block_id}_{v['id']}")
                                    for v in note_views],

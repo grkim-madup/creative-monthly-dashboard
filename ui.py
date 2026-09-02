@@ -656,49 +656,72 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-blocktitle_"] { margin-bottom: 2px; }
 
-/* 블록 `취소` 버튼 — `완료`(브랜드 그린 채움) 옆에 서는 보조 액션이다.
-   Streamlit 기본 버튼은 테두리가 진해서 `완료`와 무게가 비슷해 보인다. 한 단계
-   물려서 "되돌리기"로 읽히게 한다(파괴적 동작이라 눈에는 띄어야 하므로 숨기지 않는다). */
-[class*="st-key-cancel_"] button {
-  border: 1px solid var(--line) !important;
-  background: #fff !important; color: var(--muted) !important;
-  font-weight: 500 !important;
+/* 블록 액션 두 개(`취소` / `완료`) — **같은 기하**로 묶는다.
+   `완료`는 Streamlit `type="primary"`, `취소`는 기본 버튼이라 그냥 두면 높이·패딩·
+   글자 크기가 서로 달라 정렬이 안 맞아 보인다(실제로 그렇게 보였다).
+   톤: `완료`만 브랜드 그린으로 채우고(액센트 1곳), `취소`는 같은 크기의 중성 외곽선. */
+[class*="st-key-cancel_"] button,
+[class*="st-key-save_"] button,
+[class*="st-key-nscancel_"] button,
+[class*="st-key-next_step_save_"] button {
+  height: 34px !important; min-height: 34px !important;
+  padding: 0 14px !important; border-radius: 3px !important;
+  font-size: 12.5px !important; font-weight: 500 !important;
+  box-shadow: none !important;
 }
-[class*="st-key-cancel_"] button:hover {
-  border-color: #e0a2a2 !important; color: #8a1f1f !important;
-  background: #fff !important;
+[class*="st-key-cancel_"] button p,
+[class*="st-key-save_"] button p,
+[class*="st-key-nscancel_"] button p,
+[class*="st-key-next_step_save_"] button p {
+  font-size: 12.5px !important; font-weight: 500 !important;
 }
-/* 확인 줄의 두 버튼 — `계속 편집`이 안전한 쪽이라 그쪽을 기본으로 보이게 한다. */
+[class*="st-key-save_"] button,
+[class*="st-key-next_step_save_"] button {
+  background: var(--brand-deep) !important; border: 1px solid var(--brand-deep) !important;
+  color: #fff !important;
+}
+[class*="st-key-save_"] button:hover,
+[class*="st-key-next_step_save_"] button:hover {
+  background: #009243 !important; border-color: #009243 !important;
+}
+[class*="st-key-cancel_"] button,
+[class*="st-key-nscancel_"] button {
+  background: #fff !important; border: 1px solid var(--line) !important;
+  color: var(--muted) !important;
+}
+[class*="st-key-cancel_"] button:hover,
+[class*="st-key-nscancel_"] button:hover {
+  border-color: #e0a2a2 !important; color: #8a1f1f !important; background: #fff !important;
+}
+/* 확인 줄 — `계속 편집`이 안전한 쪽이라 그쪽이 기본으로 읽히게 한다. */
+[class*="st-key-cancel_no_"] button,
+[class*="st-key-cancel_yes_"] button {
+  height: 32px !important; min-height: 32px !important;
+  font-size: 12px !important; font-weight: 500 !important; border-radius: 3px !important;
+}
 [class*="st-key-cancel_no_"] button {
-  border: 1px solid var(--border-strong, #cfd6dd) !important; font-weight: 500 !important;
+  border: 1px solid #cfd6dd !important; color: var(--ink) !important; background: #fff !important;
 }
 [class*="st-key-cancel_yes_"] button {
-  border: 1px solid #e0a2a2 !important; color: #8a1f1f !important;
-  background: #fff !important; font-weight: 500 !important;
+  border: 1px solid #e0a2a2 !important; color: #8a1f1f !important; background: #fff !important;
 }
 
-/* 인사이트 초안 버튼 — 에디터 툴바 오른쪽에 붙어 툴바의 일부처럼 보이게 한다.
-   Streamlit은 위젯을 다른 위젯(Quill) 안에 넣을 수 없어서, 버튼 줄을 아래로 끌어내려
-   툴바와 같은 줄에 겹친다. 툴바 높이(약 42px)만큼 내리고 우측 여백을 맞췄다. */
-[class*="st-key-draftbar_"] {
-  position: relative; z-index: 3;
-  margin: 0 0 -44px 0 !important; padding: 0 8px 0 0 !important;
-  pointer-events: none;                     /* 툴바 클릭을 막지 않는다 */
-}
-[class*="st-key-draftbar_"] > div { pointer-events: auto; }
-[class*="st-key-draftbar_"] .stButton button {
-  height: 28px; min-height: 28px; padding: 0 12px;
-  font-size: 11.5px !important; font-weight: 500;
-  border-radius: 3px; border: 1px solid var(--line) !important;
+/* 인사이트 초안 버튼 — `인사이트` 라벨과 같은 줄 오른쪽. 보조 액션이라 작고 조용하게.
+   예전에는 에디터 툴바 줄까지 끌어내려 겹쳐 놓았는데, 툴바 밖으로 반쯤 튀어나와
+   위치가 어중간해 보였다(사용자 지적). 보통 흐름에 둔다. */
+[class*="st-key-draft_"] button {
+  height: 28px !important; min-height: 28px !important; padding: 0 12px !important;
+  border-radius: 3px !important; border: 1px solid var(--line) !important;
   background: #fff !important; color: var(--muted) !important;
 }
-[class*="st-key-draftbar_"] .stButton button:hover {
+[class*="st-key-draft_"] button p {
+  font-size: 11.5px !important; font-weight: 500 !important;
+}
+[class*="st-key-draft_"] button:hover {
   border-color: var(--brand) !important; color: var(--brand-deep) !important;
   background: #fff !important;
 }
-.draft-off {
-  font-size: 11px; color: var(--faint); text-align: right; padding-top: 6px;
-}
+.draft-off { font-size: 11px; color: var(--faint); text-align: right; }
 
 /* 사이드바 접기/펼치기 버튼은 **커서를 가져다 댈 때만** 보인다.
    광고주에게 링크로 그대로 공유하는 화면이라, 리포트 위에 상시 떠 있는 조작 버튼이
@@ -1228,6 +1251,35 @@ section[data-testid="stSidebar"] h2 {
   font-size: 11.5px; color: var(--muted); line-height: 1.75;
 }
 </style>
+
+/* 대조군 비교(B-3) — 매체 = 소제목, 지표 = 행. 실제 리포트 시트가 표마다
+   `* 틱톡 AOS` 라벨을 붙이는 것과 같은 문법이다. */
+.ct-head {
+  display: flex; align-items: center; gap: 8px;
+  margin: 14px 0 6px; font-size: 12.5px; color: var(--ink);
+}
+.ct-head i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.ct-head b { font-weight: 700; }
+.ct-verdict {
+  padding: 1px 7px; border: 1px solid var(--line); border-radius: 3px;
+  background: #f6f8fa; color: #4b5563; font-size: 11.5px;
+}
+.ct-meta { color: var(--muted); font-size: 11.5px; }
+
+/* 썸네일 줄 — 가로 스크롤은 이 안에서만 일어난다(본문은 절대 흐르지 않게). */
+.th-strip {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
+}
+.th-card {
+  margin: 0; flex: 0 0 auto; width: 104px;
+  border: 1px solid var(--line); border-radius: 3px; background: #fff;
+}
+.th-card img { display: block; width: 100%; height: 132px; object-fit: cover; }
+.th-card figcaption {
+  padding: 4px 5px; font-size: 10.5px; line-height: 1.3; color: var(--muted);
+  word-break: break-all;
+}
+
 """
 
 

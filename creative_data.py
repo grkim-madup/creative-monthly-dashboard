@@ -1081,3 +1081,164 @@ def filtered_scope(df: pd.DataFrame, filters: dict | None = None,
         frame = pd.concat([frame, df[df["ad"].astype(str).isin(picked)]])
         frame = frame.drop_duplicates()
     return frame
+
+
+# ---------------------------------------------------------------------------
+# 대조군 비교 (순수 함수 — pytest 대상)
+#
+# 규리님 요구: *"각 매체별로 이 EPN 소재가 효율이 좋았냐 안 좋았냐를 봐야 해.
+# 그 기준은 **동일 조건에서 EPN을 제외한 다른 소재들의 평균 성과**가 나와야 해."*
+#
+# 즉 대조군 = **다른 필터는 그대로 두고 그 필터만 반대로.**
+# 매체를 나눠 보는 것이 핵심이다 — 매체 격차(같은 VID에서 3.7배)가 소재 차이를 덮으므로
+# 전체를 한 덩어리로 비교하면 아무것도 안 보인다.
+
+#: 대조군 표에 넣을 지표와 순서(볼륨 → 앞단 → 뒷단). 실제 리포트가 읽는 순서다.
+CONTRAST_METRICS = ["cost", "impression", "click", "total install",
+                    "CTR", "CPI", "D0 read CVR", "D0 coin CVR"]
+
+
+#: **볼륨 지표는 좋고 나쁨이 아니다.** 대상이 소진 0.7%면 노출·클릭·설치가 당연히
+#: −99%로 나오는데, 그게 "저조" 판정으로 읽히면 결론이 통째로 틀린다(실측으로 겪었다).
+#: 이 지표들은 차이 대신 **비중**을 보여주고 판정을 붙이지 않는다.
+VOLUME_METRICS = frozenset({"cost", "impression", "click", "total install",
+                            "D0 read", "D0 coin", "D7 coin"})
+
+
+def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
+                  metrics: list[str] | None = None) -> pd.DataFrame:
+    """대상 / 그 외 / 차이 를 지표별 한 줄씩. **행이 지표**다(B-3안).
+
+    지표를 늘려도 세로로만 자란다 — 열로 두면 지표가 늘 때마다 가로 스크롤이 생긴다.
+
+    ⚠ 비율은 **합계에서 다시 계산**한다(`aggregate_by`). 행별 비율을 평균내면
+      소진 1%짜리가 40%짜리와 같은 무게를 갖는다.
+    ⚠ 증감 단위는 지표마다 다르다 — 비율은 `%p`(차이), 나머지는 `%`(변화율).
+      `delta_unit()` 한 곳에서만 판단한다.
+    """
+    metrics = [m for m in (metrics or CONTRAST_METRICS)]
+
+    def rolled(frame: pd.DataFrame) -> pd.Series:
+        if frame.empty:
+            return pd.Series(dtype="float64")
+        return aggregate_by(frame.assign(_all="합계"), ["_all"]).iloc[0]
+
+    left, right = rolled(subject), rolled(rest)
+    records = []
+    for metric in metrics:
+        mine = float(left[metric]) if metric in left.index and pd.notna(left[metric]) else None
+        other = float(right[metric]) if metric in right.index and pd.notna(right[metric]) else None
+        unit = delta_unit(metric)
+        if mine is None or other is None or other == 0:
+            delta = None
+        elif unit == "%p":
+            delta = (mine - other) * 100
+        else:
+            delta = (mine - other) / other
+        # 볼륨 지표는 "몇 % 더 썼나"가 아니라 **비중**이 궁금한 값이다.
+        volume = metric in VOLUME_METRICS
+        share = (mine / (mine + other)) if volume and mine is not None \
+            and other is not None and (mine + other) else None
+        records.append({
+            "metric": metric, "subject": mine, "rest": other,
+            # 볼륨은 델타를 아예 내보내지 않는다 — 화면이 그걸 판정처럼 칠할 수 없게.
+            "delta": None if volume else delta, "unit": unit, "share": share,
+            "better": None if volume or delta is None
+            else (delta < 0 if metric in LOWER_IS_BETTER else delta > 0),
+        })
+    return pd.DataFrame(records)
+
+
+def contrast_by_media(subject: pd.DataFrame, rest: pd.DataFrame,
+                      metrics: list[str] | None = None) -> list[dict]:
+    """매체별로 대조군 표를 만든다. 매체는 대상 쪽 소진액 큰 순.
+
+    대상에 없는 매체는 만들지 않는다 — 비교할 것이 없는 표를 그리면
+    "그 매체에서는 안 썼다"가 "성과가 0이다"로 읽힌다.
+    """
+    if "media" not in subject.columns or subject.empty:
+        return []
+    order = (subject.groupby("media")["cost"].sum()
+             .sort_values(ascending=False).index)
+    result = []
+    for media in order:
+        mine = subject[subject["media"] == media]
+        other = rest[rest["media"] == media] if "media" in rest.columns else rest.iloc[0:0]
+        table = contrast_rows(mine, other, metrics)
+        result.append({
+            "media": str(media),
+            "table": table,
+            "ads": int(mine["ad"].nunique()) if "ad" in mine.columns else 0,
+            "cost": float(mine["cost"].fillna(0).sum()),
+            "share": float(table[table["metric"] == "cost"]["share"].iloc[0])
+            if not table.empty and pd.notna(
+                table[table["metric"] == "cost"]["share"].iloc[0]) else None,
+            "verdict": contrast_verdict(table),
+        })
+    return result
+
+
+def contrast_verdict(table: pd.DataFrame) -> str:
+    """소제목에 붙일 한마디. **표에 있는 것만 말한다.**
+
+    앞단(CTR·CPI)과 뒷단(CVR)을 갈라 본다 — 실제 리포트가 늘 그렇게 쓴다
+    ("앞단 효율 우수하나 D0 Read CVR 저조").
+    """
+    if table.empty:
+        return ""
+    def side(metrics: list[str]) -> int:
+        rows = table[table["metric"].isin(metrics)].dropna(subset=["better"])
+        if rows.empty:
+            return 0
+        good = int(rows["better"].sum())
+        return 1 if good > len(rows) - good else (-1 if good < len(rows) - good else 0)
+
+    front, back = side(["CTR", "CPI"]), side(["D0 read CVR", "D0 coin CVR"])
+    words = {1: "우수", -1: "저조", 0: "혼재"}
+    if front == 0 and back == 0:
+        return "전체 대비 유의미한 차이 없음"
+    return f"앞단 {words[front]} · 뒷단 {words[back]}"
+
+
+#: 소재 **이름에서 파생된** 차원. 이 필터는 "어떤 소재냐"를 좁히므로, 대조군은
+#: "그 소재가 아닌 소재"가 된다.
+CREATIVE_FIELDS = frozenset({
+    "ad", "title_kr", "creative_type", "format", "size", "orientation",
+    "producer_group", "usp", "extra_info_tag",
+})
+#: 행 단위 집행 조건. 이 필터는 **비교의 범위**다 — 대조군도 같은 범위 안이어야 한다.
+#: (매체 TikTok으로 좁혔는데 대조군에 Meta 행이 섞이면 "같은 조건"이 아니다.)
+SCOPE_FIELDS = frozenset({"media", "os", "ua_type", "month"})
+
+
+def contrast_split(scope: pd.DataFrame, filters: dict | None,
+                   include_ads: list[str] | None = None,
+                   ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(대상, 대조군)으로 가른다. **대조군 = 같은 범위 안, 그 소재가 아닌 것.**
+
+    두 종류의 필터를 다르게 다뤄야 한다 — 섞으면 조용히 틀린다:
+
+    - 소재 속성(`CREATIVE_FIELDS`)은 **반대로** 뒤집는다. 태그 필터는 소재 이름으로
+      되받아 걸러지므로(`pivot_frame` 참고) 제외도 이름으로 해야 한다. 태그 컬럼에서
+      빼면 `epn-6s` 소재가 `6s` 줄로 살아남아 양쪽에 동시에 들어간다.
+    - 집행 조건(`SCOPE_FIELDS`)은 **그대로 유지**한다. 이걸 뒤집으면 대조군에 다른
+      매체·OS 행이 들어와 "동일 조건 비교"가 깨진다. 실제로 감사 도구가 이걸 잡았다
+      (매체 TikTok 필터에서 대상 3,701행 + 대조군 1,155행 ≠ 전체 5,672행).
+
+    소재 속성 필터가 하나도 없으면 대조군이 없다 — 빈 프레임을 돌려준다.
+    """
+    filters = filters or {}
+    base = scope
+    for field, chosen in filters.items():
+        if field in SCOPE_FIELDS and chosen and field in base.columns:
+            base = base[base[field].astype(str).isin([str(v) for v in chosen])]
+
+    subject = filtered_scope(scope, filters, include_ads)
+    # 손으로 더한 소재만으로는 대조군이 안 만들어진다 — 필터가 없으면 대상이 이미
+    # 전체이고, 거기서 이름을 빼면 "그 외"가 아니라 빈 프레임이 된다.
+    creative_narrowed = any(f in CREATIVE_FIELDS for f in filters)
+    if not creative_narrowed:
+        return subject, base.iloc[0:0]
+    rest = base[~base["ad"].isin(subject["ad"].unique())] \
+        if "ad" in base.columns else base.iloc[0:0]
+    return subject, rest

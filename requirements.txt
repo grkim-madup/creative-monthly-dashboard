@@ -12,3 +12,5 @@ google-auth==2.56.2
 google-cloud-firestore==2.29.0
 imageio-ffmpeg==0.6.0
 # 재시작 마커: 2026-09-02 insight_draft 추가
+
+# 재시작 마커 — contrast_split/contrast_by_media/render_thumbs 새 심볼 (2026-09-02)
