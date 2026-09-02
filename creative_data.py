@@ -756,3 +756,117 @@ METRIC_DISPLAY = {
     "D0 coin": "D0 Coin", "D0 coin CVR": "D0 Coin CVR",
     "D7 coin": "D7 coin", "D7 coin CVR": "D7 coin CVR",
 }
+
+
+# --------------------------------------------------------------------------- 차트용 준비
+
+#: 값이 **작을수록** 좋은 지표. 정렬 방향과 "평균보다 나은가" 판정이 여기서 갈린다.
+LOWER_IS_BETTER = frozenset({"CPI", "CPC"})
+
+#: 비율 지표의 벤치마크는 **평균의 평균이 아니라 합계에서 다시 계산**해야 한다.
+#: 행별 CPI를 산술평균하면 소진 1%짜리 소재가 소진 40%짜리와 같은 무게를 갖는다.
+BENCHMARK_RATIO = {
+    "CPI": ("cost", "total install"),
+    "CPC": ("cost", "click"),
+    "CTR": ("click", "impression"),
+    "D0 read CVR": ("D0 read", "total install"),
+    "D0 coin CVR": ("D0 coin", "total install"),
+    "D7 coin CVR": ("D7 coin", "total install"),
+}
+
+
+def metric_benchmark(table: pd.DataFrame, metric: str) -> float | None:
+    """이 표 전체의 가중 평균. 차트의 기준선이 된다.
+
+    볼륨 지표(`cost` 등)는 평균선이 의미가 없어 None을 돌려준다 —
+    "소진액 평균보다 많이 썼다"는 결론으로 이어지지 않는다.
+    """
+    pair = BENCHMARK_RATIO.get(metric)
+    if pair is None or table.empty:
+        return None
+    numerator, denominator = pair
+    if numerator not in table.columns or denominator not in table.columns:
+        return None
+    bottom = float(table[denominator].fillna(0).sum())
+    if bottom <= 0:
+        return None
+    return float(table[numerator].fillna(0).sum()) / bottom
+
+
+def chart_frame(
+    table: pd.DataFrame,
+    axis: str,
+    metric: str,
+    low_volume_share: float = 0.02,
+    benchmark: float | None = None,
+) -> pd.DataFrame:
+    """집계표를 차트용으로 정렬하고 저볼륨 행을 표시한다.
+
+    실데이터에서 이걸 안 하면 **가장 눈에 띄는 막대가 노이즈**가 된다 —
+    2026년 8월 Visual·Meta는 CPI ₩29,373으로 압도적 1위였지만 소진 ₩558,087에
+    설치 19건이었다. 광고주 화면에서 그게 결론처럼 보이면 안 된다.
+
+    - `_rank_value`: 정렬·기준선 비교에 쓸 값(결측은 맨 뒤로).
+    - `_low_volume`: 이 표 전체 소진에서 차지하는 비중이 `low_volume_share` 미만.
+      **버리지 않고 표시만 한다** — 없애면 합계가 안 맞고, 광고주가 표와 대조할 때 어긋난다.
+    - `_better`: 기준선보다 나은 쪽인가(지표 방향을 반영).
+
+    `benchmark`를 주면 그 값을 기준으로 삼는다. **실제 리포트의 기준은 표 안의 평균이
+    아니라 "그 달 그 매체 전체 성과"** 다 — 시트에서도 `TikTok 신규유형 총계` 바로 아래
+    `6월 틱톡 AOS 베너 소재 총 성과`를 붙여 놓고 눈으로 대조한다. 안 주면 표 자체의
+    가중 평균을 쓴다(조건 없이 전체를 보는 표에서는 둘이 같다).
+    """
+    if table.empty or axis not in table.columns or metric not in table.columns:
+        return table.iloc[0:0].assign(_rank_value=[], _low_volume=[], _better=[])
+
+    out = table.copy()
+    values = pd.to_numeric(out[metric], errors="coerce")
+    out["_rank_value"] = values
+
+    total = float(out["cost"].fillna(0).sum()) if "cost" in out.columns else 0.0
+    out["_low_volume"] = (
+        (out["cost"].fillna(0) / total < low_volume_share) if total > 0
+        else pd.Series(False, index=out.index)
+    )
+
+    if benchmark is None:
+        benchmark = metric_benchmark(out, metric)
+    if benchmark is None:
+        out["_better"] = pd.Series(pd.NA, index=out.index, dtype="object")
+    elif metric in LOWER_IS_BETTER:
+        out["_better"] = values <= benchmark
+    else:
+        out["_better"] = values >= benchmark
+
+    # 좋은 쪽이 위로 오게 정렬한다. 결측은 항상 맨 뒤.
+    ascending = metric in LOWER_IS_BETTER
+    return (out.sort_values("_rank_value", ascending=ascending, na_position="last")
+               .reset_index(drop=True))
+
+
+def dumbbell_frame(table: pd.DataFrame, axis: str, metric: str) -> pd.DataFrame:
+    """같은 축값이 매체 두 곳에 다 있는 것만 남겨 (축값, 매체A값, 매체B값)으로 만든다.
+
+    한쪽에만 있는 축값은 **비교가 아니라 착시**라서 뺀다(선을 그을 수 없다).
+    """
+    needed = {axis, "media", metric}
+    if table.empty or not needed <= set(table.columns):
+        return pd.DataFrame(columns=[axis, "media_a", "value_a", "media_b", "value_b", "gap"])
+
+    medias = sorted(table["media"].dropna().unique())
+    if len(medias) != 2:
+        return pd.DataFrame(columns=[axis, "media_a", "value_a", "media_b", "value_b", "gap"])
+
+    wide = table.pivot_table(index=axis, columns="media", values=metric, aggfunc="first")
+    wide = wide.dropna(subset=medias)
+    if wide.empty:
+        return pd.DataFrame(columns=[axis, "media_a", "value_a", "media_b", "value_b", "gap"])
+
+    first, second = medias
+    result = pd.DataFrame({
+        axis: wide.index.astype(str),
+        "media_a": first, "value_a": wide[first].to_numpy(),
+        "media_b": second, "value_b": wide[second].to_numpy(),
+    })
+    result["gap"] = (result["value_b"] - result["value_a"]).abs()
+    return result.sort_values("gap", ascending=False).reset_index(drop=True)

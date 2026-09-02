@@ -11,11 +11,13 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import html
+import math
 from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 import auth
@@ -40,8 +42,11 @@ from creative_data import (
     add_derived_metrics,
     aggregate_by,
     aggregate_by_axis,
+    chart_frame,
     compare_periods,
+    dumbbell_frame,
     explode_extra_info,
+    metric_benchmark,
     month_options,
     pick_best_worst,
     spend_pool,
@@ -1562,7 +1567,7 @@ def clear_editor_state(block_id: str) -> None:
     # 건드릴 일이 없다.
     prefixes = (f"cond_rows_{block_id}", f"cond_field_{block_id}_",
                 f"cond_values_{block_id}_", f"cond_panel_{block_id}",
-                f"title_{block_id}", f"comment_{block_id}", f"insight_{block_id}",
+                f"title_{block_id}", f"blocktitle_{block_id}", f"comment_{block_id}", f"insight_{block_id}",
                 f"views_{block_id}", f"next_step_md_{block_id}")
     for key in [k for k in list(st.session_state)
                 if k.startswith(prefixes) or f"_{block_id}_" in k
@@ -1607,7 +1612,7 @@ def editor_taken_over(block_id: str, month: int) -> bool:
 
 def lock_gate(
     block_id: str, month: int, title: str, edit_mode: bool, info: str | None = None,
-    menu=None,
+    menu=None, editable_title: bool = False,
 ) -> bool:
     """블록 헤더와 잠금 조작을 그리고, 편집 UI를 그려도 되는지 돌려준다.
 
@@ -1626,13 +1631,32 @@ def lock_gate(
     owner = st.session_state["editor_token"]
     kind = f"block:{block_id}"
 
-    def header(badge: tuple[str, str] | None = None, with_menu: bool = False) -> None:
-        if not (with_menu and menu is not None):
+    def draw_title(badge: tuple[str, str] | None, editable: bool) -> None:
+        """편집권을 쥔 동안에는 제목 **그 자리**가 입력칸이 된다.
+
+        예전에는 헤더에 제목을 보여주고 그 아래 `주제 제목` 입력란을 또 뒀다. 같은 값이
+        두 번 나와 어느 쪽이 진짜인지 헷갈렸고, 편집 화면이 위젯 더미처럼 보였다.
+        입력칸을 제목과 같은 서체·크기로 맞춰(`ui.py`의 `.st-key-blocktitle_` 규칙)
+        겉보기를 유지한다.
+        """
+        if not editable:
             note_header(title, badge, info=info)
+            return
+        st.text_input(
+            "주제 제목", value=title, key=f"blocktitle_{block_id}",
+            label_visibility="collapsed", placeholder="주제 제목을 입력하세요",
+        )
+        if badge or info:
+            note_header("", badge, info=info)
+
+    def header(badge: tuple[str, str] | None = None, with_menu: bool = False,
+               editable: bool = False) -> None:
+        if not (with_menu and menu is not None):
+            draw_title(badge, editable)
             return
         left, right = st.columns([2.4, 1.6], vertical_alignment="center")
         with left:
-            note_header(title, badge, info=info)
+            draw_title(badge, editable)
         with right:
             menu()
 
@@ -1646,7 +1670,7 @@ def lock_gate(
         # 이 세션이 이 블록을 잡고 있다는 사실을 남겨둔다 — 나중에 잠금을 빼앗겼을 때
         # '원래 편집 중이던 사람'인지 구분하는 유일한 근거다.
         st.session_state[f"held_{block_id}"] = True
-        header(("mine", "편집 중 · 나"))
+        header(("mine", "편집 중 · 나"), editable=editable_title)
         # 완료 버튼은 폼 맨 아래(저장 버튼과 합쳐서 하나)에 둔다 — 예전엔 여기 위에서
         # "작성 완료"를 먼저 누르면 저장 없이 잠금만 풀려서, 폼 아래 "저장"을 안 누르고
         # 나가면 방금 쓴 내용이 그대로 날아갔다. 완료 = 저장이 되도록 폼 쪽에서 처리한다.
@@ -1946,7 +1970,8 @@ COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"]
 #: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
 VIEW_DEFAULTS = {
     "label": "", "kind": "aggregate", "conditions": {}, "months": [],
-    "axis": "creative_type", "chart": False, "metric": "CPI", "top_n": 0,
+    "axis": "creative_type", "chart": False, "chart_kind": "", "metric": "CPI",
+    "top_n": 0,
     # kind == "compare" — 기간 두 개. 라벨은 사람이 붙인다(`방영 전 (4월 누적)`).
     "periods": [], "metrics": [],
 }
@@ -1961,32 +1986,221 @@ def view_with_defaults(view: dict) -> dict:
     merged.update({k: v for k, v in (view or {}).items() if v is not None})
     if not merged.get("id"):
         merged["id"] = uuid4().hex[:6]
+    # 예전 뷰는 차트가 켜짐/꺼짐 두 가지뿐이었다. 켜져 있었으면 기본 차트로 올린다.
+    if merged.get("chart") and not merged.get("chart_kind"):
+        merged["chart_kind"] = "ranking"
+    if merged["chart_kind"] not in CHART_KINDS:
+        merged["chart_kind"] = ""
     return merged
 
 
-def attribute_chart(frame: pd.DataFrame, axis: str, metric: str):
-    """속성 집계표를 매체별 그룹 막대그래프로. (예전 4번 섹션 코드를 그대로 옮겼다.)"""
-    chart = px.bar(
-        frame, x=axis, y=metric, color="media" if "media" in frame.columns else None,
-        barmode="group",
-        labels={axis: ATTRIBUTES.get(axis, axis), "media": "매체",
-                metric: METRIC_LABELS.get(metric, metric)},
-        color_discrete_map=MEDIA_COLORS,
-        color_discrete_sequence=[MEDIA_COLOR_FALLBACK],
-    )
-    chart.update_layout(
+CHART_KINDS = {
+    "": "없음",
+    "ranking": "랭킹 막대 + 기준선",
+    "quadrant": "효율 × 볼륨",
+    "dumbbell": "매체 대비",
+}
+
+#: 차트 공통 서식. 표와 같은 회색조를 쓰고 격자·눈금은 뒤로 물린다(액센트 1색 원칙).
+CHART_INK, CHART_MUTED, CHART_FAINT, CHART_GRID = "#14171a", "#6b7681", "#97a1ac", "#e6e9ec"
+#: 소진 비중이 이 값보다 작으면 흐리게 그린다. 없애지는 않는다 — 합계가 안 맞으면
+#: 광고주가 표와 대조할 때 어긋난다.
+LOW_VOLUME_SHARE = 0.02
+
+
+def chart_layout(fig, height: int = 380):
+    """대시보드 톤앤매너 — Pretendard, 흰 배경, 그림자 없음, 회색조 축."""
+    fig.update_layout(
         plot_bgcolor="#fff", paper_bgcolor="#fff",
-        margin=dict(l=10, r=10, t=30, b=10), height=380,
-        font=dict(size=12), legend_title_text="",
-        yaxis=dict(gridcolor="#eef1f3"), xaxis=dict(showgrid=False),
-        font_family="Pretendard, sans-serif",
+        margin=dict(l=10, r=10, t=26, b=10), height=height,
+        font=dict(size=12, family="Pretendard, sans-serif", color=CHART_MUTED),
+        showlegend=False, hoverlabel=dict(font_family="Pretendard, sans-serif"),
     )
-    if metric in ("CTR", "D0 read CVR", "D0 coin CVR"):
-        chart.update_layout(yaxis_tickformat=".1%")
-    elif metric == "cost":
-        # 금액은 자릿수가 커서 기본 지수 표기(30k)로는 규모 감이 안 온다.
-        chart.update_layout(yaxis_tickprefix="₩", yaxis_tickformat=",.0f")
-    return chart
+    fig.update_xaxes(gridcolor=CHART_GRID, zeroline=False, linecolor=CHART_GRID,
+                     tickfont=dict(color=CHART_FAINT, size=10))
+    fig.update_yaxes(gridcolor=CHART_GRID, zeroline=False, linecolor=CHART_GRID,
+                     tickfont=dict(color=CHART_MUTED, size=11))
+    return fig
+
+
+def media_color(media: str) -> str:
+    return MEDIA_COLORS.get(str(media), MEDIA_COLOR_FALLBACK)
+
+
+def metric_axis_format(metric: str) -> str:
+    if metric in ("CTR", "D0 read CVR", "D0 coin CVR", "D7 coin CVR"):
+        return ".1%"
+    return ",.0f"
+
+
+def benchmark_note(value: float | None, metric: str, month: int) -> str:
+    """기준선이 무엇인지 표 아래에 글로도 남긴다 — 선만 있으면 무엇의 평균인지 모른다."""
+    if value is None:
+        return ""
+    shown = f"{value:.2%}" if metric_axis_format(metric) == ".1%" else f"₩{value:,.0f}"
+    return (f'<div class="tbl-note">점선 = {month}월 전체 성과 {shown} '
+            "(조건을 걸지 않은 그 달 같은 매체 전체). "
+            "흐린 막대는 소진 비중 2% 미만입니다.</div>")
+
+
+def ranking_chart(frame: pd.DataFrame, axis: str, metric: str, benchmark: float | None):
+    """A안 — 좋은 순으로 정렬한 가로 막대. 기준선 하나.
+
+    예전 그룹 막대의 문제는 **가장 큰 막대가 노이즈**였다는 것이다(8월 Visual·Meta
+    CPI ₩29,373 = 설치 19건). 정렬하면 그게 맨 끝으로 가고, 흐리게 칠하면 결론처럼
+    보이지 않는다.
+    """
+    labels = [f"{row[axis]} · {row['media']}" if "media" in frame.columns else str(row[axis])
+              for _, row in frame.iterrows()]
+    colors = [media_color(row["media"]) if "media" in frame.columns else MEDIA_COLOR_FALLBACK
+              for _, row in frame.iterrows()]
+    opacity = [0.35 if bool(row["_low_volume"]) else 0.95 for _, row in frame.iterrows()]
+
+    fig = go.Figure(go.Bar(
+        x=frame["_rank_value"], y=labels, orientation="h",
+        marker=dict(color=colors, opacity=opacity),
+        customdata=frame[["cost", "total install"]].to_numpy(),
+        hovertemplate=("%{y}<br>" + METRIC_LABELS.get(metric, metric) + " %{x:,.0f}"
+                       "<br>소진 ₩%{customdata[0]:,.0f}"
+                       "<br>설치 %{customdata[1]:,.0f}건<extra></extra>"),
+    ))
+    # 좋은 것이 위로 오게. plotly의 가로 막대는 첫 항목을 아래에 놓는다.
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    fig.update_xaxes(tickformat=metric_axis_format(metric),
+                     title_text=METRIC_LABELS.get(metric, metric))
+    if benchmark is not None:
+        fig.add_vline(x=benchmark, line=dict(color=CHART_INK, width=1, dash="dot"))
+    return chart_layout(fig, height=max(240, 26 * len(frame) + 90))
+
+
+def wide_spread(values: pd.Series, ratio: float = 8.0) -> bool:
+    """최댓값이 최솟값의 `ratio`배를 넘는가 — 넘으면 선형 축에서 작은 값들이 뭉개진다."""
+    numbers = pd.to_numeric(values, errors="coerce").dropna()
+    numbers = numbers[numbers > 0]
+    if len(numbers) < 3:
+        return False
+    return float(numbers.max()) / float(numbers.min()) > ratio
+
+
+def quadrant_chart(frame: pd.DataFrame, axis: str, metric: str, benchmark: float | None):
+    """B안 — 가로 소진액(규모) × 세로 지표(효율), 원 크기 = 설치.
+
+    "효율이 좋다"와 "규모가 있다"를 한 화면에서 본다. 다음 달 제작 방향을 정할 때
+    실제로 필요한 건 그 둘의 교집합인데, 막대 하나로는 절대 안 보인다.
+    """
+    installs = frame["total install"].fillna(0).clip(lower=0)
+    sizes = (installs ** 0.5)
+    sizes = (sizes / sizes.max() * 34 + 8) if sizes.max() > 0 else pd.Series(12, index=frame.index)
+
+    fig = go.Figure()
+    for media, part in frame.groupby("media", sort=False) if "media" in frame.columns \
+            else [("전체", frame)]:
+        fig.add_trace(go.Scatter(
+            x=part["cost"], y=part["_rank_value"], mode="markers+text",
+            text=part[axis].astype(str), textposition="middle right",
+            textfont=dict(size=10, color=CHART_MUTED),
+            marker=dict(size=sizes.loc[part.index], color=media_color(media),
+                        opacity=0.55, line=dict(width=1.2, color=media_color(media))),
+            customdata=part[["total install"]].to_numpy(),
+            hovertemplate=("%{text} · " + str(media) + "<br>소진 ₩%{x:,.0f}<br>"
+                           + METRIC_LABELS.get(metric, metric) + " %{y:,.0f}"
+                           "<br>설치 %{customdata[0]:,.0f}건<extra></extra>"),
+        ))
+    # 값 범위가 넓으면 **이상치 하나가 축을 독차지한다.** 실측(2026-08): Visual·Meta가
+    # CPI ₩29,373(설치 19건)이라 y축이 3만까지 늘어나고 나머지 20개가 바닥에 눌렸다.
+    # 점을 빼면 합계가 안 맞고 조용히 숨기는 셈이라, 대신 로그 축으로 펼친다.
+    log_x = wide_spread(frame["cost"])
+    log_y = wide_spread(frame["_rank_value"])
+    fig.update_xaxes(title_text="소진액" + (" (로그)" if log_x else ""),
+                     type="log" if log_x else "linear",
+                     tickformat=",.0f" if not log_x else "~s")
+    fig.update_yaxes(title_text=METRIC_LABELS.get(metric, metric) + (" (로그)" if log_y else ""),
+                     type="log" if log_y else "linear",
+                     tickformat=metric_axis_format(metric) if not log_y else "~s")
+    if benchmark is not None and benchmark > 0:
+        fig.add_hline(y=math.log10(benchmark) if log_y else benchmark,
+                      line=dict(color=CHART_INK, width=1, dash="dot"))
+    return chart_layout(fig, height=400)
+
+
+def dumbbell_chart(pairs: pd.DataFrame, axis: str, metric: str):
+    """C안 — 같은 유형이 매체마다 얼마나 다른지. 선 길이가 곧 격차."""
+    fig = go.Figure()
+    names = pairs[axis].tolist()
+    for position, row in pairs.iterrows():
+        fig.add_trace(go.Scatter(
+            x=[row["value_a"], row["value_b"]], y=[names[position]] * 2,
+            mode="lines", line=dict(color=CHART_GRID, width=3), hoverinfo="skip",
+        ))
+    for side in ("a", "b"):
+        fig.add_trace(go.Scatter(
+            x=pairs[f"value_{side}"], y=names, mode="markers",
+            marker=dict(size=11, color=[media_color(m) for m in pairs[f"media_{side}"]]),
+            customdata=pairs[[f"media_{side}"]].to_numpy(),
+            hovertemplate=("%{y} · %{customdata[0]}<br>"
+                           + METRIC_LABELS.get(metric, metric)
+                           + " %{x:,.0f}<extra></extra>"),
+        ))
+    fig.update_xaxes(title_text=METRIC_LABELS.get(metric, metric),
+                     tickformat=metric_axis_format(metric))
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    return chart_layout(fig, height=max(240, 30 * len(pairs) + 90))
+
+
+def media_legend(medias) -> str:
+    dots = "".join(
+        f'<span class="chart-key"><i style="background:{media_color(m)}"></i>{html.escape(str(m))}</span>'
+        for m in medias
+    )
+    return f'<div class="chart-legend">{dots}</div>'
+
+
+def render_axis_chart(view: dict, table: pd.DataFrame, axis: str,
+                      month: int, key: str) -> None:
+    """집계표 위에 차트를 그린다. 종류는 뷰가 고른다.
+
+    **기준선은 표 안의 평균이 아니라 그 달 전체 성과**다. 실제 리포트 시트도
+    `TikTok 신규유형 총계` 바로 아래 `6월 틱톡 AOS 베너 소재 총 성과`를 붙여 놓고
+    눈으로 대조한다 — 조건을 건 표의 자기 평균과 비교하면 "이 조건이 좋은가"를
+    자기 자신에게 묻는 셈이라 아무것도 알 수 없다.
+    """
+    metric = view["metric"] if view["metric"] in COMPARE_METRICS else "CPI"
+    kind = view["chart_kind"]
+
+    # 그 달 전체(조건 없음) — 단, 표에 있는 매체로만 좁힌다. 표가 틱톡만 담고 있는데
+    # 메타가 섞인 전체와 비교하면 기준선이 엉뚱해진다.
+    whole = named_overview
+    if "media" in table.columns:
+        whole = whole[whole["media"].isin(table["media"].unique())]
+    benchmark = metric_benchmark(whole, metric)
+
+    if kind == "dumbbell":
+        pairs = dumbbell_frame(table, axis, metric)
+        if len(pairs) < 2:
+            status_row("warn", "매체 대비를 그릴 수 없습니다",
+                       "두 매체에 모두 있는 값이 2개 이상이어야 선을 그을 수 있습니다.")
+            return
+        st.plotly_chart(dumbbell_chart(pairs, axis, metric), width="stretch",
+                        key=f"chart_{key}")
+        st.markdown(media_legend(sorted({*pairs["media_a"], *pairs["media_b"]})),
+                    unsafe_allow_html=True)
+        return
+
+    frame = chart_frame(table, axis, metric,
+                        low_volume_share=LOW_VOLUME_SHARE, benchmark=benchmark)
+    if frame.empty:
+        return
+    if kind == "ranking" and view["top_n"]:
+        # 정렬이 끝난 뒤에 자른다 — "상위 N개"는 좋은 순으로 N개라는 뜻이다.
+        frame = frame.head(int(view["top_n"]))
+
+    figure = (ranking_chart(frame, axis, metric, benchmark) if kind == "ranking"
+              else quadrant_chart(frame, axis, metric, benchmark))
+    st.plotly_chart(figure, width="stretch", key=f"chart_{key}")
+    if "media" in frame.columns:
+        st.markdown(media_legend(sorted(frame["media"].unique())),
+                    unsafe_allow_html=True)
+    st.markdown(benchmark_note(benchmark, metric, month), unsafe_allow_html=True)
 
 
 def render_compare_view(view: dict) -> None:
@@ -2083,10 +2297,8 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
             status_row("warn", "표시할 조합이 없습니다",
                        "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
             return
-        if view["chart"]:
-            metric = view["metric"] if view["metric"] in COMPARE_METRICS else "CPI"
-            st.plotly_chart(attribute_chart(table, axis, metric), width="stretch",
-                            key=f"chart_{highlight_key}")
+        if view["chart_kind"]:
+            render_axis_chart(view, table, axis, month, highlight_key)
         render_table(
             table.rename(columns={axis: ATTRIBUTES[axis]}),
             color_columns=["CPI"], highlight_key=highlight_key, month=month,
@@ -2134,6 +2346,31 @@ def clear_view_state(block_id: str, view_id: str) -> None:
     view_key = f"{block_id}_{view_id}"
     for key in [k for k in list(st.session_state) if view_key in k]:
         del st.session_state[key]
+
+
+def view_summary(view: dict) -> str:
+    """표 하나가 무엇인지 한 줄로. **고치는 일보다 확인하는 일이 훨씬 잦다.**
+
+    예전에는 이 확인을 하려고 드롭다운 6개를 눈으로 읽어야 했다.
+    """
+    chips = [VIEW_KINDS.get(view["kind"], view["kind"])]
+    if view["kind"] == "aggregate":
+        chips.append(ATTRIBUTES.get(view["axis"], view["axis"]))
+        if view["chart_kind"]:
+            chips.append(CHART_KINDS.get(view["chart_kind"], view["chart_kind"]))
+    elif view["kind"] == "list" and view["top_n"]:
+        chips.append(f"상위 {int(view['top_n'])}개")
+    elif view["kind"] == "compare":
+        chips += [str(p.get("label") or "이름 없음") for p in (view["periods"] or [])]
+
+    title = html.escape(view["label"] or "이름 없는 표")
+    tags = "".join(f'<span class="vs-chip">{html.escape(str(c))}</span>' for c in chips)
+    conditions = " · ".join(
+        f"{PIVOT_FIELDS.get(f, f)} <b>{html.escape(', '.join(map(str, v)))}</b>"
+        for f, v in (view["conditions"] or {}).items()
+    ) or "조건 없음 · 전체 소재"
+    return (f'<div class="vs"><span class="vs-t">{title}</span>{tags}</div>'
+            f'<div class="vs-c">{conditions}</div>')
 
 
 def period_editor(view_key: str, periods: list[dict]) -> list[dict]:
@@ -2188,61 +2425,76 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
     for position, saved in enumerate(list(current)):
         view = view_with_defaults(saved)
         view_key = f"{block_id}_{view['id']}"
-        with st.container(border=True, key=f"view_box_{view_key}"):
-            head = st.columns([2.4, 1.4, 1.4, 0.5], vertical_alignment="bottom")
-            label = head[0].text_input(
-                "기준 라벨 (표 위에 표시)", value=view["label"],
-                key=f"vlabel_{view_key}",
-                placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
-            )
-            kinds = list(VIEW_KINDS)
-            kind = head[1].selectbox(
-                "표 종류", kinds,
-                index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
-                format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
-            )
-            axes = list(ATTRIBUTES)
-            axis, top_n = view["axis"], view["top_n"]
-            if kind == "aggregate":
-                axis = head[2].selectbox(
-                    "분석 축", axes,
-                    index=axes.index(view["axis"]) if view["axis"] in ATTRIBUTES else 0,
-                    format_func=lambda a: ATTRIBUTES[a], key=f"vaxis_{view_key}",
-                )
-            elif kind == "list":
-                top_n = head[2].number_input(
-                    "상위 N개 (0=전체)", min_value=0, max_value=100,
-                    value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
-                )
-            else:
-                head[2].caption("기간 두 개를 아래에서 지정합니다")
-            if head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
+        with st.container(key=f"view_box_{view_key}"):
+            # 요약 줄: 무엇이 걸려 있는지만 읽히면 된다. 고치는 건 '설정' 안에서 한다.
+            summary_col, drop_col = st.columns([9, 1], vertical_alignment="center")
+            summary_col.markdown(view_summary(view), unsafe_allow_html=True)
+            if drop_col.button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
                 drop_index = position
 
-            periods = view["periods"]
-            if kind == "compare":
-                periods = period_editor(view_key, periods)
+            # 갓 추가한 표는 펼쳐 둔다 — 만들자마자 접혀 있으면 뭘 해야 할지 모른다.
+            fresh = not view["label"] and not view["conditions"]
+            with st.expander("설정", expanded=fresh):
+                head = st.columns([2.4, 1.4, 1.4], vertical_alignment="bottom")
+                label = head[0].text_input(
+                    "기준 라벨", value=view["label"], key=f"vlabel_{view_key}",
+                    placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
+                )
+                kinds = list(VIEW_KINDS)
+                kind = head[1].selectbox(
+                    "표 종류", kinds,
+                    index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
+                    format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
+                )
+                axes = list(ATTRIBUTES)
+                axis, top_n = view["axis"], view["top_n"]
+                if kind == "aggregate":
+                    axis = head[2].selectbox(
+                        "분석 축", axes,
+                        index=axes.index(view["axis"]) if view["axis"] in ATTRIBUTES else 0,
+                        format_func=lambda a: ATTRIBUTES[a], key=f"vaxis_{view_key}",
+                    )
+                elif kind == "list":
+                    top_n = head[2].number_input(
+                        "상위 N개 (0=전체)", min_value=0, max_value=100,
+                        value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
+                    )
+                else:
+                    head[2].caption("기간은 아래에서 지정합니다")
 
-            conditions = condition_editor(view_key, view["conditions"])
+                periods = view["periods"]
+                if kind == "compare":
+                    periods = period_editor(view_key, periods)
 
-            chart = view["chart"]
-            metric = view["metric"]
-            if kind == "aggregate":
-                chart_col, metric_col = st.columns([1, 2], vertical_alignment="center")
-                chart = chart_col.checkbox("그래프 함께 보기", value=bool(chart),
-                                           key=f"vchart_{view_key}")
-                if chart:
-                    metric = metric_col.segmented_control(
-                        "그래프 지표", COMPARE_METRICS,
-                        default=metric if metric in COMPARE_METRICS else "CPI",
-                        key=f"vmetric_{view_key}",
-                        format_func=lambda m: METRIC_LABELS.get(m, m),
-                    ) or "CPI"
+                conditions = condition_editor(view_key, view["conditions"])
+
+                chart_kind = view["chart_kind"]
+                metric = view["metric"]
+                if kind == "aggregate":
+                    chart_kinds = list(CHART_KINDS)
+                    kind_col, top_col = st.columns([2, 1], vertical_alignment="bottom")
+                    chart_kind = kind_col.selectbox(
+                        "그래프", chart_kinds,
+                        index=chart_kinds.index(chart_kind) if chart_kind in CHART_KINDS else 0,
+                        format_func=lambda k: CHART_KINDS[k], key=f"vchart_{view_key}",
+                    )
+                    if chart_kind == "ranking":
+                        top_n = top_col.number_input(
+                            "그래프 상위 N개 (0=전체)", min_value=0, max_value=50,
+                            value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
+                        )
+                    if chart_kind:
+                        metric = st.segmented_control(
+                            "그래프 지표", COMPARE_METRICS,
+                            default=metric if metric in COMPARE_METRICS else "CPI",
+                            key=f"vmetric_{view_key}",
+                            format_func=lambda m: METRIC_LABELS.get(m, m),
+                        ) or "CPI"
 
         result.append({
             "id": view["id"], "label": label, "kind": kind, "conditions": conditions,
-            "months": view["months"], "axis": axis, "chart": bool(chart),
-            "metric": metric, "top_n": int(top_n or 0),
+            "months": view["months"], "axis": axis, "chart_kind": chart_kind,
+            "chart": bool(chart_kind), "metric": metric, "top_n": int(top_n or 0),
             "periods": periods, "metrics": view["metrics"],
         })
 
@@ -2268,14 +2520,14 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         block_id, month, block.get("title") or "제목 없는 블록", edit_mode,
         info=f"표 {len(saved_views)}개" if saved_views else "표 없음",
         menu=lambda: block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner),
+        editable_title=True,
     )
 
     views = saved_views
 
     if editing:
-        title_value = st.text_input("주제 제목", value=block.get("title", ""),
-                                    key=f"title_{block_id}",
-                                    placeholder="예: 정방형 / GIF 소재 성과")
+        # 제목은 헤더 자리에서 바로 고친다(lock_gate). 여기서는 그 값을 읽기만 한다.
+        title_value = st.session_state.get(f"blocktitle_{block_id}", block.get("title", ""))
         views = views_editor(block_id, views)
 
         st.markdown('<div class="cp-label">분석</div>', unsafe_allow_html=True)

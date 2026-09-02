@@ -628,10 +628,6 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-drill_panel [data-baseweb="select"] > div {
   background: #fff !important; border-radius: 3px !important;
 }
-/* 값 선택 칩은 구분자 칩보다 한 단계 약하게 — 위계가 보이도록 */
-[class*="st-key-drill_values_"] [data-baseweb="tag"] {
-  background: #eef1f3 !important; color: var(--ink) !important;
-}
 /* 블록 헤더 — 제목 + 얇은 밑줄, 오른쪽은 잠금 상태 자리 */
 /* 보기/편집 모드 스위치 — 헤더 바로 아래 우측, 항상 눈에 띄어야 하는 컨트롤이라
    선택된 "편집" 쪽만 브랜드 그린으로 채운다(액센트 1곳 원칙 — 나머지 UI는 중성색 유지) */
@@ -645,6 +641,60 @@ header[data-testid="stHeader"] { background: transparent; }
 [class*="st-key-vmetric_"] button[role="radio"][aria-checked="true"] p {
   color: #fff !important;
 }
+
+/* 제목 인라인 편집 — 입력칸이지만 제목처럼 보여야 한다. 별도 '주제 제목' 칸을 없애고
+   헤더 그 자리에서 고치게 바꾸면서, 서체·크기·여백을 note_header의 .nh-t와 맞췄다. */
+[class*="st-key-blocktitle_"] input {
+  font-size: 17px !important; font-weight: 700 !important;
+  color: var(--ink) !important; letter-spacing: -.2px;
+  background: transparent !important; border: 1px solid transparent !important;
+  border-radius: 3px !important; padding: 2px 6px !important; height: auto !important;
+}
+[class*="st-key-blocktitle_"] input:hover { border-color: var(--line) !important; }
+[class*="st-key-blocktitle_"] input:focus {
+  background: #fff !important; border-color: var(--brand) !important;
+}
+[class*="st-key-blocktitle_"] { margin-bottom: 2px; }
+
+/* 표(뷰) 요약 줄 — 안 고칠 때는 이 한 줄만 읽으면 된다. */
+.vs { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.vs-t { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.vs-chip {
+  background: #f1f3f5; color: var(--muted); border-radius: 3px;
+  padding: 1px 7px; font-size: 11px;
+}
+.vs-c { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.vs-c b { color: var(--ink); font-weight: 600; }
+/* 설정 아코디언은 보조 컨트롤이라 눈에 덜 띄어야 한다. */
+[class*="st-key-view_box_"] [data-testid="stExpander"] details {
+  border: none !important; background: transparent !important;
+}
+[class*="st-key-view_box_"] [data-testid="stExpander"] summary {
+  font-size: 11.5px !important; color: var(--muted) !important; padding-left: 0 !important;
+}
+
+/* 편집 화면의 테두리 겹침 제거.
+   예전에는 `섹션 > 블록 > 표 > 조건 > 값선택`이 전부 같은 굵기의 상자였다. 4겹이 되면
+   깊이감이 오히려 사라져서 무엇이 무엇에 속하는지 안 보인다. 바깥 상자 하나만 남기고
+   안쪽은 **왼쪽 세로선**으로 소속만 표시한다. */
+[class*="st-key-view_box_"], [class*="st-key-cond_panel_"],
+[class*="st-key-period_box_"] {
+  border: none !important; border-left: 2px solid var(--line) !important;
+  border-radius: 0 !important; padding: 2px 0 2px 14px !important;
+  background: transparent !important;
+}
+/* 조건 패널은 표(뷰) 안에 또 들어가므로 한 단계 더 약하게. */
+[class*="st-key-cond_panel_"] { border-left-color: #f0f2f4 !important; margin-top: 6px; }
+/* 표 사이 간격 — 테두리가 사라진 만큼 여백이 구분을 대신한다. */
+[class*="st-key-view_box_"] { margin-bottom: 14px; }
+
+/* 차트 범례 — plotly 기본 범례는 위치·서체가 표와 안 맞아 끄고 직접 그린다. */
+.chart-legend {
+  display: flex; gap: 14px; margin: 2px 0 0 6px;
+  font-size: 11.5px; color: var(--muted);
+}
+.chart-key { display: inline-flex; align-items: center; gap: 5px; }
+.chart-key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
 /* 표 위 기준 라벨 — 실제 리포트 시트가 표마다 `* 틱톡 AOS`처럼 붙이는 그것. */
 .view-basis {
@@ -1069,7 +1119,15 @@ section[data-testid="stSidebar"] h2 {
 .stTextArea textarea, .stTextInput input {
   border-radius: 3px !important; font-size: 12.5px !important;
 }
-[data-baseweb="tag"] { background: var(--brand-deep) !important; border-radius: 3px !important; }
+/* 조건 칩은 **입력 도구**다 — 브랜드 그린은 '우수 소재' 같은 성과 강조에만 쓴다.
+   예전에는 칩이 브랜드 그린이라 편집 화면에서 가장 강한 요소였고, 그 바람에
+   같은 초록을 쓰는 성과 강조의 신호가 죽었다(액센트 1색 원칙 위반). */
+[data-baseweb="tag"] {
+  background: #eef1f3 !important; border-radius: 3px !important;
+  border: 1px solid var(--line) !important;
+}
+[data-baseweb="tag"] span, [data-baseweb="tag"] div { color: var(--ink) !important; }
+[data-baseweb="tag"] svg { fill: var(--muted) !important; }
 
 .foot {
   margin-top: 38px; padding: 15px 18px; border-radius: 4px;
