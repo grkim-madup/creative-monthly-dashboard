@@ -276,7 +276,7 @@ PIVOT_FIELDS = {
     "format": "Creative Format",
     "size": "Dimension",
     "orientation": "사이즈 방향",
-    "extra_info_tag": "Extra Info (태그별)",
+    "extra_info_tag": "Extra Info",
     "producer_group": "제작 주체",
     "usp": "USP",
     "title_kr": "작품",
@@ -1471,7 +1471,7 @@ ATTRIBUTES = {
     "format": "Creative Format",
     "size": "Dimension",
     "orientation": "사이즈 방향",
-    "extra_info_tag": "Extra Info (태그별)",
+    "extra_info_tag": "Extra Info",
     "producer_group": "제작 주체",
     "usp": "USP",
 }
@@ -2114,7 +2114,7 @@ FIELD_LABELS = {
     "creative_type": "Creative Type", "format": "Creative Format",
     "size": "Dimension", "orientation": "사이즈 방향",
     "producer_group": "제작 주체", "usp": "USP",
-    "extra_info_tag": "Extra Info (태그별)",
+    "extra_info_tag": "Extra Info",
     # 소재명 규칙이 안 지켜진 MIX 소재군 — `creative_data.mix_group` 참고.
     "mix_group": "MIX 소재",
 }
