@@ -430,18 +430,6 @@ header[data-testid="stHeader"] { background: transparent; }
 .rt .l { text-align: left; }
 /* 규모/효율처럼 성격이 다른 지표 묶음 사이에만 세로선 */
 .rt .gs { border-left: 1px solid var(--line); }
-/* 피벗 표: **행(묶는 기준)과 값(지표)의 경계**. 지표 묶음 구분선보다 진하게 —
-   "무엇에 대한 줄인지"와 "얼마인지"의 경계가 표에서 가장 굵어야 한다.
-   회색 배경을 깔지 않는 이유: 이 표에는 CPI 히트맵과 우수/저조 강조가 이미 얹혀서,
-   행 컬럼에 배경을 더하면 두 겹이 된다(강조 색을 세 번 갈아엎은 그 문제다). */
-.rt .vs-start { border-left: 2px solid var(--ink) !important; }
-/* 헤더에서만 행 부분을 한 톤 진하게 — 본문은 건드리지 않는다.
-   본문 셀에는 CPI 힐트맵과 우수/저조 강조가 이밌 옆혀서, 거기에 배경을 더하면 두 겹이 된다.
-   헤더는 강조가 당지 않으므로 거기서 구분을 만든다. */
-.rt th.dim { background: #e2e8ee; color: var(--ink); }
-/* 행 컬럼은 굵게 — 배경 없이 위계를 만든다. 편집 모드의 st.dataframe에서도
-   font-weight는 반영되므로 두 모드가 같게 보인다(border는 캔버스에서 무시된다). */
-.rt .dim { font-weight: 600; color: var(--ink); }
 .rt tbody tr:hover td { background: #fafbfc; }
 .rt-link { color: var(--brand-deep); text-decoration: none; font-weight: 500; }
 .rt-link:hover { text-decoration: underline; }
@@ -667,6 +655,27 @@ header[data-testid="stHeader"] { background: transparent; }
   background: #fff !important; border-color: var(--brand) !important;
 }
 [class*="st-key-blocktitle_"] { margin-bottom: 2px; }
+
+/* 블록 `취소` 버튼 — `완료`(브랜드 그린 채움) 옆에 서는 보조 액션이다.
+   Streamlit 기본 버튼은 테두리가 진해서 `완료`와 무게가 비슷해 보인다. 한 단계
+   물려서 "되돌리기"로 읽히게 한다(파괴적 동작이라 눈에는 띄어야 하므로 숨기지 않는다). */
+[class*="st-key-cancel_"] button {
+  border: 1px solid var(--line) !important;
+  background: #fff !important; color: var(--muted) !important;
+  font-weight: 500 !important;
+}
+[class*="st-key-cancel_"] button:hover {
+  border-color: #e0a2a2 !important; color: #8a1f1f !important;
+  background: #fff !important;
+}
+/* 확인 줄의 두 버튼 — `계속 편집`이 안전한 쪽이라 그쪽을 기본으로 보이게 한다. */
+[class*="st-key-cancel_no_"] button {
+  border: 1px solid var(--border-strong, #cfd6dd) !important; font-weight: 500 !important;
+}
+[class*="st-key-cancel_yes_"] button {
+  border: 1px solid #e0a2a2 !important; color: #8a1f1f !important;
+  background: #fff !important; font-weight: 500 !important;
+}
 
 /* 인사이트 초안 버튼 — 에디터 툴바 오른쪽에 붙어 툴바의 일부처럼 보이게 한다.
    Streamlit은 위젯을 다른 위젯(Quill) 안에 넣을 수 없어서, 버튼 줄을 아래로 끌어내려
@@ -1395,8 +1404,6 @@ def report_table(
     headers: list[str],
     left_columns: set[str] | None = None,
     group_starts: set[str] | None = None,
-    dim_columns: set[str] | None = None,
-    value_start: str | None = None,
     row_classes: list[str] | None = None,
     cell_styles: list[dict[str, str]] | None = None,
     link_columns: set[str] | None = None,
@@ -1421,17 +1428,9 @@ def report_table(
     # 텍스트다 — 임의의 HTML이 표 안으로 들어오지 않게 한다.
     link_columns = link_columns or set()
 
-    dim_columns = dim_columns or set()
-
     def cell_class(name: str) -> str:
-        # 행(묶는 기준) 컬럼은 왼쪽 정렬 + 굵게. 값보다 "무엇에 대한 줄인지"가
-        # 먼저 읽혀야 한다.
-        classes = ["l" if (name in left_columns or name in dim_columns) else "c"]
-        if name in dim_columns:
-            classes.append("dim")
-        if name == value_start:
-            classes.append("vs-start")
-        elif name in group_starts:
+        classes = ["l" if name in left_columns else "c"]
+        if name in group_starts:
             classes.append("gs")
         return " ".join(classes)
 

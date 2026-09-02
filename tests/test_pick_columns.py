@@ -128,33 +128,3 @@ class TestPickColumns:
         result = pick_columns(data, ["CPI", "CPI", "ad"], always=["ad"])
         assert len(result) == len(set(result))
 
-
-class TestRowValueBoundary:
-    """표에서 행(묶는 기준)과 값(지표)의 경계를 어디에 세우는가.
-
-    `report_table`이 `value_start` 컬럼에만 굵은 경계선을 세운다. 그 자리를 고르는
-    규칙(= 헤더 순서상 행이 아닌 첫 컬럼)을 여기서 고정한다.
-    """
-
-    def boundary(self, headers: list[str], dims: set[str]) -> str | None:
-        # `render_table`이 쓰는 것과 같은 규칙. 진입점은 import할 수 없어 재현한다.
-        present = {c for c in dims if c in headers}
-        return next((c for c in headers if c not in present), None) if present else None
-
-    def test_boundary_is_the_first_non_row_column(self):
-        assert self.boundary(["소재명", "매체", "소진액", "CPI"],
-                             {"소재명", "매체"}) == "소진액"
-
-    def test_one_row_column(self):
-        assert self.boundary(["매체", "소진액"], {"매체"}) == "소진액"
-
-    def test_no_row_columns_means_no_boundary(self):
-        """행 컬럼이 없으면 경계도 없다 — 없는 선을 그으면 표가 어긋나 보인다."""
-        assert self.boundary(["소진액", "CPI"], set()) is None
-
-    def test_row_column_absent_from_headers_is_ignored(self):
-        """행에서 뺀 구분은 프레임에 컬럼이 없다 — 그걸로 경계를 잡으면 안 된다."""
-        assert self.boundary(["소재명", "소진액"], {"소재명", "매체"}) == "소진액"
-
-    def test_all_columns_are_row_columns(self):
-        assert self.boundary(["소재명", "매체"], {"소재명", "매체"}) is None
