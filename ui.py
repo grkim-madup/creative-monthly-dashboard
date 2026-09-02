@@ -1250,8 +1250,6 @@ section[data-testid="stSidebar"] h2 {
   border-left: 3px solid var(--line);
   font-size: 11.5px; color: var(--muted); line-height: 1.75;
 }
-</style>
-
 /* 대조군 비교(B-3) — 매체 = 소제목, 지표 = 행. 실제 리포트 시트가 표마다
    `* 틱톡 AOS` 라벨을 붙이는 것과 같은 문법이다. */
 .ct-head {
@@ -1279,6 +1277,8 @@ section[data-testid="stSidebar"] h2 {
   padding: 4px 5px; font-size: 10.5px; line-height: 1.3; color: var(--muted);
   word-break: break-all;
 }
+
+</style>
 
 """
 
