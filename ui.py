@@ -677,6 +677,11 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-pv_"] { padding: 0 !important; border: none !important; }
 
+/* 필터가 실제로 무엇을 걸고 있는지 한 줄로 — 값 없는 칩은 아무 일도 하지 않는다. */
+.pv-state { font-size: 11.5px; color: var(--muted); margin: 3px 0 2px 2px; }
+.pv-state b { color: var(--ink); font-weight: 600; }
+.pv-idle { color: #8a1f1f; }
+
 /* 표(뷰) 요약 줄 — 안 고칠 때는 이 한 줄만 읽으면 된다. */
 .vs { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .vs-t { font-size: 13.5px; font-weight: 700; color: var(--ink); }

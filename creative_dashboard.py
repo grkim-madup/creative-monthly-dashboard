@@ -2643,6 +2643,19 @@ def pivot_editor(view: dict, view_key: str) -> dict:
             filter_values = value_popover(view_key, "f", filter_fields,
                                           dict(view["filters"] or {}))
 
+        # **값을 안 고른 필터는 아무것도 걸지 않는다.** 그런데 칩은 그대로 남아 있어서
+        # 필터가 걸린 것처럼 보인다(실제로 `Extra Info` 칩이 있는데 표에 epn·6s·new가
+        # 다 나오는 화면을 받았다). 무엇이 실제로 걸렸는지 한 줄로 적는다.
+        idle = [f for f in filter_fields if not filter_values.get(f)]
+        active = [f for f in filter_fields if filter_values.get(f)]
+        if active or idle:
+            parts = [f"{field_label(f)} <b>{html.escape(', '.join(filter_values[f]))}</b>"
+                     for f in active]
+            parts += [f'<span class="pv-idle">{field_label(f)} 값 없음 — '
+                      "아무것도 걸지 않습니다</span>" for f in idle]
+            st.markdown(f'<div class="pv-state">{" · ".join(parts)}</div>',
+                        unsafe_allow_html=True)
+
         st.markdown('<div class="pv-lab">소재 추가 <span>더하기 · 필터 결과에 합친다'
                     "</span></div>", unsafe_allow_html=True)
         include = st.multiselect(
@@ -2868,7 +2881,19 @@ section(
 # **보기 모드에서는 감춘다** — 이 화면은 광고주에게 그대로 공유하는 리포트이고,
 # 소재 분류를 고치는 도구는 리포트의 일부가 아니다. 예전에는 "분류 보정은 데이터 교정이라
 # 항상 노출"로 뒀는데, 광고주 화면에 편집 도구가 보이는 게 더 큰 문제다.
-if edit_mode:
+# 분류가 실패한 소재가 실제로 있을 때만 보여준다.
+# 실측(2026-09-02): 하이픈 파서를 고친 뒤 8월은 분류 실패가 0개, 7월은 1개다.
+# 늘 펼쳐 두면 아무 할 일도 없는 패널이 섹션 맨 위를 차지한다. 그렇다고 지우면
+# 소재명이 컨벤션을 벗어났을 때의 **유일한 교정 경로**가 없어진다.
+CLASSIFY_COLUMNS = ["creative_type", "format", "size", "producer_group", "usp"]
+_unclassified = named_overview.drop_duplicates("ad")
+_unclassified = _unclassified[
+    _unclassified[[c for c in CLASSIFY_COLUMNS if c in _unclassified.columns]]
+    .isna().any(axis=1)
+]
+if edit_mode and not _unclassified.empty:
+    status_row("warn", f"소재명 규칙에 맞지 않는 소재 {len(_unclassified)}개",
+               "아래에서 분류를 손으로 채우면 이 달의 모든 표에 반영됩니다.")
     render_manual_override_panel(
         month, True, set(named_overview["ad"].unique()), key_prefix="sec4_override",
         options=override_choices,
