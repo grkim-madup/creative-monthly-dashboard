@@ -50,6 +50,7 @@ from creative_data import (
     metric_benchmark,
     month_options,
     pick_best_worst,
+    CREATIVE_FIELDS,
     contrast_by_media,
     contrast_split,
     filtered_scope,
@@ -2403,9 +2404,14 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
                    "하나 걸면 '그 외 소재'와 견줄 수 있습니다.")
         return
 
-    label = " · ".join(
-        f"{field_label(f)} {', '.join(map(str, v))}"
-        for f, v in view["filters"].items()) or "대상"
+    # 열 이름은 **소재 속성 필터만**으로 만든다. 매체·OS는 비교 범위(양쪽에 똑같이
+    # 걸린 조건)라서 대상 열에 적으면 "그 외"와 무엇이 다른지 오히려 흐려진다.
+    # 길면 잘려서 `매체 Meta, TikTok · Extr` 처럼 읽을 수 없게 된다(실제로 그랬다).
+    parts = [", ".join(map(str, v)) for f, v in view["filters"].items()
+             if f in CREATIVE_FIELDS and v]
+    label = " · ".join(parts) or "대상"
+    if len(label) > 20:
+        label = label[:19] + "…"
 
     for card in contrast_by_media(subject, rest, view["values"] or None):
         share = f" · 소진 비중 {card['share']:.1%}" if card["share"] is not None else ""
@@ -2421,7 +2427,9 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         for _, line in card["table"].iterrows():
             metric = line["metric"]
             if pd.notna(line["share"]):
-                diff, tone = f"{line['share']:.1%}", ""
+                # 그냥 `0.7%`로 두면 "7% 줄었다"로 읽힌다 — 볼륨은 변화율이 아니라
+                # 전체 중 이 소재군이 차지한 **비중**이다. 단위를 값 옆에 못 박는다.
+                diff, tone = f"비중 {line['share']:.1%}", ""
             elif line["delta"] is None or pd.isna(line["delta"]):
                 diff, tone = "-", ""
             elif line["unit"] == "%p":
@@ -2440,7 +2448,7 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
                                           "font-weight:600",
                                    "bad": "background-color:#fdf3f3;color:#8a1f1f;"
                                           "font-weight:600"}.get(tone, "")})
-        report_table(rows, ["지표", label[:22], "그 외", "차이"],
+        report_table(rows, ["지표", label, "그 외", "차이"],
                      left_columns={"지표"}, cell_styles=styles)
     st.markdown(
         '<div class="tbl-note">차이 — 비율 지표는 <b>%p</b>, 금액·건수 지표는 '
@@ -2533,6 +2541,12 @@ def render_view(view: dict, month: int, key_prefix: str,
     """
     view = view_with_defaults(view)
     view_key = f"{block_id_of(key_prefix)}_{view['id']}"
+    # 소재 미리보기는 **표보다 위**에 둔다. 기준 라벨과 표 사이에 끼면 라벨이 어느
+    # 표의 것인지 안 읽힌다(규리님 지적 — 라벨에서 표까지 시선이 카드를 넘어가야 했다).
+    # 편집 중에도 편집기보다 위다 — "무엇을 고르고 있는지"를 먼저 보여줘야 한다.
+    if view["thumbs"] and view["kind"] != "compare":
+        render_thumbs(filtered_scope(named_overview, view["filters"],
+                                     view["include_ads"]))
     if editing:
         view = table_editor(view, view_key)
     elif view["label"]:
@@ -2546,9 +2560,6 @@ def render_view(view: dict, month: int, key_prefix: str,
         return
 
     highlight_key = f"{key_prefix}_{view['id']}"
-    if view["thumbs"]:
-        render_thumbs(filtered_scope(named_overview, view["filters"],
-                                     view["include_ads"]))
     if view["contrast"]:
         render_contrast(view, month, key_prefix)
         return
