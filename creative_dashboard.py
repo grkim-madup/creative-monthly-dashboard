@@ -2397,11 +2397,13 @@ def render_view(view: dict, month: int, key_prefix: str,
         table.rename(columns={f: field_label(f) for f in fields}),
         color_columns=["CPI"], highlight_key=highlight_key, month=month,
     )
-    st.markdown(
-        f'<div class="tbl-note">{" · ".join(field_label(f) for f in fields)} 기준 '
-        f"{len(table):,}줄. 행에서 구분을 빼면 그 축을 합쳐 다시 집계합니다.</div>",
-        unsafe_allow_html=True,
-    )
+    if editing:
+        # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.
+        st.markdown(
+            f'<div class="tbl-note">{" · ".join(field_label(f) for f in fields)} 기준 '
+            f"{len(table):,}줄. 행에서 구분을 빼면 그 축을 합쳐 다시 집계합니다.</div>",
+            unsafe_allow_html=True,
+        )
 
 
 VIEW_KINDS = {"pivot": "피벗 표", "compare": "기간 비교"}
@@ -2817,7 +2819,8 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     saved_views = [view_with_defaults(v) for v in (block.get("views") or [])]
     editing = lock_gate(
         block_id, month, block.get("title") or "제목 없는 블록", edit_mode,
-        info=f"표 {len(saved_views)}개" if saved_views else "표 없음",
+        # `표 N개` 배지도 편집자용이다. 보기 모드에서는 붙이지 않는다.
+        info=(f"표 {len(saved_views)}개" if saved_views else "표 없음") if edit_mode else None,
         menu=lambda: block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner),
         editable_title=True,
     )
