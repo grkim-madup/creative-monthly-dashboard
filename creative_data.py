@@ -960,10 +960,15 @@ DEFAULT_PIVOT_VALUES = ["cost", "impression", "total install", "CTR", "CPI",
 
 
 def normalize_rows(rows) -> list[dict]:
-    """행 정의를 `[{"field":..., "values":[...]}, ...]` 모양으로 맞춘다.
+    """행 정의를 `[{"field":...}, ...]` 모양으로 맞춘다.
 
-    문자열만 담긴 예전/간략 형식(`["ad", "media"]`)도 받는다.
+    문자열만 담긴 간략 형식(`["ad", "media"]`)도 받는다.
     같은 필드가 두 번 오면 뒤엣것을 버린다 — 같은 축으로 두 번 묶을 수는 없다.
+
+    ⚠ **행은 값을 갖지 않는다.** 예전에 행마다 값 선택을 붙였더니 필터와 하는 일이
+    같아져서 "왜 두 군데서 좁히나"가 됐다. 구글 시트 피벗도 행에는 값 선택기가 없고
+    좁히기는 필터에서만 한다 — 자리가 하나면 겹칠 일이 없다.
+    `values` 키는 예전 저장분을 읽을 때 깨지지 않게 받아만 두고 쓰지 않는다.
     """
     result: list[dict] = []
     seen: set[str] = set()
@@ -985,6 +990,7 @@ def pivot_frame(
     values: list[str] | None = None,
     filters: dict | None = None,
     min_cost: float = 0.0,
+    include_ads: list[str] | None = None,
 ) -> pd.DataFrame:
     """행으로 묶고 값 컬럼만 남긴 표.
 
@@ -993,11 +999,15 @@ def pivot_frame(
     - `extra_info_tag`를 행에 넣으면 부르는 쪽이 아니라 **여기서 펼친다** — 빠뜨리면
       태그 축이 조용히 빈 표가 된다.
     - 결측은 버리지 않고 `미분류`로 묶는다. 버리면 합계가 조용히 안 맞는다.
+    - `include_ads`는 필터 결과에 **더한다**(합집합). 필터를 두 개 걸면 교집합이라
+      "이 조건에 맞는 소재 + 손으로 고른 소재"는 필터로 표현할 수 없다. 실제 리포트도
+      대상 소재를 파일명으로 나열하는 칸을 따로 두고 있다(8월 시트 148~175행).
     """
     rows = normalize_rows(rows) or normalize_rows(DEFAULT_PIVOT_ROWS)
     fields = [r["field"] for r in rows]
     metrics = list(values) if values else list(DEFAULT_PIVOT_VALUES)
 
+    source = df
     frame = df
     tag_filter: list[str] = []
     for field, chosen in (filters or {}).items():
@@ -1017,6 +1027,12 @@ def pivot_frame(
         exploded = explode_extra_info(frame)
         matched = exploded[exploded["extra_info_tag"].astype(str).isin(tag_filter)]
         frame = frame[frame["ad"].isin(matched["ad"].unique())]
+
+    # 손으로 고른 소재를 더한다. 필터가 걸러낸 뒤에 붙이므로 **합집합**이 된다.
+    picked = [str(a) for a in (include_ads or [])]
+    if picked and "ad" in source.columns:
+        extra = source[source["ad"].astype(str).isin(picked)]
+        frame = pd.concat([frame, extra]).drop_duplicates()
 
     if frame.empty:
         return frame.iloc[0:0]
@@ -1038,9 +1054,6 @@ def pivot_frame(
     if table.empty:
         return table
 
-    for row in rows:
-        if row["values"] and row["field"] in table.columns:
-            table = table[table[row["field"]].astype(str).isin(row["values"])]
     if min_cost:
         table = table[table["cost"].fillna(0) >= min_cost]
     if table.empty:

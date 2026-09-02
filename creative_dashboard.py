@@ -1992,8 +1992,14 @@ VIEW_DEFAULTS = {
     "rows": [],
     #: 값 = 보여줄 지표. 비우면 기본 세트 — 빈 목록을 '0개'로 읽으면 표가 사라진다.
     "values": [],
-    #: 필터 = 표에 담을 범위. 행과 **다른 칸**이라 역할이 겹치지 않는다.
+    #: 필터 = 표에 담을 범위. **값을 좁히는 자리는 여기 하나뿐이다** — 행에도 값
+    #: 선택을 붙였더니 하는 일이 같아져서 "왜 두 군데서 좁히나"가 됐다.
+    #: 행으로 쓰는 구분자도 여기서 고를 수 있다(시트 피벗도 그렇다).
     "filters": {},
+    #: 필터 결과에 **더할** 소재. 필터를 두 개 걸면 교집합이라 "이 조건에 맞는 소재
+    #: + 손으로 고른 소재"는 필터로 표현할 수 없다. 실제 리포트도 대상 소재를
+    #: 파일명으로 나열하는 칸을 따로 둔다(8월 시트 148~175행).
+    "include_ads": [],
     "chart_kind": "", "metric": "CPI", "top_n": 0,
     # 기간 비교 뷰용
     "periods": [], "metrics": [],
@@ -2024,20 +2030,20 @@ def migrate_view(view: dict) -> dict:
     # 행: 목록이면 소재명, 집계면 축. 매체는 예전에 컬럼 선택이 결정했다
     # (컬럼을 안 고르면 기본 세트에 매체가 있었으므로 나뉘어 있었다).
     head = "ad" if legacy_kind == "list" else axis
-    rows = [{"field": head,
-             "values": list(view.get("axis_values")
-                            or conditions.get(axis) or [])
-             if legacy_kind == "aggregate" else []}]
+    rows = [{"field": head}]
     if "media" in (columns or DEFAULT_PIVOT_ROWS):
-        rows.append({"field": "media", "values": []})
+        rows.append({"field": "media"})
 
     values = [c for c in columns if c in METRIC_COLUMNS]
-    filters = {f: v for f, v in conditions.items()
-               if not (legacy_kind == "aggregate" and f == axis)}
+    # 예전 축 값은 이제 **필터**로 간다 — 좁히는 자리가 하나뿐이므로.
+    filters = dict(conditions)
+    narrowed = list(view.get("axis_values") or conditions.get(axis) or [])
+    if legacy_kind == "aggregate" and narrowed:
+        filters[axis] = narrowed
 
     moved = dict(view)
     moved.update({"kind": "pivot", "rows": rows, "values": values,
-                  "filters": filters})
+                  "filters": filters, "include_ads": []})
     return moved
 
 
@@ -2367,7 +2373,8 @@ def render_view(view: dict, month: int, key_prefix: str,
 
     highlight_key = f"{key_prefix}_{view['id']}"
     table = pivot_frame(named_overview, view["rows"], view["values"],
-                        filters=view["filters"], min_cost=min_cost)
+                        filters=view["filters"], min_cost=min_cost,
+                        include_ads=view["include_ads"])
     if table.empty:
         status_row("warn", "조건에 맞는 소재가 없습니다",
                    "필터를 완화하거나 행 값을 늘려 보세요.")
@@ -2429,13 +2436,9 @@ def view_from_widgets(view: dict, view_key: str) -> dict:
     merged["top_n"] = int(take(f"vtop_{view_key}", merged["top_n"]) or 0)
 
     row_fields = take(f"pvrows_{view_key}", [r["field"] for r in merged["rows"]])
-    saved_values = {r["field"]: r["values"] for r in merged["rows"]}
-    merged["rows"] = normalize_rows([
-        {"field": f,
-         "values": list(take(f"pvrowval_{view_key}_{f}", saved_values.get(f) or []))}
-        for f in row_fields
-    ])
+    merged["rows"] = normalize_rows([{"field": f} for f in row_fields])
     merged["values"] = list(take(f"pvvals_{view_key}", merged["values"]))
+    merged["include_ads"] = list(take(f"pvads_{view_key}", merged["include_ads"]))
 
     filter_fields = take(f"pvfilters_{view_key}", list(merged["filters"] or {}))
     merged["filters"] = {
@@ -2512,6 +2515,17 @@ def value_popover(view_key: str, slot: str, fields: list[str], saved: dict) -> d
     return picked
 
 
+def drop_view(view_key: str, view_id: str) -> None:
+    """표 하나를 지운다. 목록은 블록 단위 세션에 있다."""
+    block_id = view_key.rsplit("_", 1)[0]
+    state_key = f"views_{block_id}"
+    remaining = [v for v in st.session_state.get(state_key, [])
+                 if v.get("id") != view_id]
+    st.session_state[state_key] = remaining
+    clear_view_state(block_id, view_id)
+    rerun_local()
+
+
 def block_id_of(key_prefix: str) -> str:
     """`sec5_<block_id>` 에서 블록 id만 꺼낸다."""
     return key_prefix.split("_", 1)[-1]
@@ -2543,7 +2557,11 @@ def table_editor(view: dict, view_key: str) -> dict:
                 index=chart_kinds.index(chart_kind) if chart_kind in CHART_KINDS else 0,
                 format_func=lambda k: CHART_KINDS[k], key=f"vchart_{view_key}",
             )
-        head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제")
+        # ⚠ `st.button`은 눌린 **그 리런에서만** True다. 예전에는 이 값을 `완료` 누를
+        #    때 읽어서 삭제하려 했는데, 그때는 이미 False라 영영 삭제가 안 됐다.
+        #    그 자리에서 세션 목록을 고치고 리런한다.
+        if head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
+            drop_view(view_key, view["id"])
 
         if kind == "pivot" and chart_kind:
             metric_col, top_col = st.columns([3, 1], vertical_alignment="bottom")
@@ -2568,37 +2586,37 @@ def table_editor(view: dict, view_key: str) -> dict:
 
 
 def pivot_editor(view: dict, view_key: str) -> dict:
-    """행 / 값 / 필터 세 줄. 표 **바로 위**에 둔다.
+    """행 / 값 / 필터 / 소재 추가. 표 **바로 위**에 둔다.
 
-    구글 시트 피벗 편집기와 같은 모델이다(사용자가 그 화면을 참고로 지목했다):
-      행   = 묶는 기준. 빼면 가려지는 게 아니라 그 축을 합쳐 **다시 집계**된다.
-      값   = 보여줄 지표.
-      필터 = 표에 담을 범위. 행과 다른 칸이라 역할이 겹치지 않는다.
+    구글 시트 피벗 편집기와 같은 모델이다(사용자가 그 화면을 참고로 지목했다).
+    중요한 것은 **역할이 한 자리씩만 있다는 점**이다:
 
-    예전에는 이 셋이 `분석 축` · `표시할 컬럼` · `조건`으로 흩어져 있었고, 축 값을
-    좁히려면 조건에 같은 구분자를 또 걸어야 했다 — 그 겹침이 이 구조에서는 생길 수 없다.
+      행        = 무엇으로 묶을까. 빼면 그 축을 합쳐 **다시 집계**된다.
+      값        = 어떤 지표를 보여줄까.
+      필터      = 무엇을 **좁힐까**. 좁히는 자리는 여기 하나뿐이다.
+      소재 추가 = 무엇을 **더할까**. 필터는 교집합이라 합집합을 표현할 수 없다.
+
+    처음에는 행마다 값 선택을 붙였는데, 그러면 행과 필터가 같은 일을 해서
+    "왜 두 군데서 좁히나"가 됐다(사용자 지적). 시트 피벗도 행에는 값 선택기가 없다.
+    그래서 행 필드를 필터에서 빼지 않는다 — 자리가 하나면 겹치는 게 아니라 그게
+    유일한 방법이 된다.
 
     **위젯만으로 만든다.** 버튼으로 중간 상태를 옮기는 방식은 이 프로젝트에서 위젯
-    상태와 저장 상태가 엇갈리는 버그를 반복해서 만들었다. 멀티셀렉트는 추가·삭제·순서를
-    한 위젯에서 다 해결한다(선택 순서가 곧 행 순서다).
+    상태와 저장 상태가 엇갈리는 버그를 반복해서 만들었다. 멀티셀렉트 하나가
+    추가·삭제·순서를 다 해결한다(선택 순서가 곧 행 순서다).
     """
-    saved_row_values = {r["field"]: r["values"] for r in view["rows"]}
     saved_rows = [r["field"] for r in view["rows"]]
 
     with st.container(key=f"pv_{view_key}"):
-        left, right = st.columns([5, 3], vertical_alignment="center")
-        left.markdown('<div class="pv-lab">행 <span>묶는 기준 · 빼면 합쳐서 다시 계산</span>'
-                      "</div>", unsafe_allow_html=True)
-        row_fields = left.multiselect(
+        st.markdown('<div class="pv-lab">행 <span>묶는 기준 · 빼면 합쳐서 다시 계산</span>'
+                    "</div>", unsafe_allow_html=True)
+        row_fields = st.multiselect(
             "행", DIMENSION_COLUMNS,
             default=[f for f in (saved_rows or DEFAULT_PIVOT_ROWS)
                      if f in DIMENSION_COLUMNS],
             format_func=field_label, key=f"pvrows_{view_key}",
             label_visibility="collapsed", placeholder="묶을 구분을 고르세요",
         )
-        with right:
-            st.markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
-            row_values = value_popover(view_key, "row", row_fields, saved_row_values)
 
         st.markdown('<div class="pv-lab">값 <span>보여줄 지표 · 순서는 고정</span></div>',
                     unsafe_allow_html=True)
@@ -2611,28 +2629,44 @@ def pivot_editor(view: dict, view_key: str) -> dict:
             placeholder="기본 지표 사용",
         )
 
-        # 행으로 쓰는 구분자는 필터 선택지에서 뺀다 — 행의 값은 행 쪽에서만 정한다.
-        available = [f for f in DIMENSION_COLUMNS if f not in row_fields]
-        fleft, fright = st.columns([5, 3], vertical_alignment="center")
-        fleft.markdown('<div class="pv-lab">필터 <span>표에 담을 범위</span></div>',
-                       unsafe_allow_html=True)
-        filter_fields = fleft.multiselect(
-            "필터", available,
-            default=[f for f in (view["filters"] or {}) if f in available],
+        left, right = st.columns([5, 3], vertical_alignment="center")
+        left.markdown('<div class="pv-lab">필터 <span>좁히기 · 여러 개면 모두 만족'
+                      "</span></div>", unsafe_allow_html=True)
+        filter_fields = left.multiselect(
+            "필터", DIMENSION_COLUMNS,
+            default=[f for f in (view["filters"] or {}) if f in DIMENSION_COLUMNS],
             format_func=field_label, key=f"pvfilters_{view_key}",
             label_visibility="collapsed", placeholder="필터 없음 · 전체 소재",
         )
-        with fright:
+        with right:
             st.markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
             filter_values = value_popover(view_key, "f", filter_fields,
                                           dict(view["filters"] or {}))
 
-    rows = [{"field": f, "values": list(row_values.get(f) or [])} for f in row_fields]
-    # 값이 비어 있는 필터는 아무것도 걸지 않으므로 저장하지 않는다 — 남겨 두면
-    # 요약 줄에 "필터 있음"으로 보이는데 실제로는 전체인 상태가 된다.
+        st.markdown('<div class="pv-lab">소재 추가 <span>더하기 · 필터 결과에 합친다'
+                    "</span></div>", unsafe_allow_html=True)
+        include = st.multiselect(
+            "소재 추가", ad_options(),
+            default=[a for a in (view["include_ads"] or []) if a in set(ad_options())],
+            key=f"pvads_{view_key}", label_visibility="collapsed",
+            placeholder="필터 결과만 사용 · 손으로 더할 소재가 있으면 고르세요",
+        )
+
     filters = {f: list(filter_values[f]) for f in filter_fields
                if filter_values.get(f)}
-    return {**view, "rows": rows, "values": list(metrics), "filters": filters}
+    return {**view, "rows": [{"field": f} for f in row_fields],
+            "values": list(metrics), "filters": filters,
+            "include_ads": list(include)}
+
+
+@st.cache_data(show_spinner=False)
+def _ad_options(month: int, count: int) -> list[str]:
+    """소재 이름 목록. 이 달 소재는 300개대라 매 리런마다 정렬하지 않게 캐시한다."""
+    return sorted(named_overview["ad"].dropna().astype(str).unique())
+
+
+def ad_options() -> list[str]:
+    return _ad_options(month, len(named_overview))
 
 
 def views_editor(block_id: str, views: list[dict]) -> list[dict]:
@@ -2645,10 +2679,21 @@ def views_editor(block_id: str, views: list[dict]) -> list[dict]:
         st.session_state[state_key] = [view_with_defaults(v) for v in views]
 
     result = [view_with_defaults(v) for v in st.session_state[state_key]]
-    if st.button("＋ 표 추가", key=f"vadd_{block_id}"):
-        result = result + [view_with_defaults({})]
     st.session_state[state_key] = result
     return result
+
+
+def add_view_button(block_id: str) -> None:
+    """표를 추가한다. **표들이 끝나는 자리**에 그린다 — 새 표가 생기는 곳이 여기다.
+
+    예전에는 이 버튼이 표보다 위에 있어서, 누르면 화면 아래쪽에 표가 생겼다.
+    Tableau·시트 편집기도 추가 컨트롤을 삽입 지점에 둔다.
+    """
+    state_key = f"views_{block_id}"
+    if st.button("＋ 표 추가", key=f"vadd_{block_id}"):
+        st.session_state[state_key] = (
+            list(st.session_state.get(state_key, [])) + [view_with_defaults({})])
+        rerun_local()
 
 
 def merged_note_html(block: dict) -> str:
@@ -2683,7 +2728,8 @@ def render_block_kpis(views: list[dict], month: int) -> None:
         # 카드는 **그 주제의 표들이 다루는 소재의 합집합**이다. 표마다 필터가 다를 수
         # 있으므로 소재 이름으로 합집합을 만든 뒤 원본에서 한 번만 집계한다.
         matched = pivot_frame(named_overview, ["ad"], ["cost"],
-                              filters=view["filters"])
+                              filters=view["filters"],
+                              include_ads=view["include_ads"])
         if not matched.empty:
             ads |= set(matched["ad"].unique())
     if not ads:
@@ -2705,7 +2751,50 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     ])
 
 
+def save_block(block: dict, month: int, views: list[dict], owner: str) -> None:
+    """지금 화면의 값으로 이 블록을 저장하고 잠금을 놓는다.
+
+    **모든 값을 위젯 세션에서 읽는다.** `완료` 버튼이 헤더(맨 위)에 있고 편집기는
+    표마다 아래에 흩어져 있어서, 반환값으로 모으면 순서에 묶인다. 세션을 읽으면
+    어디서 눌러도 화면과 같은 것이 저장된다.
+    """
+    block_id = block["id"]
+    if locks.status(f"block:{block_id}", month, owner, fresh=True).state != "mine":
+        st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
+        return
+    saved = commit_blocks(
+        # 화면이 들고 있는 스냅샷이 아니라 저장소의 최신 상태에 이 블록만 덮어쓴다.
+        # expect(내가 보고 있던 rev)를 함께 넘겨, 그 사이 같은 블록이 바뀌었으면
+        # 덮어쓰지 않고 거부한다.
+        month,
+        lambda d: report_blocks.update_block(
+            d, report_blocks.SLOT_ANALYSIS, block_id,
+            title=st.session_state.get(f"blocktitle_{block_id}",
+                                       block.get("title", "")),
+            views=[view_from_widgets(v, f"{block_id}_{v['id']}") for v in views],
+            comment=st.session_state.get(f"comment_{block_id}") or "",
+            # 텍스트 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드는 남겨 둔다 —
+            # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
+            insight="",
+        ),
+        expect={block_id: block.get("_rev", 0)},
+    )
+    if saved:
+        locks.release(f"block:{block_id}", month, owner)
+        clear_editor_state(block_id)
+        rerun_local()
+
+
 def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
+    """주제 하나. 읽는 순서 = 숫자 → 표 → 해석.
+
+    편집 도구는 그 순서를 깨지 않는 자리에만 놓는다:
+      `완료`는 헤더 우측(표가 몇 개든 항상 보인다),
+      `＋ 표 추가`는 표들이 끝나는 자리(새 표가 생기는 곳),
+      표별 설정은 그 표 바로 위.
+    예전에는 `완료`·`＋ 표 추가`·`인사이트`가 전부 표보다 위에 있어서,
+    추가 버튼을 눌러도 표는 화면 아래에 생겼다.
+    """
     block_id = block["id"]
     owner = st.session_state["editor_token"]
     saved_views = [view_with_defaults(v) for v in (block.get("views") or [])]
@@ -2716,60 +2805,33 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         editable_title=True,
     )
 
-    views = saved_views
+    views = views_editor(block_id, saved_views) if editing else saved_views
 
     if editing:
-        # 제목은 헤더 자리에서 바로 고친다(lock_gate). 여기서는 그 값을 읽기만 한다.
-        title_value = st.session_state.get(f"blocktitle_{block_id}", block.get("title", ""))
-        views = views_editor(block_id, views)
-
-        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
-        comment = st_quill(value=merged_note_html(block), html=True,
-                           toolbar=QUILL_TOOLBAR, key=f"comment_{block_id}")
-        # 두 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드 자체는 남겨 둔다 —
-        # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
-        insight = ""
-
         taken_over = editor_taken_over(block_id, month)
-        # 버튼을 하나로 합친다 — 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
+        # 완료 = 저장이다. 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
         # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다.
-        if st.button("완료", type="primary", key=f"save_{block_id}", disabled=taken_over):
-            # 저장 직전에는 캐시를 믿지 않는다 — 그 사이 남이 이어받았을 수 있다.
-            if locks.status(
-                f"block:{block_id}", month, owner, fresh=True
-            ).state != "mine":
-                st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
-            elif commit_blocks(
-                # 화면이 들고 있는 스냅샷이 아니라 저장소의 최신 상태에 이 블록만 덮어쓴다.
-                # expect(내가 보고 있던 rev)를 함께 넘겨, 그 사이 같은 블록이 바뀌었으면
-                # 덮어쓰지 않고 거부한다.
-                month,
-                lambda d: report_blocks.update_block(
-                    d, report_blocks.SLOT_ANALYSIS, block_id,
-                    title=title_value,
-                    views=[view_from_widgets(v, f"{block_id}_{v['id']}")
-                           for v in views
-                           if not st.session_state.get(
-                               f"vdrop_{block_id}_{v['id']}")],
-                    comment=comment or "", insight=insight or "",
-                ),
-                expect={block_id: block.get("_rev", 0)},
-            ):
-                locks.release(f"block:{block_id}", month, owner)
-                clear_editor_state(block_id)
-                rerun_local()
+        _, action = st.columns([6, 1.4], vertical_alignment="center")
+        if action.button("완료", type="primary", key=f"save_{block_id}",
+                         disabled=taken_over, use_container_width=True):
+            save_block(block, month, views, owner)
 
-    # 편집 중에는 저장된 값이 아니라 화면의 현재 값을 따른다 — 안 그러면 조건을 바꿔도
-    # 저장하기 전까지 표가 그대로라 반응이 없는 것처럼 보인다.
     if views:
-        render_block_kpis([view_with_defaults(v) for v in views], month)
+        render_block_kpis(views, month)
     for view in views:
         render_view(view, month, f"sec5_{block_id}", editing=editing)
+
+    if editing:
+        add_view_button(block_id)
+        st.markdown('<div class="cp-label">인사이트</div>', unsafe_allow_html=True)
+        st_quill(value=merged_note_html(block), html=True,
+                 toolbar=QUILL_TOOLBAR, key=f"comment_{block_id}")
+        return
 
     body = merged_note_html(block)
     if body:
         # 소제목을 함께 찍는다 — 편집할 때만 `인사이트` 라벨이 보이고 정작
-        # 광고주가 보는 화면에는 제목 없는 본문만 떨어지 있었다.
+        # 광고주가 보는 화면에는 제목 없는 본문만 떨어져 있었다.
         st.markdown('<div class="insight-head">인사이트</div>',
                     unsafe_allow_html=True)
         st.markdown(f'<div class="note-body">{body}</div>', unsafe_allow_html=True)

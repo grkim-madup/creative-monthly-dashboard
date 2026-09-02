@@ -80,8 +80,20 @@ class TestRows:
         """행이 비면 표가 한 줄(전체 합계)이 되어 무엇을 보는지 알 수 없다."""
         assert pivot_frame(frame(), [], ["cost"]).columns.tolist()[:2] == DEFAULT_PIVOT_ROWS
 
-    def test_row_values_narrow_the_rows(self):
+    def test_rows_do_not_narrow_values(self):
+        """행은 값을 좁히지 않는다 — **좁히는 자리는 필터 하나뿐**이다.
+
+        행마다 값 선택을 붙였더니 필터와 하는 일이 같아져서 "왜 두 군데서 좁히나"가
+        됐다(사용자 지적). 시트 피벗도 행에는 값 선택기가 없다. 예전 저장분의
+        `values` 키는 받아만 두고 무시한다.
+        """
         table = pivot_frame(frame(), [{"field": "format", "values": ["VID"]}], ["cost"])
+        assert set(table["format"]) == {"VID", "IMG"}
+
+    def test_narrowing_is_done_with_a_filter_on_the_same_field(self):
+        """행 필드에 필터를 걸 수 있다 — 자리가 하나면 겹치는 게 아니라 유일한 방법이다."""
+        table = pivot_frame(frame(), ["format"], ["cost"],
+                            filters={"format": ["VID"]})
         assert list(table["format"]) == ["VID"]
 
     def test_missing_row_values_become_unclassified_not_dropped(self):
@@ -161,3 +173,38 @@ class TestMinCost:
 
     def test_empty_input_is_safe(self):
         assert pivot_frame(frame().iloc[0:0], ["ad"], ["cost"]).empty
+
+
+class TestIncludeAds:
+    """필터는 교집합이라 "조건에 맞는 소재 + 손으로 고른 소재"를 표현할 수 없다.
+
+    실제 리포트도 대상 소재를 파일명으로 나열하는 칸을 따로 둔다(8월 시트 148~175행).
+    """
+
+    def test_manually_picked_ads_are_added_to_the_filter_result(self):
+        table = pivot_frame(frame(), ["ad"], ["cost"],
+                            filters={"extra_info_tag": ["thumb"]},
+                            include_ads=["a2"])
+        assert set(table["ad"]) == {"a1", "a2"}          # 필터는 a1만 잡는다
+
+    def test_it_is_a_union_not_an_intersection(self):
+        only_filter = pivot_frame(frame(), ["ad"], ["cost"],
+                                  filters={"extra_info_tag": ["thumb"]})
+        with_extra = pivot_frame(frame(), ["ad"], ["cost"],
+                                 filters={"extra_info_tag": ["thumb"]},
+                                 include_ads=["a2"])
+        assert with_extra["cost"].sum() > only_filter["cost"].sum()
+
+    def test_an_ad_already_in_the_filter_is_not_double_counted(self):
+        table = pivot_frame(frame(), ["ad"], ["cost"],
+                            filters={"extra_info_tag": ["thumb"]},
+                            include_ads=["a1"])
+        assert table[table["ad"] == "a1"].iloc[0]["cost"] == 1000
+
+    def test_unknown_ad_names_are_ignored(self):
+        table = pivot_frame(frame(), ["ad"], ["cost"], include_ads=["없는소재"])
+        assert set(table["ad"]) == {"a1", "a2"}
+
+    def test_empty_list_changes_nothing(self):
+        assert pivot_frame(frame(), ["ad"], ["cost"], include_ads=[])[
+            "cost"].sum() == 1100
