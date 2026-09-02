@@ -1206,15 +1206,19 @@ def contrast_verdict(table: pd.DataFrame) -> str:
     return f"앞단 {words[front]} · 뒷단 {words[back]}"
 
 
-#: 소재 **이름에서 파생된** 차원. 이 필터는 "어떤 소재냐"를 좁히므로, 대조군은
-#: "그 소재가 아닌 소재"가 된다.
-CREATIVE_FIELDS = frozenset({
-    "ad", "title_kr", "creative_type", "format", "size", "orientation",
-    "producer_group", "usp", "extra_info_tag",
-})
 #: 행 단위 집행 조건. 이 필터는 **비교의 범위**다 — 대조군도 같은 범위 안이어야 한다.
 #: (매체 TikTok으로 좁혔는데 대조군에 Meta 행이 섞이면 "같은 조건"이 아니다.)
 SCOPE_FIELDS = frozenset({"media", "os", "ua_type", "month"})
+
+#: 소재를 고르는 차원. 이 필터는 "어떤 소재냐"를 좁히므로, 대조군은
+#: "그 소재가 아닌 소재"가 된다.
+#:
+#: ⚠ 손으로 나열하지 않는다. 예전에는 목록을 직접 적었는데, `mix_group`을 새 차원으로
+#:   추가하면서 여기 넣는 것을 잊었다 — 그 필드는 두 집합 어디에도 없게 되어
+#:   `contrast_split`이 "소재를 좁힌 게 없다"고 판단하고 **대조군을 못 만들었다**
+#:   (규리님: "왜 mix 소재는 대조군 못 만들어?"). 차원에서 집행 조건을 뺀 나머지로
+#:   정의하면 새 차원이 자동으로 이쪽에 들어와 같은 사고가 재발하지 않는다.
+CREATIVE_FIELDS = frozenset(set(DIMENSION_COLUMNS) - SCOPE_FIELDS)
 
 
 def contrast_split(scope: pd.DataFrame, filters: dict | None,

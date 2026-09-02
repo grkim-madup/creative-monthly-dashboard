@@ -961,7 +961,21 @@ with month_slot:
     )
 
 # 로그인이 없으므로 브라우저 세션이 곧 편집자 신원이다
-st.session_state.setdefault("editor_token", uuid4().hex)
+# 편집 잠금의 소유자.
+#
+# 예전에는 **세션마다 새로 뽑는 uuid**였다(로그인이 없던 시절 설계). 그래서 혼자
+# 쓰는데도 재배포·새로고침·새 탭·웹소켓 재접속마다 토큰이 바뀌어, 방금까지 내가
+# 쥐고 있던 잠금이 "다른 창에서 편집 중"으로 보였다(규리님: "나만 로그인하고 있는데?").
+#
+# 로그인이 붙었으니 **계정으로 잡는다.** 같은 사람이면 어디서 열어도 자기 잠금을
+# 그대로 이어받고, 다른 사람일 때만 막힌다.
+# 비밀번호 게이트만 있는 배포판(Streamlit Cloud 백업)은 이메일이 없으므로 예전처럼
+# 세션 토큰으로 떨어진다 — 그쪽은 애초에 사내만 들어온다.
+_editor_email = auth.current_editor()
+if _editor_email:
+    st.session_state["editor_token"] = f"user:{_editor_email.lower()}"
+else:
+    st.session_state.setdefault("editor_token", uuid4().hex)
 # 편집은 매드업 계정만 — 광고주(`webtoonscorp.com`)에게는 토글 자체를 보여주지 않는다.
 # 버튼만 숨기고 편집 경로를 열어두면 세션 상태를 만지는 것만으로 들어갈 수 있으니,
 # `edit_mode`를 아예 False로 못 박는다.
@@ -2436,14 +2450,16 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
     spans: list[dict[str, int]] = []
 
     for index, card in enumerate(cards):
-        share = (f"소재 {card['ads']}개 · 소진 {card['share']:.1%}"
-                 if card["share"] is not None else f"소재 {card['ads']}개")
         # 이 셀만 마크업을 직접 넣는다(`html_columns`) — 매체 색 점과 판정 문구.
         # 값은 전부 우리가 만든 것이고 밖에서 온 문자열은 매체명뿐이라 이스케이프한다.
+        #
+        # ⚠ 예전에는 `소재 N개 · 소진 X%`도 여기 찍었는데, 같은 블록의 요약 카드에
+        #   소재 수가 있고 소진 비중은 바로 아래 `차이` 줄에 있어 **중복**이었다
+        #   (규리님 지적). 같은 숫자를 두 곳에 두면 나중에 한쪽만 바뀐다.
         media_cell = (
             f'<span class="ct-dot" style="background:{media_color(card["media"])}">'
             f"</span><b>{html.escape(card['media'])}</b>"
-            f'<span class="ct-sub">{html.escape(card["verdict"])}<br>{share}</span>'
+            f'<span class="ct-sub">{html.escape(card["verdict"])}</span>'
         )
 
         subject_row = [media_cell, label]
@@ -2459,6 +2475,7 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
                 # 그냥 `0.7%`로 두면 "7% 줄었다"로 읽힌다 — 볼륨은 변화율이 아니라
                 # 전체 중 이 소재군이 차지한 **비중**이다. 단위를 값 옆에 못 박는다.
                 delta_row.append(f"비중 {line['share']:.1%}")
+                # 판정이 없는 칸은 회색 글자만. 바탕은 `.ct-delta`의 CSS가 깐다.
                 delta_style[name] = "color:#9aa4ae"
             elif line["delta"] is None or pd.isna(line["delta"]):
                 delta_row.append("-")
@@ -2486,11 +2503,6 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         cell_styles=styles,
         html_columns={"매체"},
         row_spans=spans,
-    )
-    st.markdown(
-        '<div class="tbl-note">차이 — 비율 지표는 <b>%p</b>, 금액·건수 지표는 '
-        "<b>%</b>입니다. 노출·클릭·설치는 좋고 나쁨이 아니라 <b>비중</b>을 표시합니다."
-        "</div>", unsafe_allow_html=True,
     )
 
 
@@ -3120,15 +3132,24 @@ def cancel_confirm(block: dict, month: int, owner: str) -> None:
     이 프로젝트에서 코멘트 유실은 복구 경로가 없는 실패라(`3ece147`), 한 번 확인받는다.
     """
     block_id = block["id"]
-    status_row("warn", "저장하지 않고 편집을 끝낼까요?",
-               "이번에 쓴 글·표 설정·인사이트 초안은 **저장되지 않고 사라집니다.** "
-               "남겨두려면 `완료`를 누르세요.")
-    keep, discard = st.columns([1, 1])
-    if keep.button("계속 편집", key=f"cancel_no_{block_id}", use_container_width=True):
+    # 한 줄로 줄인다(2026-09-03) — 예전에는 `status_row`로 제목+본문 박스를 띄우고
+    # 버튼 두 개를 화면 폭 전체로 깔아서, 확인창이 정작 편집 화면보다 커 보였다.
+    # ⚠ `status_row`는 텍스트를 이스케이프한다. 예전 문구의 `**...**`가 별표 그대로
+    #   화면에 찍혀 있었다(규리님 스샷에서 확인). 마크업을 쓰지 않는다.
+    st.markdown(
+        '<div class="cancel-ask">저장하지 않고 끝내면 <b>이번에 쓴 글·표 설정·'
+        "인사이트 초안이 사라집니다.</b></div>",
+        unsafe_allow_html=True,
+    )
+    # 버튼을 오른쪽에 작게 모은다 — `취소`/`완료`가 있던 자리 바로 아래라
+    # 눈이 움직이지 않는다. 안전한 쪽(`계속 편집`)을 오른쪽 끝에 둔다.
+    _, discard_col, keep_col = st.columns([4, 1.6, 1.3], vertical_alignment="center")
+    if keep_col.button("계속 편집", key=f"cancel_no_{block_id}",
+                       use_container_width=True):
         st.session_state.pop(f"askcancel_{block_id}", None)
         rerun_local()
-    if discard.button("저장 안 하고 끝내기", key=f"cancel_yes_{block_id}",
-                      use_container_width=True):
+    if discard_col.button("저장 안 하고 끝내기", key=f"cancel_yes_{block_id}",
+                          use_container_width=True):
         # 잠금을 놓고 위젯 상태를 비운다 — 저장은 하지 않는다.
         # `clear_editor_state`가 초안·조건 행·뷰 목록까지 함께 지우므로, 다음에 열면
         # 저장소에 있는 내용으로 다시 시작한다.
@@ -3180,7 +3201,16 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
             cancel_confirm(block, month, owner)
 
     if views:
-        render_block_kpis(views, month)
+        # 편집 중에는 **화면 위젯의 현재 값**으로 카드를 계산한다.
+        # `views_editor`는 표 목록만 다루고 필터·행·값은 표 바로 위(`render_view`)에서
+        # 그리므로, 저장된 뷰를 그대로 쓰면 카드가 한 박자 늦는다 — 필터를 `MIX 소재`로
+        # 걸었는데 카드가 그 달 전체(362개 · ₩204,261,581)를 보여줬다(규리님 스샷).
+        # 저장 경로(`view_from_widgets`)와 같은 함수를 쓰므로 카드·표·저장이 늘 일치한다.
+        card_views = (
+            [view_from_widgets(v, f"{block_id}_{v['id']}") for v in views]
+            if editing else views
+        )
+        render_block_kpis(card_views, month)
     for view in views:
         render_view(view, month, f"sec5_{block_id}", editing=editing)
 

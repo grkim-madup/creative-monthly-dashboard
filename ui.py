@@ -1292,7 +1292,18 @@ section[data-testid="stSidebar"] h2 {
    `rowspan`으로 셀을 병합하지 않는다: 병합하면 행마다 스타일을 넣는 지금 구조
    (`cell_styles[행][컬럼]`)가 어긋나고, 나중에 셀 강조를 붙일 때도 막힌다. */
 .rt tr.ct-grp td { border-top: 2px solid #cfd6dd; }
-.rt tr.ct-delta td { border-top: 1px solid var(--line); }
+/* 차이 줄 강조(B안, 2026-09-03 규리님 선택) — 줄 전체를 한 톤 낮은 바탕에 얹고
+   왼쪽에 짧은 레일을 세운다. 세 줄 중 마지막이 결론이라 덩어리로 잡혀야 한다.
+   ⚠ 초록·빨강 칸은 이 바탕 위에 얹히면 색이 두 겹이 된다. 그래서 값 칸의 배경은
+     인라인 스타일(`cell_styles`)이 이기게 두고, 여기서는 **바탕이 없는 칸에만**
+     회색을 깐다 — `background-color`를 !important로 걸지 않는 이유다. */
+.rt tbody tr.ct-delta td {
+  background-color: #f7f9fa;
+  border-top: 1px solid #dde3e9;
+  border-bottom: 1px solid #dde3e9;
+}
+/* 레일은 첫 칸(구분) 안쪽 그림자로 그린다 — border를 쓰면 표의 세로선과 겹친다. */
+.rt tbody tr.ct-delta td:first-child { box-shadow: inset 3px 0 0 #6b7280; }
 /* 매체 셀만 마크업을 직접 넣는다(`report_table`의 `html_columns`).
    `cell_class`는 정렬 클래스만 붙이므로 컬럼 이름으로는 못 잡는다 — 대조군 표에서
    매체는 항상 첫 컬럼이라 `:first-child`로 겨냥한다. */
@@ -1307,6 +1318,13 @@ section[data-testid="stSidebar"] h2 {
    1px이고, 그 1px은 여기서 더 줄지 않는다(`height: 0 !important`를 걸어도 계산값이
    1px로 남는 것을 실측했다 — 안 먹는 규칙을 남기면 다음에 헤맨다). 눈에 보이지 않는
    높이라 그대로 두고, 여백만 없애 다음 요소가 밀리지 않게 한다. */
+/* 취소 확인 한 줄 — 박스도 아이콘도 없이 글 한 줄이다. 되돌릴 수 없는 동작이라
+   문구는 남기되, 확인창이 편집 화면보다 커 보이지 않게 최소로 둔다. */
+.cancel-ask {
+  font-size: 11.5px; color: #8a1f1f; text-align: right;
+  margin: 2px 0 4px; line-height: 1.5;
+}
+.cancel-ask b { font-weight: 600; }
 .st-key-sbcollapse { overflow: hidden !important; margin: 0 !important; }
 /* 병합된 매체 셀 — 세 줄 가운데에 오게 한다(위로 붙으면 빈 칸이 크게 남는다). */
 .rt tbody td[rowspan] { vertical-align: middle; border-right: 1px solid var(--line); }
@@ -1586,25 +1604,32 @@ def footnote(text: str) -> None:
 
 
 def collapse_sidebar_once() -> None:
-    """이 브라우저 탭에서 **한 번만** 사이드바를 접는다.
+    """랜딩할 때 사이드바를 접는다. **Streamlit 세션당 한 번**만 실행한다.
 
     왜 필요한가: `st.set_page_config(initial_sidebar_state="collapsed")`는
     **세션의 첫 렌더에만** 적용된다. 그런데 Google 로그인은 코드 교환을 마친 뒤
     `st.rerun()`으로 같은 세션을 이어가고, 그 순간 사이드바가 "내용 없음 →
     내용 있음"으로 바뀐다. Streamlit은 그때 사이드바를 **펼친다** — 그래서 로그인해서
-    들어오면 항상 열린 채로 보였다(규리님 지적). 로컬(로그인 없음)에서는 첫 렌더부터
-    내용이 있어서 재현되지 않는다.
+    들어오면 열린 채로 보였다. 로컬(로그인 없음)에서는 첫 렌더부터 내용이 있어서
+    재현되지 않는다.
 
     전체 새로고침으로 해결할 수 없다 — `st.session_state`는 브라우저 새로고침을
     넘기지 못해서 방금 한 로그인이 풀린다.
 
-    `st.markdown`의 `<script>`는 실행되지 않는다(살균된다). 그래서 iframe 컴포넌트
-    (`components.html`)로 넣고 `window.parent`를 통해 접기 버튼을 누른다 — 실제 DOM에서
-    이 선택자가 동작하는 것을 확인했다(펼침 aria-expanded=true → 클릭 → false).
+    `st.markdown`의 `<script>`는 실행되지 않는다(살균된다). 그래서 iframe
+    (`st.iframe`)으로 넣고 `window.parent`를 통해 접기 버튼을 누른다.
 
-    `sessionStorage`로 탭당 한 번만 실행한다. 안 그러면 규리님이 일부러 열어도
-    다음 리런에서 다시 닫혀 사이드바를 쓸 수 없다.
+    ⚠ 처음에는 `sessionStorage`로 "탭당 한 번"으로 묶었다. 그랬더니 **두 번째
+      랜딩부터는 접히지 않았다**(규리님: "왜 사이드바는 다시 기본으로 노출되어 있지?").
+      같은 탭에서 다시 접속하면 플래그가 이미 남아 있기 때문이다.
+      지금은 **세션 단위**로 묶는다 — 랜딩(새 접속·로그인·재접속)마다 세션이 새로
+      시작되므로 그때마다 접히고, 세션 안에서는 다시 실행되지 않아 규리님이 일부러
+      열어 둔 사이드바를 닫지 않는다.
     """
+    if st.session_state.get("_sb_collapsed"):
+        return
+    st.session_state["_sb_collapsed"] = True
+
     # `st.components.v1.html`은 2026-06-01 이후 제거 예고가 붙었다(실행 시 경고를
     # 찍는다). `st.iframe`이 있으면 그걸 쓰고, 없는 버전에서는 예전 API로 떨어진다.
     render = getattr(st, "iframe", None) or st.components.v1.html
@@ -1615,28 +1640,19 @@ def collapse_sidebar_once() -> None:
 (function () {
   var doc = window.parent && window.parent.document;
   if (!doc) return;
-  try {
-    if (window.parent.sessionStorage.getItem("sbCollapsedOnce")) return;
-  } catch (e) { /* 저장소가 막힌 브라우저 — 그냥 한 번 접는다 */ }
-
   var tries = 0;
   var timer = setInterval(function () {
     tries += 1;
     var bar = doc.querySelector('[data-testid="stSidebar"]');
     var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button');
+    // 이미 접혀 있으면(로컬처럼 첫 렌더부터 내용이 있던 경우) 할 일이 없다.
     if (bar && bar.getAttribute("aria-expanded") === "false") {
-      // 이미 접혀 있다(로컬처럼 첫 렌더부터 내용이 있던 경우) — 할 일 없음.
-      done();
+      clearInterval(timer);
       return;
     }
-    if (bar && btn) { btn.click(); done(); return; }
+    if (bar && btn) { btn.click(); clearInterval(timer); return; }
     if (tries > 40) { clearInterval(timer); }   // 4초 뒤 포기
   }, 100);
-
-  function done() {
-    clearInterval(timer);
-    try { window.parent.sessionStorage.setItem("sbCollapsedOnce", "1"); } catch (e) {}
-  }
 })();
 </script>
             """,

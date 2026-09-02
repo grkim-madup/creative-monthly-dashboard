@@ -81,3 +81,26 @@ def test_손으로_더한_소재는_필터가_있을_때만_대상에_합쳐진�
 def test_두_필드_집합은_겹치지_않는다():
     """한 필드가 양쪽에 있으면 유지도 하고 뒤집기도 해서 결과가 정의되지 않는다."""
     assert not CREATIVE_FIELDS & SCOPE_FIELDS
+
+
+def test_모든_차원이_두_집합_중_한_곳에_들어간다():
+    """새 차원을 추가하면서 이 분류를 빠뜨리면 그 필터로는 **대조군이 안 만들어진다.**
+
+    실제로 `mix_group`을 추가하고 여기 넣지 않아 "대조군을 만들 수 없습니다"가 떴다
+    (규리님이 화면에서 잡았다). 예외도 에러도 나지 않는 유형이라 테스트로 막는다.
+    """
+    from creative_data import DIMENSION_COLUMNS
+
+    unclassified = set(DIMENSION_COLUMNS) - CREATIVE_FIELDS - SCOPE_FIELDS
+    assert not unclassified, f"두 집합 어디에도 없는 차원: {sorted(unclassified)}"
+
+
+def test_MIX_필터로_대조군이_만들어진다():
+    """`mix_group`은 소재를 고르는 차원이므로 뒤집혀야 한다."""
+    scope = pd.DataFrame([
+        {"ad": "A", "media": "Meta", "mix_group": "MIX", "cost": 100.0},
+        {"ad": "B", "media": "Meta", "mix_group": "일반", "cost": 200.0},
+    ])
+    subject, rest = contrast_split(scope, {"mix_group": ["MIX"]}, [])
+    assert set(subject["ad"]) == {"A"}
+    assert set(rest["ad"]) == {"B"}

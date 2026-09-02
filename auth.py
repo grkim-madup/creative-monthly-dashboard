@@ -180,3 +180,15 @@ def can_edit() -> bool:
         return False
     domain = str(email).rsplit("@", 1)[-1].lower()
     return domain in EDITOR_DOMAINS
+
+
+def current_editor() -> str | None:
+    """편집 잠금에 쓸 사람 식별자(이메일). Google 로그인이 꺼져 있으면 None.
+
+    잠금은 "같은 사람인가"만 알면 되므로 이메일 하나로 충분하다. 화면에 이름을
+    노출하지는 않는다 — 잠금 배지는 `다른 사람이 편집 중`으로만 말한다.
+    """
+    if not google_login.is_configured():
+        return None
+    email = google_login.current_email()
+    return str(email) if email else None
