@@ -928,14 +928,11 @@ section[data-testid="stSidebar"] h2 {
   color: var(--faint) !important; letter-spacing: .12em;
   text-transform: uppercase; margin-top: 22px !important;
 }
-/* 사이드바 접기/펼치기 버튼 — Streamlit 기본값은 hover해야 나타나서 있는 줄도 모른다.
-   항상 보이는 버튼으로 고정한다(접었을 때 다시 여는 버튼도 같이). */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="stSidebarCollapsedControl"] {
-  visibility: visible !important;
-  opacity: 1 !important;
-  display: flex !important;
-}
+/* ⚠ 예전에 이 자리에서 두 버튼을 `opacity: 1 !important`로 **항상 보이게** 고정했다.
+   위쪽 "커서를 가져다 댈 때만" 규칙보다 뒤에 있고 !important까지 붙어서 그쪽을
+   통째로 무력화했다(실제로 규리님이 화면에서 잡아냈다). 지금은 **모양만** 정하고
+   보이는 시점은 위 규칙 한 곳에서만 다룬다. 여기에 opacity/visibility/display를
+   다시 넣지 말 것. */
 .stApp [data-testid="stSidebarCollapseButton"] button[data-testid="stBaseButton-headerNoPadding"],
 .stApp [data-testid="stSidebarCollapsedControl"] button[data-testid="stBaseButton-headerNoPadding"] {
   background-color: #ffffff !important;
@@ -954,8 +951,14 @@ section[data-testid="stSidebar"] h2 {
   background-color: #f2fdf7 !important;
   color: #00A94C !important;
 }
-/* 접힌 상태에서 다시 여는 버튼은 본문 위에 떠 있으므로 조금 더 눈에 띄게 */
 [data-testid="stSidebarCollapsedControl"] { z-index: 20; }
+/* 접힌 채로 시작하므로 이 버튼이 리포트 위에 떠 있다. 화면 왼쪽 위에 커서를
+   가져가면 나타난다 — 광고주 화면에 조작 버튼이 상시 보이지 않게. */
+[data-testid="stSidebarCollapsedControl"]:hover,
+[data-testid="stSidebarCollapsedControl"]:focus-within,
+[data-testid="stAppViewContainer"]:hover [data-testid="stSidebarCollapsedControl"]:hover {
+  opacity: 1;
+}
 
 .sb-brand {
   display: flex; align-items: center; gap: 9px;
@@ -1264,19 +1267,6 @@ section[data-testid="stSidebar"] h2 {
 }
 .ct-meta { color: var(--muted); font-size: 11.5px; }
 
-/* 썸네일 줄 — 가로 스크롤은 이 안에서만 일어난다(본문은 절대 흐르지 않게). */
-.th-strip {
-  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
-}
-.th-card {
-  margin: 0; flex: 0 0 auto; width: 104px;
-  border: 1px solid var(--line); border-radius: 3px; background: #fff;
-}
-.th-card img { display: block; width: 100%; height: 132px; object-fit: cover; }
-.th-card figcaption {
-  padding: 4px 5px; font-size: 10.5px; line-height: 1.3; color: var(--muted);
-  word-break: break-all;
-}
 
 </style>
 

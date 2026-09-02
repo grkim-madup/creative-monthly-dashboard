@@ -2459,16 +2459,20 @@ def fmt_metric(metric: str, value) -> str:
     return f"{value:,.0f}"
 
 
-def render_thumbs(scope: pd.DataFrame, key: str, limit: int = 12) -> None:
-    """표에 담긴 소재의 첫 프레임을 한 줄로 보여준다.
+def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
+    """표에 담긴 소재를 2번 섹션과 **같은 카드 격자**로 보여준다.
 
-    소진 큰 순으로 자른다 — 소재가 300개인 표에서 전부 받으면 화면이 안 뜬다.
+    전용 레이아웃을 따로 만들었다가 세로로 한 줄씩 쌓여 리포트가 길어졌다(규리님 지적).
+    `.mat-cards` / `.mat-card`를 그대로 쓰면 저절로 같은 톤이 되고, 규칙이 한 곳에만
+    있어 한쪽만 바뀌는 일도 없어진다.
+
+    소진 큰 순으로 자른다 — 소재 300개인 표에서 전부 받으면 화면이 안 뜬다.
     Drive 조회·프레임 추출이 몇 초 걸리므로 **기본은 꺼져 있다**(뷰의 `thumbs`).
     """
     if scope.empty or "ad" not in scope.columns:
         return
-    top = (scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
-           .head(limit).index.tolist())
+    ranked = scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
+    top = ranked.head(limit)
     try:
         exact, flat = _drive_material_index()
     except Exception as error:  # noqa: BLE001
@@ -2477,29 +2481,47 @@ def render_thumbs(scope: pd.DataFrame, key: str, limit: int = 12) -> None:
 
     # spec 모양은 2번 섹션 카드와 **같아야** 한다 — 다르면 캐시가 갈라져 같은 소재를
     # 두 번 받는다(`_drive_material_thumbnails`는 파일 id 단위로 캐시한다).
-    specs, labels = [], {}
-    for ad in top:
+    entries, specs = [], []
+    for ad, spend in top.items():
         matches = drive_materials.find_matches(str(ad), exact, flat)
-        if matches:
-            hit = matches[0]
-            file_id = hit.get("id", "")
-            specs.append((file_id, hit.get("name", ""), hit.get("thumbnailLink", "")))
-            labels[file_id] = str(ad)
-    if not specs:
-        st.markdown('<div class="tbl-note">이 표의 소재와 이름이 맞는 Drive 파일을 '
-                    "찾지 못했습니다.</div>", unsafe_allow_html=True)
-        return
+        match = matches[0] if matches else None
+        entries.append({"ad": str(ad), "cost": float(spend), "match": match})
+        if match:
+            specs.append((match.get("id", ""), match.get("name", ""),
+                          match.get("thumbnailLink", "")))
 
-    thumbnails = _drive_material_thumbnails(tuple(specs))
-    cards = "".join(
-        f'<figure class="th-card"><img src="{uri}" alt="">'
-        f'<figcaption>{html.escape(labels[file_id].split("_", 2)[-1][:38])}'
-        f"</figcaption></figure>"
-        for file_id, _n, _t in specs
-        if (uri := thumbnails.get(file_id))
-    )
-    if cards:
-        st.markdown(f'<div class="th-strip">{cards}</div>', unsafe_allow_html=True)
+    thumbnails = _drive_material_thumbnails(tuple(specs)) if specs else {}
+
+    cards = []
+    for entry in entries:
+        match = entry["match"]
+        meta = (
+            f'<div class="mat-meta">'
+            f'<div class="mat-cap">소진액</div>'
+            f'<div class="mat-value">₩{entry["cost"]:,.0f}</div>'
+            f'<div class="mat-name">{html.escape(entry["ad"])}</div>'
+            f"</div>"
+        )
+        if not match:
+            cards.append(f'<div class="mat-card is-dead"><div class="mat-thumb">'
+                         f'<div class="mat-noimg">Drive에 없음</div></div>{meta}</div>')
+            continue
+        uri = thumbnails.get(match.get("id", ""))
+        thumb = (f'<img src="{uri}" alt="">' if uri
+                 else '<div class="mat-noimg">썸네일 없음</div>')
+        url = html.escape(match.get("webViewLink", ""), quote=True)
+        cards.append(
+            f'<a class="mat-card" href="{url}" target="_blank" rel="noopener">'
+            f'<span class="mat-ext" aria-hidden="true">&#8599;</span>'
+            f'<div class="mat-thumb">{thumb}</div>{meta}</a>'
+        )
+
+    st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>',
+                unsafe_allow_html=True)
+    hidden = len(ranked) - len(entries)
+    if hidden > 0:
+        st.markdown(f'<div class="tbl-note">소진 상위 {len(entries)}개만 보여줍니다 '
+                    f"(나머지 {hidden:,}개 생략).</div>", unsafe_allow_html=True)
 
 
 def render_view(view: dict, month: int, key_prefix: str,
@@ -2526,7 +2548,7 @@ def render_view(view: dict, month: int, key_prefix: str,
     highlight_key = f"{key_prefix}_{view['id']}"
     if view["thumbs"]:
         render_thumbs(filtered_scope(named_overview, view["filters"],
-                                     view["include_ads"]), highlight_key)
+                                     view["include_ads"]))
     if view["contrast"]:
         render_contrast(view, month, key_prefix)
         return
