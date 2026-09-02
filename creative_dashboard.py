@@ -2083,12 +2083,6 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
             status_row("warn", "표시할 조합이 없습니다",
                        "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
             return
-        if axis == "extra_info_tag":
-            status_row(
-                "warn", "Extra Info는 태그별로 펼쳐 봅니다",
-                "`text-thumb`처럼 태그가 여러 개인 소재는 각 태그에 모두 들어갑니다. "
-                "따라서 태그별 합계를 전부 더하면 전체 소진액보다 커집니다 — 태그 간 비교용입니다.",
-            )
         if view["chart"]:
             metric = view["metric"] if view["metric"] in COMPARE_METRICS else "CPI"
             st.plotly_chart(attribute_chart(table, axis, metric), width="stretch",
