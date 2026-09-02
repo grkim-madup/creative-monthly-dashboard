@@ -656,6 +656,27 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-blocktitle_"] { margin-bottom: 2px; }
 
+/* 피벗 편집기 — 행 / 값 / 필터 세 줄. 라벨은 좁고 조용하게, 칩이 주인공이다. */
+.pv-lab {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  letter-spacing: .04em; margin: 8px 0 3px;
+}
+.pv-lab span { font-weight: 400; color: var(--faint); margin-left: 6px; }
+/* 행 칩은 '묶기', 필터 칩은 '걸러내기' — 역할이 색으로 보이게 한 단계만 나눈다.
+   액센트(브랜드 그린)는 성과 강조 자리이므로 여기서는 쓰지 않는다. */
+[class*="st-key-pvrows_"] [data-baseweb="tag"] {
+  background: #eef4ff !important; border-color: #d7e4fa !important;
+}
+[class*="st-key-pvfilters_"] [data-baseweb="tag"] {
+  background: #fff7ed !important; border-color: #f5e0c3 !important;
+}
+/* 편집기는 표 바로 위에 붙는 도구다 — 표와 구분되되 튀지 않게 얇은 세로선만. */
+[class*="st-key-te_"] {
+  border-left: 2px solid var(--line) !important; padding: 4px 0 8px 14px !important;
+  margin-bottom: 8px;
+}
+[class*="st-key-pv_"] { padding: 0 !important; border: none !important; }
+
 /* 표(뷰) 요약 줄 — 안 고칠 때는 이 한 줄만 읽으면 된다. */
 .vs { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .vs-t { font-size: 13.5px; font-weight: 700; color: var(--ink); }

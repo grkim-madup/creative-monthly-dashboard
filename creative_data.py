@@ -881,6 +881,9 @@ def dumbbell_frame(table: pd.DataFrame, axis: str, metric: str) -> pd.DataFrame:
 DIMENSION_COLUMNS = [
     "ad", "media", "os", "title_kr", "creative_type", "format",
     "size", "orientation", "producer_group", "usp",
+    # 태그는 원본에 컬럼이 없다 — `explode_extra_info`로 펼친 뒤에 생긴다.
+    # 그래도 **차원**이므로 여기 둔다(`pivot_frame`이 필요할 때 알아서 펼친다).
+    "extra_info_tag",
 ]
 
 #: **지표** 컬럼 — 집계 결과를 보여줄 뿐 집계 키에 영향을 주지 않는다.
@@ -934,3 +937,114 @@ def pick_columns(df, chosen: list[str] | None, always: list[str] | None = None,
     # 목록에 없는 컬럼(집계 축 등)은 always로 들어오지 않았다면 버린다 — 화면 순서를
     # 정의할 수 없는 컬럼이 끼면 표가 예측 불가능해진다.
     return ordered
+
+
+# ---------------------------------------------------------------------------
+# 피벗 (순수 함수 — pytest 대상)
+#
+# 구글 시트 피벗 편집기와 같은 모델이다: **행**(묶는 기준) / **값**(지표) / **필터**(범위).
+# 예전에는 이 셋이 `분석 축` · `표시할 컬럼` · `조건`으로 흩어져 있어서, 하나를 만지면
+# 다른 쪽과 역할이 겹쳐 보였다(2026-09-02 사용자 지적).
+#
+#   행에서 매체를 빼면 → 가려지는 게 아니라 매체를 합쳐 다시 집계된다.
+#   행에 소재명을 넣으면 → 소재 목록이 되고, 빼면 집계표가 된다(별도 '표 종류'가 필요 없다).
+
+#: 행에 넣을 수 있는 것 = 집계 키가 될 수 있는 것.
+PIVOT_ROW_FIELDS = list(DIMENSION_COLUMNS)
+
+#: 행이 비어 있을 때 쓰는 기본값. 아무것도 없으면 표가 한 줄(전체 합계)이 되어
+#: 무엇을 보는 표인지 알 수 없다.
+DEFAULT_PIVOT_ROWS = ["ad", "media"]
+DEFAULT_PIVOT_VALUES = ["cost", "impression", "total install", "CTR", "CPI",
+                        "D0 read CVR", "D0 coin CVR"]
+
+
+def normalize_rows(rows) -> list[dict]:
+    """행 정의를 `[{"field":..., "values":[...]}, ...]` 모양으로 맞춘다.
+
+    문자열만 담긴 예전/간략 형식(`["ad", "media"]`)도 받는다.
+    같은 필드가 두 번 오면 뒤엣것을 버린다 — 같은 축으로 두 번 묶을 수는 없다.
+    """
+    result: list[dict] = []
+    seen: set[str] = set()
+    for row in (rows or []):
+        if isinstance(row, str):
+            row = {"field": row}
+        field = str((row or {}).get("field") or "")
+        if not field or field in seen or field not in PIVOT_ROW_FIELDS:
+            continue
+        seen.add(field)
+        values = [str(v) for v in ((row or {}).get("values") or [])]
+        result.append({"field": field, "values": values})
+    return result
+
+
+def pivot_frame(
+    df: pd.DataFrame,
+    rows,
+    values: list[str] | None = None,
+    filters: dict | None = None,
+    min_cost: float = 0.0,
+) -> pd.DataFrame:
+    """행으로 묶고 값 컬럼만 남긴 표.
+
+    - **필터가 먼저**, 그다음 집계, 그다음 행 값 추리기. 순서가 뒤바뀌면 비율이 틀린다
+      (부분집합에서 다시 계산해야 하는데 전체에서 계산한 뒤 걸러내면 안 된다).
+    - `extra_info_tag`를 행에 넣으면 부르는 쪽이 아니라 **여기서 펼친다** — 빠뜨리면
+      태그 축이 조용히 빈 표가 된다.
+    - 결측은 버리지 않고 `미분류`로 묶는다. 버리면 합계가 조용히 안 맞는다.
+    """
+    rows = normalize_rows(rows) or normalize_rows(DEFAULT_PIVOT_ROWS)
+    fields = [r["field"] for r in rows]
+    metrics = list(values) if values else list(DEFAULT_PIVOT_VALUES)
+
+    frame = df
+    tag_filter: list[str] = []
+    for field, chosen in (filters or {}).items():
+        if not chosen:
+            continue
+        if field == "extra_info_tag" and field not in frame.columns:
+            # 태그는 펼치기 전에는 컬럼이 아니다. 그냥 건너뛰면 **필터가 통째로 무시된다**
+            # (실측: 소진 99만이어야 하는 표가 2억으로 나왔다). 펼친 프레임에서 해당
+            # **소재 이름**을 찾아 원본을 거른다 — 펼친 상태로 집계하면 중복 집계된다.
+            tag_filter = [str(v) for v in chosen]
+            continue
+        if field not in frame.columns:
+            continue
+        frame = frame[frame[field].astype(str).isin([str(v) for v in chosen])]
+
+    if tag_filter and "ad" in frame.columns:
+        exploded = explode_extra_info(frame)
+        matched = exploded[exploded["extra_info_tag"].astype(str).isin(tag_filter)]
+        frame = frame[frame["ad"].isin(matched["ad"].unique())]
+
+    if frame.empty:
+        return frame.iloc[0:0]
+
+    if "extra_info_tag" in fields and "extra_info_tag" not in frame.columns:
+        # 태그를 **행**으로 쓸 때는 펼쳐서 묶는다. 한 소재가 여러 태그에 들어가므로
+        # 태그별 합계를 전부 더하면 전체보다 커진다 — 태그 간 비교용이지 구성비가 아니다.
+        frame = explode_extra_info(frame)
+
+    keys = [f for f in fields if f in frame.columns]
+    if not keys:
+        return frame.iloc[0:0]
+
+    frame = frame.copy()
+    for key in keys:
+        frame[key] = frame[key].fillna("미분류").replace("", "미분류")
+
+    table = aggregate_by(frame, keys)
+    if table.empty:
+        return table
+
+    for row in rows:
+        if row["values"] and row["field"] in table.columns:
+            table = table[table[row["field"]].astype(str).isin(row["values"])]
+    if min_cost:
+        table = table[table["cost"].fillna(0) >= min_cost]
+    if table.empty:
+        return table
+
+    keep = keys + [m for m in SELECTABLE_COLUMNS if m in metrics and m in table.columns]
+    return table[keep].reset_index(drop=True)

@@ -46,12 +46,15 @@ from creative_data import (
     compare_periods,
     dumbbell_frame,
     explode_extra_info,
-    grouping_keys,
     metric_benchmark,
     month_options,
     pick_best_worst,
-    pick_columns,
-    SELECTABLE_COLUMNS,
+    normalize_rows,
+    pivot_frame,
+    DIMENSION_COLUMNS,
+    METRIC_COLUMNS,
+    DEFAULT_PIVOT_ROWS,
+    DEFAULT_PIVOT_VALUES,
     spend_pool,
     top_creatives,
 )
@@ -1836,7 +1839,8 @@ def insert_block_row(slot: str, position: int, block_type: str, default_title: s
                 rerun_local()
 
 
-def condition_editor(block_id: str, conditions: dict) -> dict:
+def condition_editor(block_id: str, conditions: dict,
+                     exclude: set[str] | None = None) -> dict:
     """조건 행 UI + 실시간 결과 요약. 조건 dict를 돌려준다.
 
     `block_id`는 이제 블록 id가 아니라 **뷰 단위 키**(`<block_id>_<view_id>`)다 —
@@ -1849,9 +1853,15 @@ def condition_editor(block_id: str, conditions: dict) -> dict:
     블록의 저장된 조건에서 시작하고, 위젯 키에는 반드시 block_id를 섞어 블록 간
     상태가 섞이지 않게 한다.
     """
+    # 축으로 쓰는 구분자는 여기서 못 고르게 한다 — 축 값은 축 옆에서만 정한다.
+    # 그러면 축(GROUP BY)과 조건(WHERE)이 겹치는 화면이 원리적으로 안 나온다.
+    exclude = set(exclude or ())
+    fields = [f for f in PIVOT_FIELDS if f not in exclude]
+
     rows_key = f"cond_rows_{block_id}"
     if rows_key not in st.session_state:
-        st.session_state[rows_key] = list(conditions.keys()) or [list(PIVOT_FIELDS)[0]]
+        st.session_state[rows_key] = [
+            f for f in conditions if f in fields] or [fields[0]]
 
     rows: list[str] = list(st.session_state[rows_key])
 
@@ -1881,7 +1891,7 @@ def condition_editor(block_id: str, conditions: dict) -> dict:
             )
             # 같은 구분자를 두 줄에 걸 이유가 없으니 다른 줄이 쓰는 것은 선택지에서 뺀다
             taken = set(rows) - {field}
-            available = [f for f in PIVOT_FIELDS if f not in taken]
+            available = [f for f in fields if f not in taken]
             # 선택이 바뀌어도 rerun을 부르지 않는다 — 위젯 상태와 되받아치며 무한 루프가 난다
             picked = label_col.selectbox(
                 "구분자", available,
@@ -1911,7 +1921,7 @@ def condition_editor(block_id: str, conditions: dict) -> dict:
                 dropped = position
 
         add_col = st.columns([3, 1], vertical_alignment="center")[0]
-        unused = [f for f in PIVOT_FIELDS if f not in active_rows]
+        unused = [f for f in fields if f not in active_rows]
         add_clicked = add_col.button(
             "+ 조건 추가", key=f"cond_add_{block_id}", disabled=not unused
         )
@@ -1972,16 +1982,63 @@ COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"]
 #: 빈 뷰를 만들 때의 기본값. 저장된 뷰에 없는 키는 여기서 채운다 — 나중에 필드를
 #: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
 VIEW_DEFAULTS = {
-    "label": "", "kind": "aggregate", "conditions": {}, "months": [],
-    "axis": "creative_type", "chart": False, "chart_kind": "", "metric": "CPI",
-    "top_n": 0,
-    # 표에 그릴 컬럼. **차원 컬럼은 곧 집계 키**라서, 빼면 가려지는 게 아니라
-    # 그 축을 합쳐 숫자가 다시 계산된다(피벗과 같은 동작).
-    # 비우면 기본 세트 — 빈 목록을 '컬럼 0개'로 읽으면 표가 통째로 사라진다.
-    "columns": [],
-    # kind == "compare" — 기간 두 개. 라벨은 사람이 붙인다(`방영 전 (4월 누적)`).
+    "label": "",
+    # 표 종류는 이제 `pivot`(행/값/필터) 또는 `compare`(기간 비교) 둘뿐이다.
+    # 예전의 `aggregate`/`list` 구분은 사라졌다 — 행에 소재명을 넣으면 목록,
+    # 빼면 집계표다. 별도 드롭다운으로 고를 필요가 없다.
+    "kind": "pivot",
+    #: 행 = 묶는 기준. `[{"field": ..., "values": [...]}]`.
+    #: 값을 지정하면 그 축에서 그 값들만 보여준다(비우면 전체).
+    "rows": [],
+    #: 값 = 보여줄 지표. 비우면 기본 세트 — 빈 목록을 '0개'로 읽으면 표가 사라진다.
+    "values": [],
+    #: 필터 = 표에 담을 범위. 행과 **다른 칸**이라 역할이 겹치지 않는다.
+    "filters": {},
+    "chart_kind": "", "metric": "CPI", "top_n": 0,
+    # 기간 비교 뷰용
     "periods": [], "metrics": [],
 }
+
+#: 예전 형식의 필드 — 지우지 않는다. 되돌리려면 코드만 되돌리면 되게 남겨 둔다.
+LEGACY_VIEW_FIELDS = ("axis", "axis_values", "conditions", "columns", "chart",
+                      "show_table")
+
+
+def migrate_view(view: dict) -> dict:
+    """예전 뷰(`axis`/`conditions`/`columns`)를 행/값/필터로 옮긴다.
+
+    **읽을 때만 변환하고 저장된 원본은 건드리지 않는다** — `promote_views`와 같은 방식.
+    다음 저장 때 새 형식으로 굳는다.
+    """
+    if view.get("rows") or view.get("kind") == "compare":
+        return view
+
+    legacy_kind = view.get("kind")
+    if legacy_kind not in ("aggregate", "list"):
+        return view
+
+    columns = list(view.get("columns") or [])
+    conditions = dict(view.get("conditions") or {})
+    axis = view.get("axis") or "creative_type"
+
+    # 행: 목록이면 소재명, 집계면 축. 매체는 예전에 컬럼 선택이 결정했다
+    # (컬럼을 안 고르면 기본 세트에 매체가 있었으므로 나뉘어 있었다).
+    head = "ad" if legacy_kind == "list" else axis
+    rows = [{"field": head,
+             "values": list(view.get("axis_values")
+                            or conditions.get(axis) or [])
+             if legacy_kind == "aggregate" else []}]
+    if "media" in (columns or DEFAULT_PIVOT_ROWS):
+        rows.append({"field": "media", "values": []})
+
+    values = [c for c in columns if c in METRIC_COLUMNS]
+    filters = {f: v for f, v in conditions.items()
+               if not (legacy_kind == "aggregate" and f == axis)}
+
+    moved = dict(view)
+    moved.update({"kind": "pivot", "rows": rows, "values": values,
+                  "filters": filters})
+    return moved
 
 
 def empty_periods() -> list[dict]:
@@ -1990,15 +2047,33 @@ def empty_periods() -> list[dict]:
 
 def view_with_defaults(view: dict) -> dict:
     merged = copy.deepcopy(VIEW_DEFAULTS)
-    merged.update({k: v for k, v in (view or {}).items() if v is not None})
+    source = migrate_view(dict(view or {}))
+    merged.update({k: v for k, v in source.items()
+                   if v is not None and k not in LEGACY_VIEW_FIELDS})
+    merged["rows"] = normalize_rows(merged["rows"])
     if not merged.get("id"):
         merged["id"] = uuid4().hex[:6]
     # 예전 뷰는 차트가 켜짐/꺼짐 두 가지뿐이었다. 켜져 있었으면 기본 차트로 올린다.
-    if merged.get("chart") and not merged.get("chart_kind"):
+    if (view or {}).get("chart") and not merged.get("chart_kind"):
         merged["chart_kind"] = "ranking"
     if merged["chart_kind"] not in CHART_KINDS:
         merged["chart_kind"] = ""
     return merged
+
+
+#: 행·필터에 쓸 수 있는 구분자와 그 이름. `PIVOT_FIELDS`와 같은 어휘를 쓰되
+#: 피벗의 행으로 넣을 수 있는 것만 남긴다(소재명이 추가된다 — 넣으면 소재 목록이 된다).
+FIELD_LABELS = {
+    "ad": "소재명", "media": "매체", "os": "OS", "title_kr": "작품",
+    "creative_type": "Creative Type", "format": "Creative Format",
+    "size": "Dimension", "orientation": "사이즈 방향",
+    "producer_group": "제작 주체", "usp": "USP",
+    "extra_info_tag": "Extra Info (태그별)",
+}
+
+
+def field_label(field: str) -> str:
+    return FIELD_LABELS.get(field, COLUMN_LABELS.get(field, field))
 
 
 CHART_KINDS = {
@@ -2180,6 +2255,11 @@ def render_axis_chart(view: dict, table: pd.DataFrame, axis: str,
     if "media" in table.columns:
         whole = whole[whole["media"].isin(table["media"].unique())]
     benchmark = metric_benchmark(whole, metric)
+    if metric not in table.columns:
+        # 값 목록에서 그 지표를 빼면 그릴 수가 없다 — 조용히 빈 그래프를 그리지 않는다.
+        status_row("warn", f"{METRIC_LABELS.get(metric, metric)}가 표에 없습니다",
+                   "값 칩에 그 지표를 추가하면 그래프가 그려집니다.")
+        return
 
     if kind == "dumbbell":
         pairs = dumbbell_frame(table, axis, metric)
@@ -2264,14 +2344,18 @@ def render_compare_view(view: dict) -> None:
     )
 
 
-def render_view(view: dict, month: int, key_prefix: str) -> None:
-    """뷰 하나(기준 라벨 + 표 [+ 그래프])를 그린다.
+def render_view(view: dict, month: int, key_prefix: str,
+                editing: bool = False) -> None:
+    """뷰 하나(기준 라벨 + 편집기 + 표 [+ 그래프])를 그린다.
 
     강조 키에 **뷰 id를 섞는다** — 안 그러면 한 블록 안 두 표가 강조 상태를 공유해서,
     첫 표의 셀을 칠하면 둘째 표의 같은 자리가 함께 칠해진다.
     """
     view = view_with_defaults(view)
-    if view["label"]:
+    view_key = f"{block_id_of(key_prefix)}_{view['id']}"
+    if editing:
+        view = table_editor(view, view_key)
+    elif view["label"]:
         st.markdown(
             f'<div class="view-basis">* {html.escape(view["label"])}</div>',
             unsafe_allow_html=True,
@@ -2281,69 +2365,32 @@ def render_view(view: dict, month: int, key_prefix: str) -> None:
         render_compare_view(view)
         return
 
-    scope_of_match, matched_count = match_conditions(view["conditions"])
-    if scope_of_match.empty:
-        status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
-        return
-
     highlight_key = f"{key_prefix}_{view['id']}"
-
-    if view["kind"] == "aggregate":
-        axis = view["axis"] if view["axis"] in ATTRIBUTES else "creative_type"
-        base = scope_of_match
-        # 조건으로 `text`를 골랐는데 표에 `thumb`까지 나오던 문제(2026-09-02).
-        # `match_conditions`는 조건에 맞는 **소재**를 찾아 펼치기 전 원본 행을 돌려준다
-        # (그래야 태그를 여러 개 고를 때 소진액이 중복 집계되지 않는다). 그런데 여기서
-        # 다시 펼치면 `text-thumb` 소재가 `thumb` 행으로도 살아나, 고르지도 않은 태그가
-        # 표에 등장한다. 그 축에 걸린 조건을 집계 단계에서 한 번 더 건다.
-        if axis == "extra_info_tag":
-            base = explode_extra_info(base)
-        # 매체를 컬럼에서 빼면 매체를 합쳐 집계한다 — 가리기가 아니라 다시 계산.
-        table = aggregate_by_axis(
-            base, axis, min_cost=min_cost, values=view["conditions"].get(axis),
-            by_media="media" in grouping_keys(view["columns"], [axis], base.columns),
-        )
-        if table.empty:
-            status_row("warn", "표시할 조합이 없습니다",
-                       "조건을 완화하거나 최소 소진액 기준을 낮춰 보세요.")
-            return
-        if view["chart_kind"]:
-            render_axis_chart(view, table, axis, month, highlight_key)
-        render_table(
-            table[pick_columns(table, view["columns"], always=[axis])]
-            .rename(columns={axis: ATTRIBUTES[axis]}),
-            color_columns=["CPI"], highlight_key=highlight_key, month=month,
-        )
+    table = pivot_frame(named_overview, view["rows"], view["values"],
+                        filters=view["filters"], min_cost=min_cost)
+    if table.empty:
+        status_row("warn", "조건에 맞는 소재가 없습니다",
+                   "필터를 완화하거나 행 값을 늘려 보세요.")
         return
 
-    # kind == "list" — 소재 단위 나열.
-    # **고른 차원 컬럼이 곧 집계 키**다. 매체를 빼면 소재 하나가 한 줄로 합쳐지고
-    # 비율도 합계에서 다시 계산된다("소재 4개인데 표는 8줄"이라는 지적에서 나왔다).
-    keys = grouping_keys(view["columns"], ["ad"], scope_of_match.columns)
-    detail = aggregate_by(scope_of_match, keys).sort_values("cost", ascending=False)
-    if detail.empty:
-        status_row("warn", "조건에 맞는 소재가 없습니다", "조건을 완화해 보세요.")
-        return
-    if view["top_n"]:
-        detail = detail.head(int(view["top_n"]))
-    # 요약 카드는 이 표가 아니라 **주제 전체**의 것이라 블록 맨 위에서 그린다
-    # (`render_block_kpis`). 예전에는 여기 있어서 두 번째 표에 딸린 숫자처럼 보였다.
+    fields = [r["field"] for r in view["rows"]]
+    # 그래프는 소재명이 아닌 첫 행을 축으로 쓴다 — 소재 300개를 막대로 그리면 못 읽는다.
+    axis = next((f for f in fields if f != "ad"), None)
+    if view["chart_kind"] and axis:
+        render_axis_chart(view, table, axis, month, highlight_key)
+
     render_table(
-        detail[pick_columns(detail, view["columns"], always=["ad"])],
+        table.rename(columns={f: field_label(f) for f in fields}),
         color_columns=["CPI"], highlight_key=highlight_key, month=month,
     )
-    if len(detail) != matched_count:
-        st.markdown(
-            f'<div class="tbl-note">소재 {matched_count:,}개를 '
-            f"{' · '.join(COLUMN_LABELS.get(k, k) for k in keys)} 기준으로 나눠 "
-            f"{len(detail):,}줄입니다. 설정에서 컬럼을 빼면 그 축을 합쳐 다시 집계합니다."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        f'<div class="tbl-note">{" · ".join(field_label(f) for f in fields)} 기준 '
+        f"{len(table):,}줄. 행에서 구분을 빼면 그 축을 합쳐 다시 집계합니다.</div>",
+        unsafe_allow_html=True,
+    )
 
 
-VIEW_KINDS = {"aggregate": "속성별 집계", "list": "소재 목록",
-              "compare": "기간 비교"}
+VIEW_KINDS = {"pivot": "피벗 표", "compare": "기간 비교"}
 QUILL_TOOLBAR = [
     ["bold", "italic", "underline", "strike"],
     [{"header": [2, 3, False]}],
@@ -2355,53 +2402,48 @@ QUILL_TOOLBAR = [
 
 
 def clear_view_state(block_id: str, view_id: str) -> None:
-    """지운 표가 남긴 위젯·조건 행 상태를 지운다."""
+    """지운 표가 남긴 위젯 상태를 지운다."""
     view_key = f"{block_id}_{view_id}"
     for key in [k for k in list(st.session_state) if view_key in k]:
         del st.session_state[key]
 
 
-def live_view(view: dict, view_key: str) -> dict:
-    """저장된 뷰에 **지금 화면 위젯의 값**을 덮어씌운다.
+def view_from_widgets(view: dict, view_key: str) -> dict:
+    """저장할 뷰를 **화면 위젯의 현재 값**으로 조립한다.
 
-    Streamlit 위젯은 `key`가 세션에 있으면 `index`/`value` 인자를 무시하고 세션 값을
-    쓴다. 그래서 요약 줄을 저장된 값으로 그리면 사용자가 드롭다운을 바꾼 직후 한 번은
-    **요약과 드롭다운이 서로 다른 값을 보여준다**(실제로 축이 `Creative Type`인데
-    드롭다운은 `Extra Info`로 보이는 화면을 받았다). 요약도 같은 세션 값을 읽게 한다.
+    편집기는 표 바로 위(`render_view`)에서 그리는데 저장 버튼은 그보다 위에 있다.
+    Streamlit 위젯 값은 세션에 남아 있으므로, 저장 시점에 그 세션 값을 읽으면
+    순서에 상관없이 항상 화면과 같은 것이 저장된다.
     """
-    merged = dict(view)
-    for field, widget in (("label", "vlabel"), ("kind", "vkind"), ("axis", "vaxis"),
-                          ("chart_kind", "vchart"), ("metric", "vmetric"),
-                          ("top_n", "vtop")):
-        key = f"{widget}_{view_key}"
-        if key in st.session_state and st.session_state[key] is not None:
-            merged[field] = st.session_state[key]
+    merged = view_with_defaults(view)
+    session = st.session_state
+
+    def take(key, fallback):
+        value = session.get(key)
+        return fallback if value is None else value
+
+    merged["label"] = take(f"vlabel_{view_key}", merged["label"])
+    merged["kind"] = take(f"vkind_{view_key}", merged["kind"])
+    merged["chart_kind"] = take(f"vchart_{view_key}", merged["chart_kind"])
+    merged["metric"] = take(f"vmetric_{view_key}", merged["metric"])
+    merged["top_n"] = int(take(f"vtop_{view_key}", merged["top_n"]) or 0)
+
+    row_fields = take(f"pvrows_{view_key}", [r["field"] for r in merged["rows"]])
+    saved_values = {r["field"]: r["values"] for r in merged["rows"]}
+    merged["rows"] = normalize_rows([
+        {"field": f,
+         "values": list(take(f"pvrowval_{view_key}_{f}", saved_values.get(f) or []))}
+        for f in row_fields
+    ])
+    merged["values"] = list(take(f"pvvals_{view_key}", merged["values"]))
+
+    filter_fields = take(f"pvfilters_{view_key}", list(merged["filters"] or {}))
+    merged["filters"] = {
+        f: list(take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or []))
+        for f in filter_fields
+        if take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or [])
+    }
     return merged
-
-
-def view_summary(view: dict) -> str:
-    """표 하나가 무엇인지 한 줄로. **고치는 일보다 확인하는 일이 훨씬 잦다.**
-
-    예전에는 이 확인을 하려고 드롭다운 6개를 눈으로 읽어야 했다.
-    """
-    chips = [VIEW_KINDS.get(view["kind"], view["kind"])]
-    if view["kind"] == "aggregate":
-        chips.append(ATTRIBUTES.get(view["axis"], view["axis"]))
-        if view["chart_kind"]:
-            chips.append(CHART_KINDS.get(view["chart_kind"], view["chart_kind"]))
-    elif view["kind"] == "list" and view["top_n"]:
-        chips.append(f"상위 {int(view['top_n'])}개")
-    elif view["kind"] == "compare":
-        chips += [str(p.get("label") or "이름 없음") for p in (view["periods"] or [])]
-
-    title = html.escape(view["label"] or "이름 없는 표")
-    tags = "".join(f'<span class="vs-chip">{html.escape(str(c))}</span>' for c in chips)
-    conditions = " · ".join(
-        f"{PIVOT_FIELDS.get(f, f)} <b>{html.escape(', '.join(map(str, v)))}</b>"
-        for f, v in (view["conditions"] or {}).items()
-    ) or "조건 없음 · 전체 소재"
-    return (f'<div class="vs"><span class="vs-t">{title}</span>{tags}</div>'
-            f'<div class="vs-c">{conditions}</div>')
 
 
 def period_editor(view_key: str, periods: list[dict]) -> list[dict]:
@@ -2437,145 +2479,174 @@ def period_editor(view_key: str, periods: list[dict]) -> list[dict]:
     return result
 
 
+def field_value_options(field: str) -> list[str]:
+    """그 구분자에 이 달 실제로 있는 값들. 없는 값을 고르면 빈 표가 된다."""
+    frame = explode_extra_info(named_overview) if field == "extra_info_tag" else named_overview
+    if field not in frame.columns:
+        return []
+    return sorted(frame[field].dropna().astype(str)
+                  .replace("", pd.NA).dropna().unique())
+
+
+def value_popover(view_key: str, slot: str, fields: list[str], saved: dict) -> dict:
+    """고른 구분자마다 값 선택을 하나씩 담은 팝오버. `{필드: [값...]}`을 돌려준다.
+
+    구분자 선택(멀티셀렉트)과 값 선택(팝오버)을 나눈 이유: 한 줄에 다 펼치면 구분자
+    수만큼 위젯이 늘어나 다시 컨트롤 벽이 된다. 칩을 눌러 값만 손보는 흐름이 짧다.
+    """
+    if not fields:
+        return {}
+    picked = {f: [v for v in (saved.get(f) or [])] for f in fields}
+    summary = ", ".join(
+        f"{field_label(f)}={','.join(picked[f])}" if picked[f] else field_label(f)
+        for f in fields
+    )
+    with st.popover(f"값 지정 · {summary[:34]}", use_container_width=True):
+        for field in fields:
+            choices = field_value_options(field)
+            picked[field] = st.multiselect(
+                f"{field_label(field)} (비우면 전체)", choices,
+                default=[v for v in picked[field] if v in choices],
+                key=f"pv{slot}val_{view_key}_{field}",
+            )
+    return picked
+
+
+def block_id_of(key_prefix: str) -> str:
+    """`sec5_<block_id>` 에서 블록 id만 꺼낸다."""
+    return key_prefix.split("_", 1)[-1]
+
+
+def table_editor(view: dict, view_key: str) -> dict:
+    """표 하나의 설정 전체 — 기준 라벨 · 그래프 · 행/값/필터. **표 바로 위**에 그린다.
+
+    예전에는 블록 상단 `설정` 아코디언 안에 모여 있었다. 표가 2~6개 붙는 구조라,
+    어느 표의 설정인지 눈으로 한 번 더 찾아야 했다. 고치려는 표를 보면서 만지게 한다.
+    """
+    with st.container(key=f"te_{view_key}"):
+        head = st.columns([4, 2, 2, 0.7], vertical_alignment="bottom")
+        label = head[0].text_input(
+            "기준 라벨", value=view["label"], key=f"vlabel_{view_key}",
+            placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
+        )
+        kinds = list(VIEW_KINDS)
+        kind = head[1].selectbox(
+            "표 종류", kinds,
+            index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
+            format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
+        )
+        chart_kinds = list(CHART_KINDS)
+        chart_kind = view["chart_kind"]
+        if kind == "pivot":
+            chart_kind = head[2].selectbox(
+                "그래프", chart_kinds,
+                index=chart_kinds.index(chart_kind) if chart_kind in CHART_KINDS else 0,
+                format_func=lambda k: CHART_KINDS[k], key=f"vchart_{view_key}",
+            )
+        head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제")
+
+        if kind == "pivot" and chart_kind:
+            metric_col, top_col = st.columns([3, 1], vertical_alignment="bottom")
+            metric_col.segmented_control(
+                "그래프 지표", COMPARE_METRICS,
+                default=view["metric"] if view["metric"] in COMPARE_METRICS else "CPI",
+                key=f"vmetric_{view_key}",
+                format_func=lambda m: METRIC_LABELS.get(m, m),
+            )
+            if chart_kind == "ranking":
+                top_col.number_input(
+                    "상위 N개 (0=전체)", min_value=0, max_value=50,
+                    value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
+                )
+
+        view = {**view, "label": label, "kind": kind, "chart_kind": chart_kind}
+        if kind == "compare":
+            view = {**view, "periods": period_editor(view_key, view["periods"])}
+        else:
+            view = pivot_editor(view, view_key)
+    return view
+
+
+def pivot_editor(view: dict, view_key: str) -> dict:
+    """행 / 값 / 필터 세 줄. 표 **바로 위**에 둔다.
+
+    구글 시트 피벗 편집기와 같은 모델이다(사용자가 그 화면을 참고로 지목했다):
+      행   = 묶는 기준. 빼면 가려지는 게 아니라 그 축을 합쳐 **다시 집계**된다.
+      값   = 보여줄 지표.
+      필터 = 표에 담을 범위. 행과 다른 칸이라 역할이 겹치지 않는다.
+
+    예전에는 이 셋이 `분석 축` · `표시할 컬럼` · `조건`으로 흩어져 있었고, 축 값을
+    좁히려면 조건에 같은 구분자를 또 걸어야 했다 — 그 겹침이 이 구조에서는 생길 수 없다.
+
+    **위젯만으로 만든다.** 버튼으로 중간 상태를 옮기는 방식은 이 프로젝트에서 위젯
+    상태와 저장 상태가 엇갈리는 버그를 반복해서 만들었다. 멀티셀렉트는 추가·삭제·순서를
+    한 위젯에서 다 해결한다(선택 순서가 곧 행 순서다).
+    """
+    saved_row_values = {r["field"]: r["values"] for r in view["rows"]}
+    saved_rows = [r["field"] for r in view["rows"]]
+
+    with st.container(key=f"pv_{view_key}"):
+        left, right = st.columns([5, 3], vertical_alignment="center")
+        left.markdown('<div class="pv-lab">행 <span>묶는 기준 · 빼면 합쳐서 다시 계산</span>'
+                      "</div>", unsafe_allow_html=True)
+        row_fields = left.multiselect(
+            "행", DIMENSION_COLUMNS,
+            default=[f for f in (saved_rows or DEFAULT_PIVOT_ROWS)
+                     if f in DIMENSION_COLUMNS],
+            format_func=field_label, key=f"pvrows_{view_key}",
+            label_visibility="collapsed", placeholder="묶을 구분을 고르세요",
+        )
+        with right:
+            st.markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
+            row_values = value_popover(view_key, "row", row_fields, saved_row_values)
+
+        st.markdown('<div class="pv-lab">값 <span>보여줄 지표 · 순서는 고정</span></div>',
+                    unsafe_allow_html=True)
+        metrics = st.multiselect(
+            "값", METRIC_COLUMNS,
+            default=[c for c in (view["values"] or DEFAULT_PIVOT_VALUES)
+                     if c in METRIC_COLUMNS],
+            format_func=lambda c: COLUMN_LABELS.get(c, c),
+            key=f"pvvals_{view_key}", label_visibility="collapsed",
+            placeholder="기본 지표 사용",
+        )
+
+        # 행으로 쓰는 구분자는 필터 선택지에서 뺀다 — 행의 값은 행 쪽에서만 정한다.
+        available = [f for f in DIMENSION_COLUMNS if f not in row_fields]
+        fleft, fright = st.columns([5, 3], vertical_alignment="center")
+        fleft.markdown('<div class="pv-lab">필터 <span>표에 담을 범위</span></div>',
+                       unsafe_allow_html=True)
+        filter_fields = fleft.multiselect(
+            "필터", available,
+            default=[f for f in (view["filters"] or {}) if f in available],
+            format_func=field_label, key=f"pvfilters_{view_key}",
+            label_visibility="collapsed", placeholder="필터 없음 · 전체 소재",
+        )
+        with fright:
+            st.markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
+            filter_values = value_popover(view_key, "f", filter_fields,
+                                          dict(view["filters"] or {}))
+
+    rows = [{"field": f, "values": list(row_values.get(f) or [])} for f in row_fields]
+    # 값이 비어 있는 필터는 아무것도 걸지 않으므로 저장하지 않는다 — 남겨 두면
+    # 요약 줄에 "필터 있음"으로 보이는데 실제로는 전체인 상태가 된다.
+    filters = {f: list(filter_values[f]) for f in filter_fields
+               if filter_values.get(f)}
+    return {**view, "rows": rows, "values": list(metrics), "filters": filters}
+
+
 def views_editor(block_id: str, views: list[dict]) -> list[dict]:
-    """이 주제가 담을 표들을 편집한다. 새 views 리스트를 돌려준다.
+    """이 주제가 담을 표의 목록. 표별 설정은 **표 바로 위**에서 그린다(`render_view`).
 
-    실제 리포트는 주제 하나에 표가 2~6개 붙는다(6월 `3) 영상화 작품 성과`가 표 6개).
-    그래서 표를 목록으로 다룬다.
-
-    표를 지울 때는 **위젯 상태를 함께 비워야 한다** — 안 그러면 뒤 표가 앞 표의 조건을
-    물고 온다(조건 행 삭제에서 이미 같은 문제를 겪었다).
+    여기서는 표 추가와 기준 라벨만 다룬다.
     """
     state_key = f"views_{block_id}"
     if state_key not in st.session_state:
         st.session_state[state_key] = [view_with_defaults(v) for v in views]
-    current: list[dict] = st.session_state[state_key]
 
-    result: list[dict] = []
-    drop_index: int | None = None
-    for position, saved in enumerate(list(current)):
-        view = view_with_defaults(saved)
-        view_key = f"{block_id}_{view['id']}"
-        # 표 종류에 따라 안 그리는 위젯이 있어서, 먼저 저장값으로 채워 둔다.
-        columns = view["columns"]
-        with st.container(key=f"view_box_{view_key}"):
-            # 요약 줄: 무엇이 걸려 있는지만 읽히면 된다. 고치는 건 '설정' 안에서 한다.
-            summary_col, drop_col = st.columns([9, 1], vertical_alignment="center")
-            summary_col.markdown(view_summary(live_view(view, view_key)),
-                                 unsafe_allow_html=True)
-            if drop_col.button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
-                drop_index = position
-
-            # 갓 추가한 표는 펼쳐 둔다 — 만들자마자 접혀 있으면 뭘 해야 할지 모른다.
-            #
-            # ⚠ 이 값을 매 리런마다 "라벨이 비었나"로 계산하면, 라벨 첫 글자를 치는 순간
-            #   조건이 뒤집혀 **타이핑 중에 설정이 저절로 접힌다**. 처음 판정을 세션에
-            #   붙잡아 둔다(그 뒤로는 사용자가 직접 여닫는다).
-            open_key = f"vopen_{view_key}"
-            if open_key not in st.session_state:
-                st.session_state[open_key] = (
-                    not view["label"] and not view["conditions"])
-            with st.expander("설정", expanded=st.session_state[open_key]):
-                head = st.columns([2.4, 1.4, 1.4], vertical_alignment="bottom")
-                label = head[0].text_input(
-                    "기준 라벨", value=view["label"], key=f"vlabel_{view_key}",
-                    placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
-                )
-                kinds = list(VIEW_KINDS)
-                kind = head[1].selectbox(
-                    "표 종류", kinds,
-                    index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
-                    format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
-                )
-                axes = list(ATTRIBUTES)
-                axis, top_n = view["axis"], view["top_n"]
-                if kind == "aggregate":
-                    axis = head[2].selectbox(
-                        "분석 축", axes,
-                        index=axes.index(view["axis"]) if view["axis"] in ATTRIBUTES else 0,
-                        format_func=lambda a: ATTRIBUTES[a], key=f"vaxis_{view_key}",
-                    )
-                elif kind == "list":
-                    top_n = head[2].number_input(
-                        "상위 N개 (0=전체)", min_value=0, max_value=100,
-                        value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
-                    )
-                else:
-                    head[2].caption("기간은 아래에서 지정합니다")
-
-                periods = view["periods"]
-                if kind == "compare":
-                    periods = period_editor(view_key, periods)
-
-                conditions = condition_editor(view_key, view["conditions"])
-
-                # 축과 조건이 같은 구분자이고 값이 하나뿐이면 표가 한 줄이 된다.
-                # 조건은 WHERE, 축은 GROUP BY라서 원래 다른 역할인데, 같은 걸 고르면
-                # 축이 아무 일도 하지 않는다 — 막지는 않고(의도적일 수 있다) 알린다.
-                if kind == "aggregate" and len(conditions.get(axis) or []) == 1:
-                    st.markdown(
-                        f'<div class="cp-hint">분석 축과 조건이 모두 '
-                        f'<b>{html.escape(ATTRIBUTES.get(axis, axis))}</b>입니다 — '
-                        "값이 하나로 고정돼 표가 한 줄이 됩니다. "
-                        "다른 축(예: 작품·매체·Creative Type)으로 묶으면 비교가 됩니다.</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                chart_kind = view["chart_kind"]
-                metric = view["metric"]
-                if kind == "aggregate":
-                    chart_kinds = list(CHART_KINDS)
-                    kind_col, top_col = st.columns([2, 1], vertical_alignment="bottom")
-                    chart_kind = kind_col.selectbox(
-                        "그래프", chart_kinds,
-                        index=chart_kinds.index(chart_kind) if chart_kind in CHART_KINDS else 0,
-                        format_func=lambda k: CHART_KINDS[k], key=f"vchart_{view_key}",
-                    )
-                    if chart_kind == "ranking":
-                        top_n = top_col.number_input(
-                            "그래프 상위 N개 (0=전체)", min_value=0, max_value=50,
-                            value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
-                        )
-                    if chart_kind:
-                        metric = st.segmented_control(
-                            "그래프 지표", COMPARE_METRICS,
-                            default=metric if metric in COMPARE_METRICS else "CPI",
-                            key=f"vmetric_{view_key}",
-                            format_func=lambda m: METRIC_LABELS.get(m, m),
-                        ) or "CPI"
-
-                if kind in ("aggregate", "list"):
-                    columns = st.multiselect(
-                        "표시할 컬럼 (비우면 기본)", SELECTABLE_COLUMNS,
-                        default=[c for c in (columns or []) if c in SELECTABLE_COLUMNS],
-                        format_func=lambda c: COLUMN_LABELS.get(c, c),
-                        key=f"vcols_{view_key}", placeholder="기본 컬럼 사용",
-                    )
-                    st.markdown(
-                        '<div class="cp-hint">매체·OS·작품처럼 <b>구분 컬럼</b>을 빼면 '
-                        "가려지는 게 아니라 그 축을 합쳐 숫자가 다시 계산됩니다"
-                        "(피벗과 같은 동작).</div>",
-                        unsafe_allow_html=True,
-                    )
-
-        result.append({
-            "id": view["id"], "label": label, "kind": kind, "conditions": conditions,
-            "months": view["months"], "axis": axis, "chart_kind": chart_kind,
-            "chart": bool(chart_kind), "metric": metric, "top_n": int(top_n or 0),
-            "periods": periods, "metrics": view["metrics"],
-            "columns": list(columns or []),
-        })
-
-    if drop_index is not None:
-        removed = result.pop(drop_index)
-        clear_view_state(block_id, removed["id"])
-        st.session_state[state_key] = result
-        rerun_local()
-
-    if st.button("+ 표 추가", key=f"vadd_{block_id}"):
-        st.session_state[state_key] = result + [view_with_defaults({})]
-        rerun_local()
-
+    result = [view_with_defaults(v) for v in st.session_state[state_key]]
+    if st.button("＋ 표 추가", key=f"vadd_{block_id}"):
+        result = result + [view_with_defaults({})]
     st.session_state[state_key] = result
     return result
 
@@ -2609,8 +2680,12 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     for view in views:
         if view["kind"] == "compare":
             continue
-        matched, _ = match_conditions(view["conditions"])
-        ads |= set(matched["ad"].unique())
+        # 카드는 **그 주제의 표들이 다루는 소재의 합집합**이다. 표마다 필터가 다를 수
+        # 있으므로 소재 이름으로 합집합을 만든 뒤 원본에서 한 번만 집계한다.
+        matched = pivot_frame(named_overview, ["ad"], ["cost"],
+                              filters=view["filters"])
+        if not matched.empty:
+            ads |= set(matched["ad"].unique())
     if not ads:
         return
 
@@ -2671,8 +2746,12 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
                 month,
                 lambda d: report_blocks.update_block(
                     d, report_blocks.SLOT_ANALYSIS, block_id,
-                    title=title_value, views=views, comment=comment or "",
-                    insight=insight or "",
+                    title=title_value,
+                    views=[view_from_widgets(v, f"{block_id}_{v['id']}")
+                           for v in views
+                           if not st.session_state.get(
+                               f"vdrop_{block_id}_{v['id']}")],
+                    comment=comment or "", insight=insight or "",
                 ),
                 expect={block_id: block.get("_rev", 0)},
             ):
@@ -2685,7 +2764,7 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
     if views:
         render_block_kpis([view_with_defaults(v) for v in views], month)
     for view in views:
-        render_view(view, month, f"sec5_{block_id}")
+        render_view(view, month, f"sec5_{block_id}", editing=editing)
 
     body = merged_note_html(block)
     if body:
