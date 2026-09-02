@@ -2101,6 +2101,8 @@ FIELD_LABELS = {
     "size": "Dimension", "orientation": "사이즈 방향",
     "producer_group": "제작 주체", "usp": "USP",
     "extra_info_tag": "Extra Info (태그별)",
+    # 소재명 규칙이 안 지켜진 MIX 소재군 — `creative_data.mix_group` 참고.
+    "mix_group": "MIX 소재",
 }
 
 

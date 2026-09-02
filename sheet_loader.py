@@ -39,7 +39,7 @@ def extract_sheet_id(url_or_id: str) -> str:
 #: 캐시가 남아 있으면 화면이 조용히 옛 분류를 보여줬다(2026-09-02, USP·Extra Info 하이픈
 #: 수정 때 실제로 겪었다 — 이 프로젝트에서 가장 위험한 실패 유형인 "에러 없이 틀림"이다).
 #: v2: USP 뒤 `-`로 붙은 Extra Info를 분리 (`TITLE2-comic` → USP `TITLE2` + `comic`)
-PARSER_VERSION = "v2"
+PARSER_VERSION = "v3"
 
 
 def _cache_path(sheet_id: str) -> Path:

@@ -330,6 +330,9 @@ def attach_creative_attributes(df: pd.DataFrame) -> pd.DataFrame:
     )
     parsed["extra_info_label"] = parsed["extra_info"].fillna("없음")
     parsed = parsed.drop(columns=["variants"])
+    # MIX 판정은 소재명 파싱 결과 세 곳(유형·태그·작품코드)을 함께 봐야 하므로
+    # 여기서 붙인다 — 파싱 직후라 세 컬럼이 모두 준비돼 있고, 캐시에도 함께 담긴다.
+    parsed["mix_group"] = mix_group(parsed)
     return df.merge(parsed, on="ad", how="left")
 
 
@@ -884,6 +887,9 @@ DIMENSION_COLUMNS = [
     # 태그는 원본에 컬럼이 없다 — `explode_extra_info`로 펼친 뒤에 생긴다.
     # 그래도 **차원**이므로 여기 둔다(`pivot_frame`이 필요할 때 알아서 펼친다).
     "extra_info_tag",
+    # MIX 소재는 소재명 규칙이 지켜지지 않아 구분자로 못 잡는다 — 세 조건을 합쳐
+    # 만든 파생 차원이다(`mix_group`).
+    "mix_group",
 ]
 
 #: **지표** 컬럼 — 집계 결과를 보여줄 뿐 집계 키에 영향을 주지 않는다.
@@ -1242,3 +1248,55 @@ def contrast_split(scope: pd.DataFrame, filters: dict | None,
     rest = base[~base["ad"].isin(subject["ad"].unique())] \
         if "ad" in base.columns else base.iloc[0:0]
     return subject, rest
+
+
+# ---------------------------------------------------------------------------
+# MIX 소재 묶기
+#
+# 규리님 말: *"이 mix 소재들을 세팅할 때 소재명을 우리가 규칙에 맞추지 않아서
+# 구분자로 mix 소재를 구분할 수가 없어."*
+#
+# 그래서 **하나의 구분자로는 안 잡힌다.** 세 자리 중 아무 곳에나 흔적이 남아 있고,
+# 세 조건 중 **하나라도** 맞으면 MIX로 본다(규리님이 정한 규칙):
+#
+#   1. Creative Type = `Mix`
+#   2. Extra Info 태그에 `mix`
+#   3. Title ID = `0000`  (여러 작품을 섞은 소재라 작품 코드가 비어 있다)
+#
+# ⚠ `MixTitle`은 **제외**다 — Creative Type 어휘에 따로 존재하는 별개 값이고
+#   규리님이 지정한 것은 `Mix`다. 8월 실측으로 1개 소재가 여기 걸린다.
+
+#: MIX 판정에 쓰는 Creative Type(정규화 후 대문자). `MIXTITLE`은 넣지 않는다.
+MIX_CREATIVE_TYPES = frozenset({"MIX"})
+#: 여러 작품을 섞은 소재의 Title ID. `parse_ad_name`이 4자리로 정규화한다.
+MIX_TITLE_CODES = frozenset({"0000"})
+MIX_LABEL = "MIX"
+NON_MIX_LABEL = "일반"
+
+
+def mix_group(df: pd.DataFrame) -> pd.Series:
+    """행마다 `MIX` / `일반`. 세 조건 중 하나라도 맞으면 MIX다.
+
+    소재명 규칙이 지켜지지 않은 소재군이라 판정을 여기 한 곳에만 둔다 — 화면이나
+    필터에서 조건을 다시 쓰면 세 곳이 서로 어긋난다(이 프로젝트에서 반복된 실패다).
+    """
+    if df.empty:
+        return pd.Series(dtype="object")
+
+    def column(name):
+        if name in df.columns:
+            return df[name].fillna("").astype(str)
+        return pd.Series([""] * len(df), index=df.index)
+
+    by_type = column("creative_type").str.strip().str.upper().isin(MIX_CREATIVE_TYPES)
+    # 태그는 `_`와 `-` 둘 다로 이어 붙는다(`Mix_12anniversary`, `TITLE2-mix`).
+    # `split_extra_info`와 같은 규칙으로 쪼개 **토큰 일치**를 본다 — 부분 문자열로
+    # 보면 `MixTitle`이나 `remix` 같은 값이 딸려 들어온다.
+    by_tag = column("extra_info").str.lower().str.split(r"[_\-]").apply(
+        lambda parts: "mix" in [p.strip() for p in parts]
+    )
+    by_title = column("title_code").str.strip().isin(MIX_TITLE_CODES)
+    return pd.Series(
+        np.where(by_type | by_tag | by_title, MIX_LABEL, NON_MIX_LABEL),
+        index=df.index, dtype="object",
+    )
