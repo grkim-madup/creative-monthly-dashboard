@@ -882,7 +882,15 @@ def dumbbell_frame(table: pd.DataFrame, axis: str, metric: str) -> pd.DataFrame:
 #: 그 축을 합쳐서 **숫자가 다시 계산된다**(피벗과 같은 동작).
 #: 매체를 빼면 소재 한 줄에 매체 합계가 들어가고, 매체를 넣으면 소재가 매체별로 쪼개진다.
 DIMENSION_COLUMNS = [
-    "ad", "media", "os", "title_kr", "creative_type", "format",
+    # `title_code`(Title ID)는 `title_kr`(작품)과 거의 같지만 **완전히 같지는 않다.**
+    # 실측(2026-09-03): 코드 150개 / 작품명 150개인데 일대일이 아니다.
+    #  · 한 코드에 작품명이 둘인 사례 7건 — 표기 차이(`6000일의 연애 일기`/`연애일기`),
+    #    한글명과 원문명이 섞인 것(`situationship`/`那種關係`), 그리고 일부 행만
+    #    `확인불가`로 남은 것(`3924` = 김부장 + 확인불가).
+    #  · `확인불가`는 코드 9개(0000·Mix·weaponcreator 등)를 통째로 삼킨다 —
+    #    소재 115개 · 소진 2,365만원. **작품으로 고르면 이것들이 한 줄로 뭉친다.**
+    # 그래서 두 축을 다 남긴다: 작품은 사람이 읽기 좋고, Title ID는 갈라 보기 좋다.
+    "ad", "media", "os", "title_kr", "title_code", "creative_type", "format",
     "size", "orientation", "producer_group", "usp",
     # 태그는 원본에 컬럼이 없다 — `explode_extra_info`로 펼친 뒤에 생긴다.
     # 그래도 **차원**이므로 여기 둔다(`pivot_frame`이 필요할 때 알아서 펼친다).

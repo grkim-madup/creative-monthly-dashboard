@@ -2111,6 +2111,7 @@ def view_with_defaults(view: dict) -> dict:
 #: 피벗의 행으로 넣을 수 있는 것만 남긴다(소재명이 추가된다 — 넣으면 소재 목록이 된다).
 FIELD_LABELS = {
     "ad": "소재명", "media": "매체", "os": "OS", "title_kr": "작품",
+    "title_code": "Title ID",
     "creative_type": "Creative Type", "format": "Creative Format",
     "size": "Dimension", "orientation": "사이즈 방향",
     "producer_group": "제작 주체", "usp": "USP",
