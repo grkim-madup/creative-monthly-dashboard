@@ -18,3 +18,5 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — auth.current_editor / CREATIVE_FIELDS 파생 (2026-09-03)
 
 # 재시작 마커 — title_code 차원 추가 (2026-09-03)
+
+# 재시작 마커 — insight_draft.block_lines / contrast_ready 등 새 심볼 (2026-09-03)

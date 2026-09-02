@@ -1118,6 +1118,47 @@ CONTRAST_METRICS = ["cost", "impression", "click", "total install",
 VOLUME_METRICS = frozenset({"cost", "impression", "click", "total install",
                             "D0 read", "D0 coin", "D7 coin"})
 
+# ---------------------------------------------------------------------------
+# 판정 규칙 상수 — **표 배지와 인사이트 초안이 같은 값을 본다.**
+#
+# 예전에는 초안(`insight_draft`)만 문턱을 갖고 배지는 부호만 봤다. 그래서 같은
+# 카드에서 배지는 `앞단 우수`인데 초안 근거는 한 줄도 없는 일이 생겼고(실측 10건),
+# 더 나쁘게는 CTR **+0.36%p**짜리가 `우수`로 찍혔다(`usp=ACCIDENTAL`/Meta).
+
+#: 비율 지표(%p)에서 이만큼은 돼야 차이로 본다.
+MEANINGFUL_RATIO_POINTS = 1.0
+#: 금액·건수 지표(%)에서 이만큼은 돼야 차이로 본다.
+MEANINGFUL_CHANGE = 0.05
+
+#: 앞단/뒷단의 **주 지표와 보조 지표**(2026-09-03 규리님 결정 — 돈 지표를 주로 본다).
+#:
+#: 예전에는 두 지표 다수결이었다. 2개짜리 다수결은 1:1이면 무조건 `혼재`가 되어,
+#: 8월 실측 329카드 중 판정이 나오는 카드가 **76개(23%)** 뿐이었다.
+#:
+#: ⚠ 인자로 열지 않는다. 목록을 인자로 받으면 초안이 다른 목록을 넘겨 배지와
+#:   결론이 다시 갈린다 — 이 프로젝트에서 반복된 실패다.
+FRONT_PRIMARY, FRONT_SECONDARY = "CPI", "CTR"
+BACK_PRIMARY, BACK_SECONDARY = "D0 coin CVR", "D0 read CVR"
+
+#: 판정 자체를 금지하는 하드 게이트. 이걸 통과하지 못한 카드는 규모만 말한다.
+#: 근거(8월 329카드): 설치 중위값 73건, `설치>=30` 통과 59.0%.
+MIN_INSTALLS_FOR_ANY_VERDICT = 30
+#: CTR의 분모는 노출이다. 노출이 몇백이면 클릭 한 번이 CTR을 크게 흔든다.
+MIN_IMPRESSIONS_FOR_VERDICT = 1000
+#: 뒷단 지표를 쓸 수 있는 최소 **원값**. CVR은 분모가 작아 1건이 크게 흔든다.
+#: 코인은 p75가 2건이라 10건을 요구한다(1건 변동 = 상대 10%).
+#: `coin>=10`인데 `read<30`인 카드는 8월에 0개라 계층이 깨끗하다.
+MIN_D0_COIN_FOR_VERDICT = 10
+MIN_D0_READ_FOR_VERDICT = 30
+
+
+def meaningful(delta, unit: str) -> bool:
+    """이 차이를 근거로 쓸 만한가. 판정과 근거가 **같은 문턱**을 쓰게 하는 함수다."""
+    if delta is None or pd.isna(delta):
+        return False
+    return abs(delta) >= (MEANINGFUL_RATIO_POINTS if unit == "%p"
+                          else MEANINGFUL_CHANGE)
+
 
 def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
                   metrics: list[str] | None = None) -> pd.DataFrame:
@@ -1138,6 +1179,28 @@ def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
         return aggregate_by(frame.assign(_all="합계"), ["_all"]).iloc[0]
 
     left, right = rolled(subject), rolled(rest)
+    # 표본이 없어서 계산만 되는 지표는 **판정 재료에서 뺀다**(`better = None`).
+    # 값은 그대로 보여준다 — 숨기면 왜 판정이 없는지 알 수 없다.
+    #
+    # 실측으로 겪은 것:
+    #  · 소진 ₩0·설치 4건 카드 → `CPI = 0/4 = ₩0`, 낮을수록 좋으니 **-100%로 "우수"**.
+    #    CTR은 노출 0이라 NaN으로 빠져 CPI 한 표만으로 `앞단 우수`가 됐다
+    #    (`title_code=9257`/Meta). 광고주에게 "노출 0인 소재군의 유입 효율이
+    #    확인됐다"는 문장이 갈 수 있었다.
+    #  · 코인 전환이 0건이면 D0 Coin CVR이 0%가 되고 대조군은 절대 0이 아니라
+    #    **구조적으로 저조로 기운다**(8월 대상 0건 카드 63.7%, 대조군 0건 0개).
+    blocked: set[str] = set()
+    installs = float(left.get("total install") or 0) if len(left) else 0.0
+    # CPI는 분모가 설치다. 설치가 10건이면 1건 차이가 10%를 흔든다 —
+    # 배지에도 같은 문턱을 적용한다(초안만 막으면 표에 틀린 판정이 남는다).
+    if installs < MIN_INSTALLS_FOR_ANY_VERDICT or float(left.get("cost") or 0) <= 0:
+        blocked |= {"CPI", "CPC"}
+    if float(left.get("impression") or 0) < MIN_IMPRESSIONS_FOR_VERDICT:
+        blocked |= {"CTR", "CPC"}
+    if float(left.get("D0 coin") or 0) < MIN_D0_COIN_FOR_VERDICT:
+        blocked.add("D0 coin CVR")
+    if float(left.get("D0 read") or 0) < MIN_D0_READ_FOR_VERDICT:
+        blocked.add("D0 read CVR")
     records = []
     for metric in metrics:
         mine = float(left[metric]) if metric in left.index and pd.notna(left[metric]) else None
@@ -1157,7 +1220,7 @@ def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
             "metric": metric, "subject": mine, "rest": other,
             # 볼륨은 델타를 아예 내보내지 않는다 — 화면이 그걸 판정처럼 칠할 수 없게.
             "delta": None if volume else delta, "unit": unit, "share": share,
-            "better": None if volume or delta is None
+            "better": None if volume or delta is None or metric in blocked
             else (delta < 0 if metric in LOWER_IS_BETTER else delta > 0),
         })
     return pd.DataFrame(records)
@@ -1179,39 +1242,110 @@ def contrast_by_media(subject: pd.DataFrame, rest: pd.DataFrame,
         mine = subject[subject["media"] == media]
         other = rest[rest["media"] == media] if "media" in rest.columns else rest.iloc[0:0]
         table = contrast_rows(mine, other, metrics)
+        # ⚠ **판정은 사용자의 값 선택에 흔들려선 안 된다.** `metrics`는 표 위 `값`
+        #   멀티셀렉트에서 사용자가 고르는 목록이다. 그걸로 판정하면 표를 예쁘게
+        #   만들려고 지표 하나를 뺐을 때 액션 제안이 바뀐다 — 실측으로 D0 Coin CVR을
+        #   빼면 뒷단 판정이 31%, CPI를 빼면 앞단이 37% 뒤집힌다.
+        #   그래서 판정·규모는 **항상 `CONTRAST_METRICS` 전체**로 다시 만든 표에서
+        #   읽고, 화면 표에만 사용자 선택을 적용한다.
+        judge = table if not metrics else contrast_rows(mine, other, None)
         result.append({
             "media": str(media),
             "table": table,
+            "judge": judge,
             "ads": int(mine["ad"].nunique()) if "ad" in mine.columns else 0,
             "cost": float(mine["cost"].fillna(0).sum()),
-            "share": float(table[table["metric"] == "cost"]["share"].iloc[0])
-            if not table.empty and pd.notna(
-                table[table["metric"] == "cost"]["share"].iloc[0]) else None,
-            "verdict": contrast_verdict(table),
+            "share": float(judge[judge["metric"] == "cost"]["share"].iloc[0])
+            if not judge.empty and pd.notna(
+                judge[judge["metric"] == "cost"]["share"].iloc[0]) else None,
+            "verdict": contrast_verdict(judge),
         })
     return result
+
+
+#: `side_state`가 돌려주는 판정과 그 말.
+#:
+#: **`0`(차이 없음)과 `None`(판단 불가)은 다른 뜻이다.** 두 번 헤맸다:
+#:  · 예전 코드는 둘 다 `혼재`로 뭉갰다 — "엇갈림"으로 읽히는데 실제 뜻은
+#:    "설치가 한 건도 없어 판단 불가"였다(8월 `뒷단 혼재` 124카드 중 66개).
+#:  · 고치면서 이번엔 둘 다 `판단 불가`로 뭉갰다 — `format=VID`/TikTok은 설치
+#:    30,688건·코인 20건·열람 15,662건으로 **표본이 충분한데** CTR -0.95%p /
+#:    CPI -0.6%가 문턱 미달일 뿐인데도 `앞단 판단 불가`가 됐다.
+#:
+#: 그래서 셋을 구분한다: 우수 / 저조 / **차이 없음**(쓸 수 있었는데 차이가 작다) /
+#: **판단 불가**(쓸 지표가 없다).
+VERDICT_WORDS = {1: "우수", -1: "저조", 0: "차이 없음", None: "판단 불가"}
+
+
+def side_state(table: pd.DataFrame, primary: str, secondary: str) -> dict:
+    """한 단(앞단/뒷단)의 판정. **주 지표가 정하고 보조는 뒤집지 못한다.**
+
+    돈 지표를 주로 본다(앞단 CPI · 뒷단 D0 Coin CVR) — 규리님 결정. 주 지표를
+    못 쓰면(표본 게이트 탈락·NaN·문턱 미달) 보조로 판정하고, **그 사실을 남긴다**
+    (`used`). 둘 다 못 쓰면 `state = None`(판단 불가)이다.
+
+    돌려주는 것:
+        state    +1 우수 / -1 저조 / None 판단 불가
+        used     판정에 실제로 쓴 지표 이름 (None이면 없음)
+        fallback 보조 지표로 판정했나
+        opposed  판정과 **반대 방향**인 다른 지표 이름 (없으면 None)
+    """
+    def read(metric: str) -> tuple[bool | None, bool]:
+        """(우수한가, 쓸 수 있는 지표였나). `(None, True)`면 표본은 있는데 차이가 작다."""
+        rows = table[table["metric"] == metric]
+        if rows.empty:
+            return None, False
+        row = rows.iloc[0]
+        if row["better"] is None or pd.isna(row["better"]):
+            return None, False          # 표본 게이트 탈락·NaN — 쓸 수 없다
+        if not meaningful(row["delta"], row["unit"]):
+            return None, True           # 쓸 수 있지만 차이가 문턱 미달
+        return bool(row["better"]), True
+
+    first, first_ok = read(primary)
+    second, second_ok = read(secondary)
+
+    if first is not None:
+        state, used, fallback = (1 if first else -1), primary, False
+        opposed = secondary if second is not None and second != first else None
+    elif second is not None:
+        state, used, fallback = (1 if second else -1), secondary, True
+        opposed = None
+    elif first_ok or second_ok:
+        # 표본은 있었는데 어느 지표도 문턱을 넘지 못했다 → **차이 없음**이다.
+        return {"state": 0, "used": None, "fallback": False, "opposed": None}
+    else:
+        return {"state": None, "used": None, "fallback": False, "opposed": None}
+
+    return {"state": state, "used": used, "fallback": fallback, "opposed": opposed}
+
+
+def front_back_state(table: pd.DataFrame) -> tuple[dict, dict]:
+    """(앞단, 뒷단) 판정. 배지와 인사이트 초안이 **이 함수 하나**를 함께 쓴다.
+
+    ⚠ 빈 표 가드는 여기 두지 않는다 — `contrast_verdict`가 빈 표에 `""`를
+      돌려주는 계약을 지켜야 한다(대조군이 없는 표에 "차이 없음"이 찍히면 오류다).
+    """
+    return (side_state(table, FRONT_PRIMARY, FRONT_SECONDARY),
+            side_state(table, BACK_PRIMARY, BACK_SECONDARY))
 
 
 def contrast_verdict(table: pd.DataFrame) -> str:
     """소제목에 붙일 한마디. **표에 있는 것만 말한다.**
 
-    앞단(CTR·CPI)과 뒷단(CVR)을 갈라 본다 — 실제 리포트가 늘 그렇게 쓴다
-    ("앞단 효율 우수하나 D0 Read CVR 저조").
+    앞단(CPI·CTR)과 뒷단(D0 Coin·Read CVR)을 갈라 본다 — 실제 리포트가 늘 그렇게
+    쓴다("앞단 효율 우수하나 D0 Read CVR 저조").
     """
     if table.empty:
         return ""
-    def side(metrics: list[str]) -> int:
-        rows = table[table["metric"].isin(metrics)].dropna(subset=["better"])
-        if rows.empty:
-            return 0
-        good = int(rows["better"].sum())
-        return 1 if good > len(rows) - good else (-1 if good < len(rows) - good else 0)
-
-    front, back = side(["CTR", "CPI"]), side(["D0 read CVR", "D0 coin CVR"])
-    words = {1: "우수", -1: "저조", 0: "혼재"}
-    if front == 0 and back == 0:
+    front, back = front_back_state(table)
+    if front["state"] == 0 and back["state"] == 0:
+        # 예전 문구를 그대로 쓴다 — 표본이 있는데 차이가 없다는 뜻이 맞다.
         return "전체 대비 유의미한 차이 없음"
-    return f"앞단 {words[front]} · 뒷단 {words[back]}"
+    if front["state"] is None and back["state"] is None:
+        return "표본이 부족해 판단 불가"
+    return (f"앞단 {VERDICT_WORDS[front['state']]} · "
+            f"뒷단 {VERDICT_WORDS[back['state']]}")
 
 
 #: 행 단위 집행 조건. 이 필터는 **비교의 범위**다 — 대조군도 같은 범위 안이어야 한다.

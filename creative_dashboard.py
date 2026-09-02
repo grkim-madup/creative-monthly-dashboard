@@ -2398,6 +2398,36 @@ def render_compare_view(view: dict) -> None:
     )
 
 
+def contrast_ready(view: dict) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """대조군을 만들 수 있으면 `(대상, 그 외)`, 아니면 None.
+
+    **화면과 초안이 같은 가드를 통과해야 한다.** 예전에는 `render_contrast`에만
+    3단 방어가 있어서, 화면에는 "대조군을 만들 수 없습니다" 경고가 뜨는데 초안에는
+    `전체 대비 유의미한 차이 없음`이 들어갈 수 있었다(실측: `mix_group=MIX`/MOLOCO —
+    소재 1개·소진 ₩0·설치 0).
+    """
+    if not view["filters"]:
+        return None
+    subject, rest = contrast_split(named_overview, view["filters"],
+                                   view["include_ads"])
+    if subject.empty or rest.empty:
+        return None
+    return subject, rest
+
+
+def filter_summary(view: dict, limit: int = 20) -> str:
+    """대조군 표의 `대상` 열 이름. **초안 제목도 같은 문자열을 쓴다.**
+
+    소재 속성 필터만으로 만든다 — 매체·OS는 양쪽에 똑같이 걸린 비교 범위라서
+    대상 열에 적으면 "그 외"와 무엇이 다른지 오히려 흐려진다.
+    """
+    parts = [", ".join(map(str, values))
+             for field, values in (view["filters"] or {}).items()
+             if field in CREATIVE_FIELDS and values]
+    label = " · ".join(parts) or "대상"
+    return label[:limit - 1] + "…" if len(label) > limit else label
+
+
 def render_contrast(view: dict, month: int, key_prefix: str) -> None:
     """대조군 비교 표(B-3) — 매체마다 소제목 + `지표 / 대상 / 그 외 / 차이` 표 하나.
 
@@ -2407,32 +2437,20 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
     소제목에 **표본 크기와 소진 비중**을 함께 찍는다 — 그게 없으면 "CPI +36.7% 나쁨"만
     크게 보이는데 실제로는 소진 0.7%짜리 실험이다. 광고주가 과한 판단을 하게 된다.
     """
-    if not view["filters"]:
-        status_row("warn", "대조군을 만들 필터가 없습니다",
-                   "필터를 하나 이상 걸면 '그 외'와 견줄 수 있습니다.")
+    # 가드는 `contrast_ready` 한 곳에 있다 — 초안도 같은 것을 쓴다.
+    ready = contrast_ready(view)
+    if ready is None:
+        if not view["filters"]:
+            status_row("warn", "대조군을 만들 수 없습니다",
+                       "필터를 하나 이상 걸면 '그 외'와 견줄 수 있습니다.")
+        else:
+            status_row("warn", "대조군을 만들 수 없습니다",
+                       "매체·OS만 좁혔거나 필터에 맞는 소재가 없습니다. 소재 속성"
+                       "(유형·포맷·태그 등) 필터를 하나 걸면 '그 외 소재'와 견줄 수 있습니다.")
         return
+    subject, rest = ready
 
-    # 대조군 규칙은 `creative_data.contrast_split` 한 곳에만 있다 — 화면에서 다시
-    # 정의하면 감사 도구가 검증하는 것과 다른 값이 광고주에게 간다.
-    subject, rest = contrast_split(named_overview, view["filters"],
-                                   view["include_ads"])
-    if subject.empty:
-        status_row("warn", "필터에 맞는 소재가 없습니다", "필터를 완화해 보세요.")
-        return
-    if rest.empty:
-        status_row("warn", "대조군을 만들 수 없습니다",
-                   "매체·OS만 좁힌 상태입니다. 소재 속성(유형·포맷·태그 등) 필터를 "
-                   "하나 걸면 '그 외 소재'와 견줄 수 있습니다.")
-        return
-
-    # 열 이름은 **소재 속성 필터만**으로 만든다. 매체·OS는 비교 범위(양쪽에 똑같이
-    # 걸린 조건)라서 대상 열에 적으면 "그 외"와 무엇이 다른지 오히려 흐려진다.
-    # 길면 잘려서 `매체 Meta, TikTok · Extr` 처럼 읽을 수 없게 된다(실제로 그랬다).
-    parts = [", ".join(map(str, v)) for f, v in view["filters"].items()
-             if f in CREATIVE_FIELDS and v]
-    label = " · ".join(parts) or "대상"
-    if len(label) > 20:
-        label = label[:19] + "…"
+    label = filter_summary(view)
 
     cards = contrast_by_media(subject, rest, view["values"] or None)
     if not cards:
@@ -2984,19 +3002,36 @@ def comment_key(block_id: str) -> str:
 
 
 def insight_button(block: dict, views: list[dict], month: int) -> None:
-    """`초안 만들기` — 이 주제의 표 데이터로 인사이트 초안을 써 넣는다.
+    """`초안 쓰기` — 이 주제의 표 데이터로 인사이트 초안을 써 넣는다.
 
     **LLM을 쓰지 않는다.** 앱에서 Anthropic 호출이 막혀 있는 것도 이유지만
     (`client-recap-bot`이 같은 이유로 대기 중), 더 큰 이유는 **지어낼 수 없어야**
     한다는 것이다 — 이 문구는 광고주에게 그대로 간다. 계산으로만 만들면 표에 있는
     것만 말하고, 해석이 필요한 자리는 `(확인 필요)`로 비워 사람에게 넘긴다.
+
+    표의 **역할을 갈라 본다**(규리님 지시):
+      · 대조군 표가 서사를 만든다 — 기존 소재 대비 성과 → 계속 쓸 의미 → next step
+      · 소재단 표는 **유독 튀는 소재**가 있을 때만 한 줄 보탠다
+      · 기간 비교 뷰는 건너뛴다(리포트 월이 아닌 달을 봐서 기준이 섞인다)
+
+    예전에는 모든 뷰의 소재를 `pd.concat`으로 합쳐 하나의 초안을 만들었다. 그래서
+    `contrast`·`rows`·표 라벨이 전부 버려지고, 대조군 표를 켜 둔 주제에서도
+    "그 달 전체 대비"로만 말했다.
     """
     block_id = block["id"]
-    label = block.get("title") or ""
-    scopes = [filtered_scope(named_overview, v["filters"], v["include_ads"])
-              for v in views if v["kind"] != "compare"]
-    scopes = [frame for frame in scopes if not frame.empty]
-    if not scopes:
+
+    def title_of(view: dict) -> str:
+        # 라벨이 비면(기본값이 `""`다) 블록 제목이 아니라 **필터 요약**을 쓴다 —
+        # 블록 제목으로 대체하면 뷰 5개가 전부 같은 제목이 되어 식별이 사라진다.
+        return view["label"] or filter_summary(view) or (block.get("title") or "")
+
+    live = [view_with_defaults(v) for v in views if v["kind"] != "compare"]
+    contrast_views = [v for v in live if v["contrast"] and contrast_ready(v)]
+    ad_views = [v for v in live if not v["contrast"]
+                and "ad" in [r["field"] for r in v["rows"]]]
+    plain_views = [v for v in live if not v["contrast"]]
+
+    if not contrast_views and not plain_views:
         st.markdown('<div class="draft-off">표를 먼저 만들면 초안을 쓸 수 있어요</div>',
                     unsafe_allow_html=True)
         return
@@ -3006,18 +3041,76 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
                           "'확인 필요'로 남겨 두니 그 부분만 고쳐 주세요."):
         return
 
-    scope = pd.concat(scopes).drop_duplicates()
-    st.session_state[f"cdraft_{block_id}"] = insight_draft.draft_html(
-        scope, named_overview, month, label=label,
-        links=drive_links_for(scope),
-    )
+    pool = float(named_overview["cost"].fillna(0).sum())
+    # Drive 링크는 **블록 전체에서 한 번** 모은다 — 뷰마다 부르면 소재명 매칭이
+    # 뷰 수만큼 돈다.
+    link_scope = pd.concat(
+        [filtered_scope(named_overview, v["filters"], v["include_ads"])
+         for v in live] or [named_overview.iloc[0:0]]).drop_duplicates()
+    links = drive_links_for(link_scope)
+
+    # 조립은 `insight_draft.block_lines`가 한다 — 진입점에 두면 어떤 테스트도
+    # 검증하지 못한다(이 프로젝트에서 그 때문에 문법 오류가 배포까지 갔다).
+    sections: list[dict] = []
+    for view in contrast_views:
+        subject, rest = contrast_ready(view)
+        sections.append({"kind": "contrast", "title": title_of(view),
+                         "subject": subject, "rest": rest,
+                         "values": view["values"] or None})
+    for view in ad_views:
+        sections.append({"kind": "swing", "title": title_of(view),
+                         "scope": filtered_scope(named_overview, view["filters"],
+                                                 view["include_ads"]),
+                         "links": links})
+    if not contrast_views:
+        scope = pd.concat(
+            [filtered_scope(named_overview, v["filters"], v["include_ads"])
+             for v in plain_views]).drop_duplicates()
+        sections.append({"kind": "plain", "scope": scope, "whole": named_overview,
+                         "label": block.get("title") or "", "links": links})
+
+    lines = insight_draft.block_lines(sections, month, pool)
+
+    overlap = shared_ads(live)
+    if overlap:
+        lines.append("")
+        lines.append(f"※ {overlap}")
+    if not lines:
+        status_row("warn", "초안을 만들지 못했습니다",
+                   "표에 조건을 걸고 다시 눌러 주세요.")
+        return
+
+    st.session_state[f"cdraft_{block_id}"] = insight_draft.lines_to_html(lines)
     # 새 위젯으로 갈아끼워 초안이 실제로 보이게 한다.
+    # ⚠ `lines`가 비면 여기까지 오지 않는다 — nonce만 올리면 사용자가 입력 중이던
+    #   미저장 텍스트가 사라진다.
     st.session_state[f"cnonce_{block_id}"] = int(
         st.session_state.get(f"cnonce_{block_id}", 0)) + 1
     rerun_local()
 
 
-def drive_links_for(scope: pd.DataFrame, limit: int = 6) -> dict[str, str]:
+def shared_ads(views: list[dict]) -> str:
+    """두 표의 대상 소재가 겹치면 그 사실을 한 줄로. 겹치지 않으면 빈 문자열.
+
+    8월 실측: `epn` 태그 소재 4개 중 **3개가 `6s`에도** 걸린다. 두 표가 한 블록에
+    있으면 같은 소재가 한 문서에서 "대상"이자 "기준"이 되어 숫자가 어긋나 보이는데
+    둘 다 맞다. 지어내는 게 아니라 사실이므로 적어 두는 게 맞다.
+    """
+    named = [(v["label"] or filter_summary(v), v) for v in views]
+    for i, (name_a, view_a) in enumerate(named):
+        for name_b, view_b in named[i + 1:]:
+            ads_a = set(filtered_scope(named_overview, view_a["filters"],
+                                       view_a["include_ads"])["ad"])
+            ads_b = set(filtered_scope(named_overview, view_b["filters"],
+                                       view_b["include_ads"])["ad"])
+            common = ads_a & ads_b
+            if common and ads_a != ads_b:
+                return (f"{name_a} 표와 {name_b} 표는 소재 {len(common)}개가 겹칩니다 "
+                        "— 각 표의 '그 외' 기준이 서로 다릅니다")
+    return ""
+
+
+def drive_links_for(scope: pd.DataFrame, limit: int = 10) -> dict[str, str]:
     """소재명 → 광고주 Drive 링크. 소진 상위 몇 개만 찾는다.
 
     Drive 목록 조회는 캐시되지만 매칭은 소재 수만큼 돈다 — 초안에서 실제로 언급할
@@ -3080,15 +3173,19 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     if scope_of_block.empty:
         return
     summary = aggregate_by(scope_of_block.assign(_all="합계"), ["_all"]).iloc[0]
+    # 설명 문구는 **`마크업 포함`만** 남긴다(2026-09-03 규리님 요청). 나머지는
+    # 지표 이름만 봐도 아는 것들이라(`CTR = 클릭 ÷ 노출`) 카드를 시끄럽게만 했다.
+    # `마크업 포함`은 유일하게 **이름으로 알 수 없는 정보**라서 남긴다 — 보고된
+    # 소진액이 구글 원가가 아니라 8.3% 얹은 값이라는 뜻이고, 광고주가 자기 쪽
+    # 숫자와 대조할 때 이 한 줄이 없으면 차이를 설명할 수 없다.
     kpi_cards([
         {"label": "소재 수", "value": f"{scope_of_block['ad'].nunique():,}개",
-         "sub": "이 주제가 다루는 소재", "primary": True},
+         "primary": True},
         {"label": "소진액", "value": f"₩{summary['cost']:,.0f}", "sub": "마크업 포함"},
-        {"label": "CTR", "value": f"{summary['CTR']:.2%}", "sub": "클릭 ÷ 노출"},
-        {"label": "인스톨", "value": f"{summary['total install']:,.0f}", "sub": "Total install"},
-        {"label": "CPI", "value": f"₩{summary['CPI']:,.0f}", "sub": "소진 ÷ 인스톨"},
-        {"label": "D0 Read CVR", "value": f"{summary['D0 read CVR']:.2%}",
-         "sub": "D0 Read ÷ 인스톨"},
+        {"label": "CTR", "value": f"{summary['CTR']:.2%}"},
+        {"label": "인스톨", "value": f"{summary['total install']:,.0f}"},
+        {"label": "CPI", "value": f"₩{summary['CPI']:,.0f}"},
+        {"label": "D0 Read CVR", "value": f"{summary['D0 read CVR']:.2%}"},
     ])
 
 
