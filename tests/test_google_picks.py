@@ -70,3 +70,33 @@ def test_tiny_table_does_not_pick_from_two_values():
     """값이 2개뿐인 지표로 뽑으면 그 둘이 자동으로 best/worst가 되어 의미가 없다."""
     metrics = google_pick_metrics(table(10, cpa_rows=2))
     assert [m for m, _ in metrics] == ["CPI", "CTR"]
+
+
+def test_pick_metrics_is_the_single_source():
+    """표 색칠과 소재 카드가 **같은 함수**로 기준을 얻어야 한다.
+
+    예전에는 카드 쪽만 `인앱 CPA`로 고정돼 있어서, 표는 CPI·CTR로 4줄을 칠하는데
+    카드는 CPI 하나만 잡아 2개만 나왔다. 같은 화면에서 색칠과 카드가 다른 소재를
+    가리키면 어느 쪽이 맞는지 알 수 없다.
+    """
+    import pathlib
+    source = pathlib.Path("creative_dashboard.py").read_text(encoding="utf-8")
+    # 구글 경로에 지표 목록을 손으로 적어 둔 곳이 없어야 한다.
+    assert '[("CPI", False), ("인앱 CPA", False)]' not in source
+    # 표(`render_google_table`)와 카드(`render_google_material_cards`) 두 곳.
+    # 표(`render_google_table`의 `view`)와 카드(`render_google_material_cards`
+    # 의 `df`) 두 곳이 각각 이 함수로 기준을 얻는다.
+    assert "google_pick_metrics(df)" in source
+    assert "google_pick_metrics(view)" in source
+
+
+def test_table_and_cards_pick_the_same_creatives():
+    from creative_data import pick_best_worst
+
+    top = table(10, cpa_rows=1)
+    metrics = google_pick_metrics(top)
+    table_best, table_worst = pick_best_worst(top, metrics)
+    card_best, card_worst = pick_best_worst(top, google_pick_metrics(top))
+    assert table_best == card_best
+    assert table_worst == card_worst
+    assert len(card_best) + len(card_worst) == 4

@@ -614,7 +614,11 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
     YouTube는 영상 ID로 썸네일 주소를 조합하고, 이미지 애셋은 URL이 곧 그림이다.
     광고주 Drive를 뒤지지 않으므로 메타/틱톡 카드보다 오히려 빠르다.
     """
-    best, worst = pick_best_worst(df, [("CPI", False), ("인앱 CPA", False)])
+    # ⚠ **표와 같은 기준을 써야 한다.** 예전에는 여기만 `인앱 CPA`로 고정돼 있어서,
+    #   표는 CPI·CTR로 4줄을 칠하는데 카드는 CPI 하나만 잡아 **2개만 나왔다**
+    #   (규리님 지적). 같은 화면에서 색칠과 카드가 다른 소재를 가리키면 어느 쪽이
+    #   맞는지 알 수 없다 — 기준 계산은 `google_pick_metrics` 한 곳에만 둔다.
+    best, worst = pick_best_worst(df, google_pick_metrics(df))
     if not best and not worst:
         return
 
