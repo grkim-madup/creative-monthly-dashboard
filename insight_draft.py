@@ -401,49 +401,6 @@ def side_phrase(side: dict, label: str) -> str:
     return f"{text} ({' · '.join(notes)})" if notes else text
 
 
-def contrast_lines(cards: list[dict], month: int, title: str,
-                   scale: str = "", media_limit: int = 2) -> list[str]:
-    """대조군 표 하나를 문단으로. 매체는 소진 상위 `media_limit`개만 서술한다.
-
-    카드를 다 쓰면 뷰 5개인 블록에서 초안이 70줄을 넘는다 — 그러면 규리님이
-    "고칠 것만 고치는" 흐름이 아니라 지우는 작업을 하게 된다.
-    """
-    if not cards:
-        return []
-    lines = [f"- {title} — 기존 소재 대비 ({month}월 · 그 외 소재 대비)"]
-    if scale:
-        lines.append(f"   ㄴ 규모 : {scale}")
-
-    shown, hidden = cards[:media_limit], cards[media_limit:]
-    for card in shown:
-        judged = operating_verdict(card)
-        head = (f"{side_phrase(judged['front'], '앞단')} · "
-                f"{side_phrase(judged['back'], '뒷단')}")
-        if judged["verdict"]:
-            head += f" → {judged['verdict']}"
-            if not judged["action_ok"]:
-                head += " (표본 작아 액션 보류)"
-        lines.append(f"   ㄴ {card['media']} : {head}")
-
-        table = card.get("judge", card["table"])
-        for metrics in (FRONT_METRICS_ORDER, BACK_METRICS_ORDER):
-            parts = [metric_line(row) for _, row in table.iterrows()
-                     if row["metric"] in metrics and pd.notna(row.get("delta"))]
-            if parts:
-                lines.append("       ㄴ " + " / ".join(parts))
-        sample = [f"설치 {judged['installs']:,.0f}건"]
-        if card.get("share") is not None:
-            sample.insert(0, f"소진 비중 {card['share']:.1%}")
-        lines.append("       ㄴ " + " · ".join(sample))
-
-    if hidden:
-        total = sum(c.get("share") or 0 for c in hidden)
-        names = ", ".join(c["media"] for c in hidden)
-        lines.append(f"   ㄴ 그 외 매체 {len(hidden)}곳({names}) · "
-                     f"소진 비중 합 {total:.1%} — 규모가 작아 생략")
-    return lines
-
-
 #: 근거 줄에 묶어 쓰는 순서(앞단 → 뒷단). 판정 지표와 같은 상수를 쓴다.
 FRONT_METRICS_ORDER = (FRONT_PRIMARY, FRONT_SECONDARY)
 BACK_METRICS_ORDER = (BACK_PRIMARY, BACK_SECONDARY)
@@ -523,49 +480,6 @@ def swing_lines(scope: pd.DataFrame, links: dict[str, str] | None = None,
     return lines
 
 
-def next_step_lines(entries: list[tuple[str, dict]]) -> list[str]:
-    """`추후 제작 인사이트`. 실제 리포트 문체를 따른다.
-
-    `notes/next_step_7.json`의 사람이 쓴 원문에서 확인한 규칙:
-      · 근거는 명사형·음슴체(`~있음`, `~활용`)
-      · 제안은 `>>` 로 시작하고 `~제안` / `~검토`로 끝난다(화면에서 초록 굵게)
-      · 제안 아래에 `ex)` 로 구체 예시를 붙인다
-
-    ⚠ `ex)` 자리는 **비운다.** 거기에 문구를 지어 넣으면 광고주에게 없는 사실이 간다.
-    ⚠ 줄마다 `{표} · {매체}`를 붙인다. 안 붙이면 한 블록에 EPN 표와 MIX 표가 있을 때
-      `TikTok : 유지`와 `TikTok : 축소 검토`가 나란히 찍혀 자기모순이 된다.
-    """
-    if not entries:
-        return []
-    lines = ["", "추후 제작 인사이트"]
-    proposals = []
-    for title, card in entries:
-        judged = operating_verdict(card)
-        who = f"{title} · {card['media']}" if title else card["media"]
-        if not judged["verdict"]:
-            continue
-        # 근거는 **판정에 실제로 쓴 지표**만. 전부 나열하면 위 본문과 통째로
-        # 중복되고(실측 4지표 × 매체), 실제 리포트는 근거를 짧게 쓴다.
-        table = card.get("judge", card["table"])
-        used = [judged["front"]["used"], judged["back"]["used"]]
-        facts = [metric_line(row) for _, row in table.iterrows()
-                 if row["metric"] in used and pd.notna(row.get("delta"))]
-        if facts:
-            lines.append(f"- {who} : " + " / ".join(facts) + "으로 확인되고 있음")
-        if judged["action_ok"]:
-            proposals.append(f">> {who} — {judged['action']}")
-        else:
-            proposals.append(f">> {who} — 표본 확보 후 재판단 제안 "
-                             f"(설치 {judged['installs']:,.0f}건)")
-    if not proposals:
-        return []
-    lines.append("")
-    for line in proposals:
-        lines.append(line)
-        lines.append("- ex)")
-    return lines
-
-
 def lines_to_html(lines: list[str]) -> str:
     """Quill에 그대로 넣을 HTML. **빈 줄 규칙을 여기 한 곳에만 둔다.**"""
     return "".join("<p><br></p>" if not line.strip() else f"<p>{line}</p>"
@@ -591,6 +505,7 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
     """
     lines: list[str] = []
     entries: list[tuple[str, dict]] = []
+    drivers: dict[tuple[str, str], dict] = {}
     failed: list[str] = []
     has_contrast = any(s["kind"] == "contrast" for s in sections)
 
@@ -610,9 +525,30 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
                     #   쓰면 광고주가 1번 표와 대조하며 1.5배 어긋난 숫자를 본다.
                     scale += (f" (소재 태깅된 집행 ₩{pool:,.0f} 중 "
                               f"{spend / pool:.2%})")
-                lines += contrast_lines(cards, month, title, scale)
+                links = section.get("links")
+                lines += contrast_lines(cards, month, title, scale,
+                                        subject=subject, rest=rest, links=links)
                 entries += [(title, card) for card in cards]
-            elif section["kind"] == "swing":
+                # 격차를 만든 소재를 next step까지 물고 간다 — 그게 확인되면
+                # `표본 확보 후 재판단`(무응답) 대신 **그 소재를 빼고 재집행**을
+                # 제안할 수 있다. 두 곳이 따로 계산하면 서로 다른 말을 한다.
+                for card in cards:
+                    judged = operating_verdict(card)
+                    for side in (judged["front"], judged["back"]):
+                        if side["state"] != -1 or not side["used"]:
+                            continue
+                        found = gap_driver(
+                            subject[subject["media"] == card["media"]],
+                            rest[rest["media"] == card["media"]], side["used"])
+                        if found:
+                            drivers[(title, card["media"])] = found
+                            break
+            elif section["kind"] == "swing" and not has_contrast:
+                # ⚠ 대조군 표가 있으면 이 줄을 쓰지 않는다. `gap_driver`가 같은
+                #   질문에 **더 나은 답**을 하기 때문이다 — 저쪽은 "기존 소재와의
+                #   격차를 만든 소재"를 짚는데, 이쪽은 "소재군 평균을 흔든 소재"라
+                #   기준이 없다. 둘을 함께 찍으면 서로 다른 지표를 근거로 서로
+                #   반대되는 얘기를 하는 것처럼 보인다(실측으로 그랬다).
                 lines += swing_lines(section["scope"], section.get("links"))
             elif section["kind"] == "plain" and not has_contrast:
                 body, tail = draft_sections(
@@ -623,7 +559,243 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
             failed.append(f"{title or '표'} ({error})")
 
     if has_contrast:
-        lines += next_step_lines(entries)
+        lines += next_step_lines(entries, drivers)
     for item in failed:
         lines.append(f"※ 초안을 만들지 못한 표 : {item}")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 인사이트 — 나열을 해석으로
+#
+# 리서치한 프레임워크(무슨 일 → 무엇을 뜻하나 → 무엇을 할까) 중 2·3단이 없었다.
+# 특히 **격차의 원인을 소재 단위로 되짚는 단계**가 빠져 있었다.
+#
+# 실측이 그 필요를 보여준다(8월 EPN/Meta): 소재군 D0 Read CVR 42.86%로 기존 소재
+# 60.44%보다 17.58%p 낮다 → 그대로 읽으면 "EPN은 열람 전환을 못 만든다"가 된다.
+# 그런데 소재 4개 중 `9400…SECRET-6s-epn` 하나를 빼면 **62.75%로 기존을 넘어선다**
+# (격차 87% 회복). 즉 유형의 문제가 아니라 그 1개의 문제다. 결론이 정반대가 된다.
+
+#: 격차의 몇 %를 되돌리면 "이 소재가 원인"이라고 말할 수 있는가.
+MIN_GAP_RECOVERY = 0.6
+
+#: 앞단/뒷단이 갈릴 때의 해석. 이게 "무엇을 뜻하나"에 해당한다.
+COMBINED_READING = {
+    (1, 1): "유입과 전환이 함께 개선된 소재군임",
+    (1, -1): "유입은 늘리지만 열람·결제까지 이어지지 않는 소재군임",
+    (-1, 1): "유입 효율은 떨어지지만 들어온 유저의 반응은 기존보다 좋은 소재군임",
+    (-1, -1): "유입·전환 모두 기존 소재를 밑도는 소재군임",
+}
+
+
+def gap_driver(subject: pd.DataFrame, rest: pd.DataFrame, metric: str,
+               min_recovery: float = MIN_GAP_RECOVERY) -> dict | None:
+    """격차를 혼자 만든 소재. **leave-one-out으로 "빼면 기존에 얼마나 붙나"를 본다.**
+
+    `swing_creatives`와 다른 질문이다 — 저쪽은 "평균을 흔드는 소재", 이쪽은
+    **"기존 소재와의 격차를 만든 소재"** 다. 후자가 결론을 뒤집는다.
+    """
+    if subject.empty or rest.empty or "ad" not in subject.columns:
+        return None
+    base = aggregate_by(subject.assign(_all="합계"), ["_all"]).iloc[0].get(metric)
+    bench = aggregate_by(rest.assign(_all="합계"), ["_all"]).iloc[0].get(metric)
+    if pd.isna(base) or pd.isna(bench) or not bench:
+        return None
+    gap = abs(float(base) - float(bench))
+    if not gap:
+        return None
+
+    best = None
+    for ad in subject["ad"].dropna().unique():
+        others = subject[subject["ad"] != ad]
+        if others.empty:
+            continue
+        value = aggregate_by(others.assign(_all="합계"), ["_all"]).iloc[0].get(metric)
+        if pd.isna(value):
+            continue
+        recovery = (gap - abs(float(value) - float(bench))) / gap
+        if recovery >= min_recovery and (best is None or recovery > best["recovery"]):
+            best = {"ad": str(ad), "metric": metric, "recovery": recovery,
+                    "base": float(base), "without": float(value),
+                    "benchmark": float(bench),
+                    # 빼고 나면 기존 소재보다 오히려 좋아지는가.
+                    "beats": ((float(value) < float(bench))
+                              if metric in LOWER_IS_BETTER
+                              else (float(value) > float(bench))),
+                    "share": (float(subject[subject["ad"] == ad]["cost"].fillna(0).sum())
+                              / float(subject["cost"].fillna(0).sum() or 1))}
+    return best
+
+
+def ad_link(ad: str, links: dict[str, str] | None) -> str:
+    """소재명 자체를 링크로. 예전에는 뒤에 `소재 보기`를 따로 붙여 문장이 끊겼다."""
+    url = (links or {}).get(ad)
+    return (f'<a href="{url}" target="_blank">{ad}</a>') if url else ad
+
+
+def front_sentence(side: dict, table: pd.DataFrame) -> str:
+    """앞단을 **풀어서** 한 문장. 숫자는 괄호에 넣고 뜻을 앞에 쓴다."""
+    rows = {r["metric"]: r for _, r in table.iterrows()}
+    cpi, ctr = rows.get(FRONT_PRIMARY), rows.get(FRONT_SECONDARY)
+    if side["state"] is None:
+        return "앞단은 표본이 부족해 판단하지 않음"
+    if side["state"] == 0:
+        return "앞단 효율은 기존 소재와 뚜렷한 차이 없음"
+
+    parts = []
+    if side["used"] == FRONT_PRIMARY and cpi is not None:
+        way = "낮음" if side["state"] == 1 else "높음"
+        parts.append(f"설치 단가가 기존 소재보다 {abs(cpi['delta']):.0%} {way}"
+                     f"(CPI {fmt('CPI', cpi['subject'])} vs "
+                     f"{fmt('CPI', cpi['rest'])})")
+    elif ctr is not None:
+        way = "높음" if side["state"] == 1 else "낮음"
+        parts.append(f"클릭률이 기존 소재보다 {abs(ctr['delta']):.2f}%p {way}"
+                     f"(CTR {fmt('CTR', ctr['subject'])} vs "
+                     f"{fmt('CTR', ctr['rest'])})")
+        if cpi is not None and pd.notna(cpi.get("delta")):
+            parts.append("설치 단가는 기존과 큰 차이 없음")
+    return ", ".join(parts)
+
+
+def back_sentence(side: dict, table: pd.DataFrame) -> str:
+    rows = {r["metric"]: r for _, r in table.iterrows()}
+    coin, read = rows.get(BACK_PRIMARY), rows.get(BACK_SECONDARY)
+    if side["state"] is None:
+        return "설치 이후 전환은 표본이 부족해 판단하지 않음"
+    if side["state"] == 0:
+        return "설치 이후 전환은 기존 소재와 뚜렷한 차이 없음"
+    row = coin if side["used"] == BACK_PRIMARY else read
+    name = "결제(코인) 전환" if side["used"] == BACK_PRIMARY else "열람 전환"
+    way = "높음" if side["state"] == 1 else "낮음"
+    label = METRIC_LABEL.get(side["used"], side["used"])
+    return (f"설치 이후 {name}이 기존 소재보다 {abs(row['delta']):.2f}%p {way}"
+            f"({label} {fmt(side['used'], row['subject'])} vs "
+            f"{fmt(side['used'], row['rest'])})")
+
+
+def contrast_lines(cards: list[dict], month: int, title: str,
+                   scale: str = "", media_limit: int = 2,
+                   subject: pd.DataFrame | None = None,
+                   rest: pd.DataFrame | None = None,
+                   links: dict[str, str] | None = None) -> list[str]:
+    """대조군 표 하나를 **해석까지** 담은 문단으로.
+
+    리서치한 3단을 그대로 따른다:
+      1. 무슨 일이 있었나 — 앞단·뒷단을 풀어서 한 문장씩
+      2. 그게 무엇을 뜻하나 — 두 단의 조합 해석 + **격차를 만든 소재 되짚기**
+      3. 무엇을 할까 — `next_step_lines`가 받는다
+
+    매체는 소진 상위 `media_limit`개만 서술한다. 카드를 다 쓰면 뷰 5개인 블록에서
+    초안이 70줄을 넘어, 규리님이 "고칠 것만 고치는" 흐름이 아니라 지우는 작업을 한다.
+    """
+    if not cards:
+        return []
+    lines = [f"- {title} — 기존 소재 대비 ({month}월 · 그 외 소재 대비)"]
+    if scale:
+        lines.append(f"   ㄴ 규모 : {scale}")
+
+    shown, hidden = cards[:media_limit], cards[media_limit:]
+    for card in shown:
+        judged = operating_verdict(card)
+        table = card.get("judge", card["table"])
+        front, back = judged["front"], judged["back"]
+
+        lines.append(f"   ㄴ {card['media']} — {front_sentence(front, table)}")
+        lines.append(f"       ㄴ {back_sentence(back, table)}")
+
+        reading = COMBINED_READING.get((front["state"], back["state"]))
+        if reading:
+            lines.append(f"       ㄴ 즉 {reading}")
+
+        # ── 격차를 만든 소재 되짚기. 여기서 결론이 뒤집힐 수 있다.
+        for side, metric in ((front, front["used"]), (back, back["used"])):
+            if side["state"] != -1 or not metric or subject is None:
+                continue
+            driver = gap_driver(subject[subject["media"] == card["media"]],
+                                rest[rest["media"] == card["media"]], metric)
+            if not driver:
+                continue
+            label = METRIC_LABEL.get(metric, metric)
+            tail = ("오히려 상회함" if driver["beats"] else "근접함")
+            lines.append(
+                f"       ㄴ 다만 이 열위는 {ad_link(driver['ad'], links)} "
+                f"1개에 집중돼 있음 — 그 소재를 제외하면 "
+                f"{label}{subject_particle(label)} "
+                f"{fmt(metric, driver['base'])} → {fmt(metric, driver['without'])}"
+                f"로, 기존 소재 {fmt(metric, driver['benchmark'])}를 {tail}"
+                f"(격차 {driver['recovery']:.0%} 해소). 유형 자체의 문제로 보기 어려움")
+
+        sample = [f"설치 {judged['installs']:,.0f}건"]
+        if card.get("share") is not None:
+            sample.insert(0, f"소진 비중 {card['share']:.1%}")
+        lines.append("       ㄴ " + " · ".join(sample))
+
+    if hidden:
+        total = sum(c.get("share") or 0 for c in hidden)
+        names = ", ".join(c["media"] for c in hidden)
+        lines.append(f"   ㄴ 그 외 매체 {len(hidden)}곳({names}) · "
+                     f"소진 비중 합 {total:.1%} — 규모가 작아 생략")
+    return lines
+
+
+def next_step_lines(entries: list[tuple[str, dict]],
+                    drivers: dict | None = None) -> list[str]:
+    """`추후 제작 인사이트`. **구체적으로 무엇을 할지**까지 쓴다.
+
+    리서치한 원칙: *"improve Facebook performance" 같은 문구는 실행할 수 없다 —
+    바로 실행 가능한 수준으로 구체적이어야 한다.* 그래서 격차를 만든 소재가
+    확인되면 `표본 확보 후 재판단` 같은 무응답 대신 **그 소재를 빼고 재집행**을
+    제안한다.
+
+    실제 리포트 문체(`notes/next_step_7.json`): 근거는 음슴체, 제안은 `>>` +
+    `~제안` / `~검토`. `ex)` 자리는 **비운다** — 지어내면 없는 사실이 간다.
+    """
+    if not entries:
+        return []
+    drivers = drivers or {}
+    lines = ["", "추후 제작 인사이트"]
+    proposals = []
+    for title, card in entries:
+        judged = operating_verdict(card)
+        who = f"{title} · {card['media']}" if title else card["media"]
+        table = card.get("judge", card["table"])
+        front, back = judged["front"], judged["back"]
+        if not judged["verdict"]:
+            # 양쪽 다 판단 불가면 할 말이 없다. 다만 **한쪽이 뚜렷하면** 그건
+            # 말해야 한다 — 예전에는 그 매체가 next step에서 통째로 빠졌다
+            # (실측: TikTok 앞단 CPI 18% 우수인데 뒷단 표본 부족이라 사라졌다).
+            side = front if front["state"] in (1, -1) else back
+            if side["state"] not in (1, -1):
+                continue
+            sentence = (front_sentence(front, table) if side is front
+                        else back_sentence(back, table))
+            lines.append(f"- {who} : {sentence}")
+            missing = "설치 이후 전환" if side is front else "앞단 효율"
+            proposals.append(f">> {who} — {missing} 표본 확보 후 재판단 제안 "
+                             f"(설치 {judged['installs']:,.0f}건)")
+            continue
+        lines.append(f"- {who} : {front_sentence(front, table)}")
+        lines.append(f"  ㄴ {back_sentence(back, table)}")
+
+        driver = drivers.get((title, card["media"]))
+        if driver:
+            # 원인이 소재 1개로 좁혀졌다 — 그럼 할 일은 "재판단"이 아니라 "그 소재 제외"다.
+            label = METRIC_LABEL.get(driver["metric"], driver["metric"])
+            proposals.append(
+                f">> {who} — {driver['ad']} 제외 후 동일 유형 재집행으로 유효성 "
+                f"재확인 제안 (그 소재를 빼면 {label} "
+                f"{fmt(driver['metric'], driver['without'])}로 기존 "
+                f"{fmt(driver['metric'], driver['benchmark'])} 수준)")
+        elif judged["action_ok"]:
+            proposals.append(f">> {who} — {judged['action']}")
+        else:
+            proposals.append(f">> {who} — 표본 확보 후 재판단 제안 "
+                             f"(설치 {judged['installs']:,.0f}건)")
+    if not proposals:
+        return []
+    lines.append("")
+    for line in proposals:
+        lines.append(line)
+        lines.append("- ex)")
     return lines

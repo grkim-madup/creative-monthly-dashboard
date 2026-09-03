@@ -54,6 +54,7 @@ from creative_data import (
     contrast_by_media,
     contrast_split,
     filtered_scope,
+    google_pick_metrics,
     METRIC_DISPLAY,
     RATIO_METRICS,
     normalize_rows,
@@ -680,11 +681,14 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
 def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: bool = True):
     """구글 표 — 소재 식별자가 URL이라 링크 컬럼이 필요해서 별도 렌더러를 쓴다.
 
-    강조 규칙은 매체별 TOP 소재와 동일하게 우수/저조 행 단위. 다만 구글은 Coin CVR이 없어
-    CPI와 인앱 CPA를 기준으로 뽑는다.
+    강조 규칙은 매체별 TOP 소재와 동일하게 우수/저조 행 단위. 다만 구글은 Coin CVR이
+    없어 CPI를 주 기준으로 쓰고, 두 번째 지표는 **그 표에 값이 있는 것**을 고른다
+    (`google_pick_metrics`) — 예전에는 `인앱 CPA`로 고정돼 있어서 설치 목적(ACi)
+    캠페인 표에서는 슬롯이 비고 색칠이 3개만 나왔다.
     """
     view = df[[c for c in GOOGLE_COLUMNS if c in df.columns]].copy()
-    best, worst = pick_best_worst(view, [("CPI", False), ("인앱 CPA", False)]) if highlight else ({}, {})
+    metrics = google_pick_metrics(view)
+    best, worst = pick_best_worst(view, metrics) if highlight else ({}, {})
     # 예전에는 여기서 CTR에 100을 곱했다 — st.dataframe의 NumberColumn '%.2f%%'가 값을
     # 그대로 찍기 때문이었다. HTML 렌더는 FORMATS의 '{:.2%}'를 쓰므로 비율 그대로 둔다.
     # (곱한 채로 넘기면 3.01%가 301%로 나온다.)
@@ -711,6 +715,16 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
         link_columns={"소재 링크"} if link_column else None,
     )
     if highlight:
+        # 무슨 기준으로 칠했는지 각주로 남긴다. 구글은 표마다 두 번째 지표가 달라질
+        # 수 있어서(설치 목적 표는 인앱 CPA가 없다) 안 적으면 읽는 사람이 못 맞춘다.
+        names = " · ".join(
+            html.escape(GOOGLE_LABELS.get(m, METRIC_LABELS.get(m, m)))
+            for m, _ in metrics)
+        st.markdown(
+            f'<div class="sec-legend">녹색 = 우수 · 붉은색 = 저조 — 위 표에 보이는 '
+            f"소재 중 {names} 기준 각 1개씩 선정</div>",
+            unsafe_allow_html=True,
+        )
         note = shared_pick_note(view, best, worst, "asset", "objective")
         if note:
             status_row("info", "동일 소재 중복 선정", note)

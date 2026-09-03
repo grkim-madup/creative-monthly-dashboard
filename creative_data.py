@@ -1451,3 +1451,36 @@ def mix_group(df: pd.DataFrame) -> pd.Series:
         np.where(by_type | by_tag | by_title, MIX_LABEL, NON_MIX_LABEL),
         index=df.index, dtype="object",
     )
+
+
+#: 구글 표의 색칠 기준 후보. **앞에서부터 데이터가 충분한 것을 고른다.**
+#:
+#: 구글은 D0 Coin CVR이 없어 CPI를 주 기준으로 쓰는데, 두 번째 지표를
+#: `인앱 CPA`로 고정하면 **설치 목적(ACi) 캠페인 표에서는 슬롯이 빈다** —
+#: 그 캠페인은 인앱 액션을 잡지 않기 때문이다(구조적으로 0건).
+#: 실측(7월): AOS·인스톨 기준 TOP10에서 인앱 CPA를 쓸 수 있는 소재가 1개뿐이라
+#: 우수 2 + 저조 1 = **3개만 색칠**됐다.
+GOOGLE_PICK_PRIMARY = ("CPI", False)
+GOOGLE_PICK_SECONDARY = [("인앱 CPA", False), ("CTR", True)]
+
+
+def google_pick_metrics(table: pd.DataFrame,
+                        min_coverage: float = 0.5) -> list[tuple[str, bool]]:
+    """이 표에서 실제로 쓸 수 있는 색칠 기준 두 개.
+
+    두 번째 지표는 **표 행의 절반 이상**에 값이 있어야 쓴다. 10개 중 4개만 있는
+    지표로 뽑으면 나머지 6개는 애초에 비교 대상이 아니었는데도 "이 표에서 가장
+    나쁜 소재"처럼 읽힌다.
+    """
+    metrics = [GOOGLE_PICK_PRIMARY]
+    if table is None or table.empty:
+        return metrics
+    need = max(2, int(len(table) * min_coverage))
+    for column, higher_is_better in GOOGLE_PICK_SECONDARY:
+        if column not in table.columns:
+            continue
+        usable = int(pd.to_numeric(table[column], errors="coerce").gt(0).sum())
+        if usable >= need:
+            metrics.append((column, higher_is_better))
+            break
+    return metrics

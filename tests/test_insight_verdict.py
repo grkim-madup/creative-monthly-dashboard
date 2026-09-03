@@ -293,3 +293,133 @@ class TestBlockDocument:
         verdict_of = lambda lines: [l for l in lines if l.startswith(">>")]
         assert verdict_of(idf.block_lines(base, 8)) == \
                verdict_of(idf.block_lines(fewer, 8))
+
+
+class TestGapDriver:
+    """격차를 만든 소재를 되짚는다 — **여기서 결론이 뒤집힌다.**
+
+    8월 EPN/Meta 실측: 소재군 D0 Read CVR이 기존보다 17.58%p 낮아 그대로 읽으면
+    "EPN은 열람 전환을 못 만든다"가 된다. 그런데 소재 4개 중 하나를 빼면 기존을
+    **넘어선다**. 유형의 문제가 아니라 그 1개의 문제다.
+    """
+
+    def pool(self):
+        """3개는 기존과 비슷하고, 1개만 크게 나쁘다."""
+        return frame([
+            row("good1", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("good2", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("bad", "Meta", 3000000, 300000, 3000, 300, 10, 1),
+        ])
+
+    def bench(self):
+        return frame([row("r1", "Meta", 50000000, 15000000, 150000, 25000,
+                          15000, 1000)])
+
+    def test_finds_the_creative_that_made_the_gap(self):
+        found = idf.gap_driver(self.pool(), self.bench(), "CPI")
+        assert found and found["ad"] == "bad"
+        assert found["recovery"] >= idf.MIN_GAP_RECOVERY
+
+    def test_says_whether_it_beats_the_benchmark_without_it(self):
+        found = idf.gap_driver(self.pool(), self.bench(), "CPI")
+        assert isinstance(found["beats"], bool)
+
+    def test_no_driver_when_the_gap_is_spread_out(self):
+        """모두가 조금씩 나쁘면 한 소재를 짚을 수 없다 — 그때는 말하지 않는다."""
+        flat = frame([row(f"a{i}", "Meta", 2000000, 300000, 3000, 400, 100, 5)
+                      for i in range(5)])
+        assert idf.gap_driver(flat, self.bench(), "CPI") is None
+
+    def test_empty_sides_are_safe(self):
+        assert idf.gap_driver(pd.DataFrame(), self.bench(), "CPI") is None
+        assert idf.gap_driver(self.pool(), pd.DataFrame(), "CPI") is None
+
+    def test_driver_turns_into_a_concrete_proposal(self):
+        """`표본 확보 후 재판단`(무응답) 대신 **그 소재를 빼고 재집행**을 제안한다."""
+        cards = contrast_by_media(self.pool(), self.bench())
+        driver = idf.gap_driver(self.pool(), self.bench(), "CPI")
+        lines = idf.next_step_lines([("EPN", cards[0])],
+                                    {("EPN", cards[0]["media"]): driver})
+        proposal = next(line for line in lines if line.startswith(">>"))
+        assert "bad" in proposal and "제외" in proposal
+
+
+class TestProse:
+    """숫자 나열이 아니라 **풀어쓴 문장**이어야 한다(규리님 지적)."""
+
+    def table_of(self, **deltas):
+        return table(**deltas)
+
+    def test_front_reads_as_a_sentence(self):
+        state = {"state": -1, "used": "CPI", "fallback": False, "opposed": None}
+        text = idf.front_sentence(state, pd.DataFrame([
+            {"metric": "CPI", "delta": 0.37, "unit": "%", "better": False,
+             "subject": 7668.0, "rest": 5609.0, "share": None}]))
+        assert "설치 단가" in text and "높음" in text and "₩7,668" in text
+
+    def test_back_names_the_conversion_step(self):
+        state = {"state": -1, "used": "D0 read CVR", "fallback": True,
+                 "opposed": None}
+        text = idf.back_sentence(state, pd.DataFrame([
+            {"metric": "D0 read CVR", "delta": -17.58, "unit": "%p",
+             "better": False, "subject": 0.4286, "rest": 0.6044, "share": None}]))
+        assert "열람 전환" in text and "낮음" in text
+
+    def test_combined_reading_explains_what_it_means(self):
+        """"무슨 일이 있었나"에서 멈추지 않고 "그게 무엇을 뜻하나"를 쓴다."""
+        assert idf.COMBINED_READING[(1, -1)]
+        assert "유입" in idf.COMBINED_READING[(1, -1)]
+
+    def test_creative_name_itself_is_the_link(self):
+        """예전에는 뒤에 `소재 보기`를 따로 붙여 문장이 끊겼다."""
+        html = idf.ad_link("9400_X", {"9400_X": "https://drive.example/x"})
+        assert html.startswith("<a href=") and ">9400_X</a>" in html
+        assert "소재 보기" not in html
+
+    def test_plain_name_when_there_is_no_link(self):
+        assert idf.ad_link("9400_X", {}) == "9400_X"
+
+
+class TestSwingIsNotDoubled:
+    def test_swing_lines_are_dropped_when_contrast_exists(self):
+        """둘을 함께 찍으면 서로 다른 지표로 반대되는 얘기를 하는 것처럼 보인다."""
+        subject = frame([
+            row("a", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("b", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("c", "Meta", 3000000, 300000, 3000, 300, 10, 1),
+        ])
+        rest = frame([row("r1", "Meta", 50000000, 15000000, 150000, 25000,
+                          15000, 1000)])
+        sections = [
+            {"kind": "contrast", "title": "EPN", "subject": subject,
+             "rest": rest, "values": None},
+            {"kind": "swing", "title": "EPN 소재단", "scope": subject},
+        ]
+        lines = idf.block_lines(sections, 8, pool=200000000.0)
+        assert not any("제외 시 소재군" in line for line in lines)
+
+    def test_swing_lines_survive_without_contrast(self):
+        subject = frame([
+            row("a", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("b", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("c", "Meta", 3000000, 300000, 3000, 3000, 1500, 120),
+        ])
+        sections = [{"kind": "swing", "title": "소재단", "scope": subject}]
+        assert idf.block_lines(sections, 8)
+
+
+class TestOneSidedVerdict:
+    def test_a_clear_front_still_gets_a_proposal(self):
+        """예전에는 뒷단 표본이 없으면 그 매체가 next step에서 통째로 빠졌다.
+
+        실측: EPN/TikTok은 앞단 CPI가 18% 우수인데 아무 말도 없이 사라졌다.
+        """
+        subject = frame([row("s1", "TikTok", 500000, 200000, 30000, 400, 3, 0)])
+        rest = frame([row("r1", "TikTok", 90000000, 11000000, 1600000, 55000,
+                          29000, 20)])
+        cards = contrast_by_media(subject, rest)
+        judged = idf.operating_verdict(cards[0])
+        assert judged["verdict"] == ""          # 한쪽이 판단 불가라 판정은 없다
+        lines = idf.next_step_lines([("EPN", cards[0])])
+        assert any(line.startswith(">>") for line in lines)
+        assert any("TikTok" in line for line in lines)
