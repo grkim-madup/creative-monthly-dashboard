@@ -80,7 +80,14 @@ def test_pick_metrics_is_the_single_source():
     가리키면 어느 쪽이 맞는지 알 수 없다.
     """
     import pathlib
-    source = pathlib.Path("creative_dashboard.py").read_text(encoding="utf-8")
+
+    # ⚠ madup.app 배포판은 진입점 이름이 `app.py`다(포털이 그걸 요구한다).
+    #    파일명을 하나만 박아 두면 그쪽에서 테스트가 깨져 push가 막힌다(실제로 막혔다).
+    root = pathlib.Path(__file__).resolve().parent.parent
+    entry = next((root / name for name in ("creative_dashboard.py", "app.py")
+                  if (root / name).exists()), None)
+    assert entry is not None, "진입점을 찾지 못했습니다"
+    source = entry.read_text(encoding="utf-8")
     # 구글 경로에 지표 목록을 손으로 적어 둔 곳이 없어야 한다.
     assert '[("CPI", False), ("인앱 CPA", False)]' not in source
     # 표(`render_google_table`)와 카드(`render_google_material_cards`) 두 곳.
