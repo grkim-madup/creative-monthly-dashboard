@@ -90,11 +90,15 @@ class TestApply:
         assert list(best) == [1]          # 소재B
         assert worst == {}
 
-    def test_reason_says_it_was_manual(self):
+    def test_reason_is_a_real_column(self):
+        """사유 자리에 문구를 넣으면 소비하는 쪽이 KeyError로 죽는다 —
+        `df.loc[index, 값]`으로 쓰기 때문이다(2026-09-08 배포판 사고)."""
         manual_picks.save(8, "AOS", "total install", "소재B", "worst")
+        frame = table("소재A", "소재B")
         _best, worst = manual_picks.apply(
-            table("소재A", "소재B"), 8, "AOS", "total install", {}, {})
-        assert worst == {1: "수기 지정"}
+            frame, 8, "AOS", "total install", {}, {})
+        assert list(worst) == [1]
+        assert worst[1] in frame.columns
 
     def test_no_picks_keeps_the_automatic_result(self):
         auto_best, auto_worst = {0: "CPI"}, {1: "CPI"}
@@ -124,3 +128,54 @@ def test_screen_passes_the_table_identity():
     source = entry.read_text(encoding="utf-8")
     assert "manual_picks.apply(" in source
     assert "os_name=os_name," in source and "month=month," in source
+
+
+# ---------------------------------------------------------------- 회귀: 배포판 사망
+
+def test_지정값은_표에_실제로_있는_컬럼이다(tmp_path, monkeypatch):
+    """소비하는 쪽이 이 값을 `df.loc[index, 값]`으로 쓴다.
+
+    예전에는 `"수기 지정"`이라는 **문구**를 넣어서, 썸네일 카드가 KeyError로 죽고
+    **배포판 2번 섹션이 AOS 표에서 멈췄다**(2026-09-08 실제 사고).
+    """
+    import pandas as pd
+
+    import manual_picks
+
+    monkeypatch.setattr(manual_picks, "PICKS_DIR", tmp_path)
+    table = pd.DataFrame([
+        {"ad": "a", "media": "Meta", "cost": 1_000_000,
+         "total install": 100, "CPI": 10_000},
+        {"ad": "b", "media": "Meta", "cost": 2_000_000,
+         "total install": 200, "CPI": 10_000},
+    ])
+    manual_picks.save(8, "AOS", "total install", "a", manual_picks.BEST)
+    manual_picks.save(8, "AOS", "total install", "b", manual_picks.WORST)
+
+    best, worst = manual_picks.apply(table, 8, "AOS", "total install", {}, {})
+    assert best and worst
+    for column in list(best.values()) + list(worst.values()):
+        assert column in table.columns, column
+
+
+def test_정렬기준이_표에_없으면_대체_컬럼을_쓴다():
+    import pandas as pd
+
+    import manual_picks
+
+    table = pd.DataFrame([{"ad": "a", "cost": 1, "CPI": 2}])
+    assert manual_picks.label_column(table, "D0 coin") == "CPI"
+    assert manual_picks.label_column(table, "cost") == "cost"
+    assert manual_picks.label_column(pd.DataFrame(), "cost") == ""
+
+
+def test_카드_렌더가_없는_컬럼에도_죽지_않는다():
+    """진입점은 import할 수 없으니 소스를 훑어 확인한다."""
+    import pathlib
+
+    for name in ("creative_dashboard.py", "app.py"):
+        path = pathlib.Path(__file__).resolve().parent.parent / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert 'df.loc[idx, column] if column in df.columns' in source, name

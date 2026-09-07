@@ -791,7 +791,9 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
     entries = []
     for idx, column in list(best.items()) + list(worst.items()):
         is_good = idx in best
-        raw_value = df.loc[idx, column]
+        # ⚠ `.loc[idx, column]`으로 읽지 말 것 — 컬럼이 없으면 KeyError로 리포트가
+        #    통째로 죽는다(실제로 배포판이 그렇게 멈췄다). 없으면 값 없이 그린다.
+        raw_value = df.loc[idx, column] if column in df.columns else None
         value_format = FORMATS.get(column, "{}")
         try:
             value_label = value_format.format(raw_value) if pd.notna(raw_value) else "-"

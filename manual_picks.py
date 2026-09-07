@@ -175,6 +175,11 @@ def apply(table, month: int, os_name: str, rank_metric: str,
 
     표에 없는 소재를 지정해 둔 경우(정렬 기준을 바꿔 그 소재가 TOP N에서 빠졌을 때)는
     조용히 무시된다 — 그 줄이 화면에 없으므로 칠할 자리도 없다.
+
+    ⚠ **값은 반드시 표에 실제로 있는 컬럼 이름이어야 한다.** 소비하는 쪽이 이 값을
+      `df.loc[index, 값]`으로 쓴다 — 예전에 `"수기 지정"`이라는 문구를 넣었더니
+      썸네일 카드가 KeyError로 죽어 **배포판 3번 섹션이 통째로 안 떴다**(2026-09-08).
+      `label_column`으로 그 표의 정렬 기준 컬럼을 받아 쓴다.
     """
     manual = for_table(month, os_name, rank_metric)
     if not manual or table is None or getattr(table, "empty", True):
@@ -182,12 +187,27 @@ def apply(table, month: int, os_name: str, rank_metric: str,
     if "ad" not in table.columns:
         return best, worst
 
+    column = label_column(table, rank_metric)
     new_best: dict = {}
     new_worst: dict = {}
     for index, ad in table["ad"].items():
         verdict = manual.get(str(ad))
         if verdict == BEST:
-            new_best[index] = "수기 지정"
+            new_best[index] = column
         elif verdict == WORST:
-            new_worst[index] = "수기 지정"
+            new_worst[index] = column
     return new_best, new_worst
+
+
+#: 수기 지정 행에 붙일 지표. 정렬 기준이 그 표에 있으면 그것을 쓴다 — 표를 그 기준으로
+#: 줄 세웠으니 카드에도 같은 숫자가 보이는 게 자연스럽다.
+_LABEL_FALLBACKS = ("CPI", "cost", "total install")
+
+
+def label_column(table, rank_metric: str | None) -> str:
+    """수기 지정 행이 카드에 보여줄 지표 컬럼. **표에 있는 것만 돌려준다.**"""
+    columns = list(getattr(table, "columns", []))
+    for candidate in (rank_metric, *_LABEL_FALLBACKS):
+        if candidate and candidate in columns:
+            return str(candidate)
+    return str(columns[0]) if columns else ""

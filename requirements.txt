@@ -31,3 +31,4 @@ imageio-ffmpeg==0.6.0
 
 # 재시작 마커 — manual_picks 새 모듈 (2026-09-08)
 # 재시작 마커 — pick_metrics_for / 규모 반영 선정 (2026-09-08)
+# 재시작 마커 — manual_picks.label_column (2026-09-08 핫픽스)
