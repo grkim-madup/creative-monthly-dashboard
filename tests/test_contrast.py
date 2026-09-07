@@ -334,3 +334,47 @@ class TestContrastGroups:
         thin = self.both_os().drop(columns=["os"])
         cards = contrast_by_media(thin, self.rest_both_os(), by=["media", "os"])
         assert [c["media"] for c in cards] == ["TikTok"]
+
+
+class TestNoColourWithoutAVerdict:
+    """`better`가 None인 칸은 **색을 칠하지 않는다.**
+
+    실측(8월 MIX / TikTok·AOS): D0 Coin CVR이 `+0.02%p`로 **좋아진** 값인데
+    붉게 칠해졌다. 코인 전환이 1건뿐이라 표본 게이트에서 판정을 뺐고(`better=None`),
+    화면이 `if better else` 로 판단해 None을 falsy로 읽어 "나쁨"으로 칠한 것이다.
+
+    이 표의 색은 광고주가 그대로 결론으로 읽는다 — 방향이 반대로 칠리면 그 자체가
+    틀린 보고다.
+    """
+
+    def blocked_table(self):
+        """코인 전환이 문턱 미만인 대상 — 값은 좋아졌지만 판정은 없다."""
+        subject = add_derived_metrics(pd.DataFrame([
+            rows("s1", "Meta", 20000, 100000, 20000, 200, 100, 1)]))
+        rest = add_derived_metrics(pd.DataFrame([
+            rows("r1", "Meta", 2000000, 10000000, 1000000, 10000, 5000, 20)]))
+        return by_metric(contrast_rows(subject, rest))
+
+    def test_low_sample_metric_has_no_verdict(self):
+        row = self.blocked_table()["D0 coin CVR"]
+        assert row["better"] is None
+
+    def test_the_delta_is_still_shown(self):
+        """값을 숨기면 왜 색이 없는지 알 수 없다 — 판정만 뺀다."""
+        row = self.blocked_table()["D0 coin CVR"]
+        assert row["delta"] is not None and not pd.isna(row["delta"])
+
+    def test_none_is_not_treated_as_bad(self):
+        """`if better else` 로 판단하면 None이 falsy라 '나쁨'이 된다 — 그 실수를 막는다."""
+        row = self.blocked_table()["D0 coin CVR"]
+        assert (row["better"] is None) and not bool(row["better"])
+
+    def test_the_screen_paints_nothing_for_none(self):
+        """진입점은 import할 수 없으니 소스로 확인한다."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent
+        entry = next((root / n for n in ("creative_dashboard.py", "app.py")
+                      if (root / n).exists()))
+        source = entry.read_text(encoding="utf-8")
+        assert 'if line["better"] is None or pd.isna(line["better"]):' in source

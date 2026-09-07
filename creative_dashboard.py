@@ -2541,6 +2541,14 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
             else:
                 delta_row.append(f"{line['delta']:+.2f}%p" if line["unit"] == "%p"
                                  else f"{line['delta']:+.1%}")
+                # ⚠ `better`가 None이면 **색을 칠하지 않는다.** 표본 게이트에 걸려
+                #   판정에서 뺀 지표라는 뜻이다(예: 코인 전환 10건 미만).
+                #   예전에는 `if line["better"] else` 로 판단해서 None이 falsy가 되어
+                #   **빨강으로 칠했다** — TikTok·AOS의 D0 Coin CVR `+0.02%p`가
+                #   좋아진 값인데 붉게 나왔다(규리님 지적).
+                if line["better"] is None or pd.isna(line["better"]):
+                    delta_style[name] = "color:#6b7280"
+                    continue
                 # 색 기준은 **좋고 나쁨**이다 — CPI·CPC는 올라가면 빨강.
                 # 판단은 `creative_data.LOWER_IS_BETTER` 한 곳에서만 한다.
                 delta_style[name] = (
