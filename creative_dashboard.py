@@ -59,6 +59,7 @@ from creative_data import (
     default_contrast_field,
     filtered_scope,
     google_pick_metrics,
+    pick_metrics_for,
     representative_ads,
     METRIC_DISPLAY,
     RATIO_METRICS,
@@ -917,6 +918,10 @@ def render_table_best_worst(
     `os_name`·`month`를 주면 **수기 지정이 자동 선정을 덮어쓴다**(2026-09-08).
     자동 규칙이 팀원 판단과 어긋나는 동안에도 리포트가 사람 판단대로 나가야 한다.
     """
+    # 기준은 **그 표에 값이 있는 지표**로 고른다(`pick_metrics_for`).
+    # 넘겨받은 `metrics`는 기본값일 뿐이다 — AOS 표는 D0 Coin CVR이 0.00~0.05%라
+    # 그걸로 뽑으면 아무 뜻 없는 소재가 우수로 올라간다.
+    metrics = pick_metrics_for(df) or metrics
     best, worst = pick_best_worst(df, metrics)
     manual_used = False
     if os_name is not None and month is not None and rank_metric is not None:
@@ -1394,8 +1399,10 @@ st.markdown(
     '<div class="sec-legend">'
     f"녹색 = 우수 · 붉은색 = 저조 — 위 표에 보이는 소재 중 "
     f"{html.escape(METRIC_LABELS.get('CPI', 'CPI'))} · "
-    f"{html.escape(METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR'))} "
-    f"기준 각 1개씩 선정 · 최소 소진 ₩{min_cost:,.0f} 이상"
+    f"{html.escape(METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR'))}"
+    f"(코인 전환이 거의 없는 표는 {html.escape(METRIC_LABELS.get('CTR', 'CTR'))}) "
+    f"기준 각 1개씩 — 지표 상위·하위 30% 안에서 소진액이 큰 소재를 선정 · "
+    f"최소 소진 ₩{min_cost:,.0f} 이상"
     "</div>",
     unsafe_allow_html=True,
 )

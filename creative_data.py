@@ -599,11 +599,51 @@ def spend_pool(
     return pool if not pool.empty else df
 
 
+#: 후보를 지표 상위/하위 몇 %로 좁힐지. 그 안에서 **소진액이 큰** 소재를 고른다.
+#:
+#: 왜 필요한가(팀원 피드백 2026-09-08): 지표 1등만 집으면 소진 ₩100,000짜리가
+#: ₩12,000,000짜리를 제친다. 실무에서는 "돈이 많이 들어간 것 중 좋은 것/나쁜 것"이
+#: 알고 싶은 것이다 — 저조 쪽은 특히 그렇다(작은 실패보다 큰 실패가 중요하다).
+#:
+#: 30%로 정한 근거(`tools/analyze_pick_rules.py`, 제품 코드로 실측): 팀원이 직접 뽑은
+#: 8월 픽 17건 재현율이 구간 없이 **9/17(53%)**, 20%에서 53%, **30%에서 12/17(71%)**,
+#: 40%에서도 71%였다. 넓힐수록 "지표가 좋다"는 뜻이 흐려지므로 71%가 되는
+#: 가장 좁은 값을 쓴다. 개선분은 **전부 이 규모 규칙에서 온다** — 뒷단 지표를
+#: 표에 맞춰 고르는 것만으로는 재현율이 오르지 않았다(그건 판정의 뜻을 지키는 장치다).
+PICK_CANDIDATE_SHARE = 0.30
+
+#: 뒷단 지표 후보. 앞에서부터 **그 표에 값이 있는 것**을 고른다.
+#: AOS는 D0 Coin CVR이 0.00~0.05%라 사실상 무의미해서, 그걸로 뽑으면 아무 뜻이 없는
+#: 소재가 우수로 올라간다 — 팀원은 그 표에서 CTR을 봤다.
+BACK_PICK_CANDIDATES = [("D0 coin CVR", True), ("CTR", True)]
+
+
+def pick_metrics_for(table: pd.DataFrame, min_coverage: float = 0.5,
+                     ) -> list[tuple[str, bool]]:
+    """이 표에서 실제로 쓸 수 있는 선정 기준 두 개(앞단 CPI + 뒷단).
+
+    구글 표의 `google_pick_metrics`와 같은 발상이다 — 값이 없는 지표로 뽑으면
+    "이 표에서 가장 좋은 소재"가 아무 뜻이 없어진다.
+    """
+    metrics: list[tuple[str, bool]] = [("CPI", False)]
+    if table is None or table.empty:
+        return metrics
+    need = max(2, int(len(table) * min_coverage))
+    for column, higher_is_better in BACK_PICK_CANDIDATES:
+        if column not in table.columns:
+            continue
+        if int(pd.to_numeric(table[column], errors="coerce").gt(0).sum()) >= need:
+            metrics.append((column, higher_is_better))
+            break
+    return metrics
+
+
 def pick_best_worst(
     df: pd.DataFrame,
     metrics: list[tuple[str, bool]],
     spend_quantile: float = 0.0,
     group_column: str = "media",
+    candidate_share: float = PICK_CANDIDATE_SHARE,
 ) -> tuple[dict, dict]:
     """지표별 최우수/최저조 소재를 하나씩 고른다. **후보는 넘겨받은 표 전체다.**
 
@@ -625,17 +665,37 @@ def pick_best_worst(
     pool = spend_pool(df, spend_quantile, group_column)
     claimed: set = set()
 
+    # 후보를 몇 개까지 볼지. 최소 2개는 봐야 "그중 소진 큰 쪽"이 뜻을 갖는다.
+    window = max(2, round(len(pool) * candidate_share)) if candidate_share else 1
+    spend = pd.to_numeric(pool.get("cost"), errors="coerce").fillna(0.0)
+
     def claim(column: str, ascending: bool, target: dict) -> None:
-        """이미 다른 슬롯이 가져간 소재는 건너뛰고 그다음 순위를 고른다."""
+        """지표 상위/하위 구간에서 **소진액이 가장 큰** 소재를 고른다.
+
+        예전에는 지표 1등만 집었다. 그러면 소진 ₩100,000짜리가 ₩12,000,000짜리를
+        제친다 — 팀원이 "소진 비용은 신경 안 쓰고 뽑은 느낌"이라고 한 그 지점이다.
+        이미 다른 슬롯이 가져간 소재는 건너뛴다.
+        """
         if column not in pool.columns:
             return
         values = pd.to_numeric(pool[column], errors="coerce").dropna()
         values = values[values > 0]
-        for index in values.sort_values(ascending=ascending).index:
-            if index not in claimed:
-                target[index] = column
-                claimed.add(index)
-                return
+        if values.empty:
+            return
+        candidates = [index for index in
+                      values.sort_values(ascending=ascending).head(window).index
+                      if index not in claimed]
+        if not candidates:
+            # 구간이 전부 다른 슬롯에 넘어갔으면 구간 밖에서 이어 고른다 —
+            # 색칠이 4개가 아니라 3개만 나오는 것보다는 낫다(실측으로 겪었다).
+            candidates = [index for index in
+                          values.sort_values(ascending=ascending).index
+                          if index not in claimed][:1]
+        if not candidates:
+            return
+        index = max(candidates, key=lambda i: spend.get(i, 0.0))
+        target[index] = column
+        claimed.add(index)
 
     # 지표마다 우수 1개 + 저조 1개 = 총 4개 소재가 서로 겹치지 않게 뽑힌다.
     # (한 소재가 여러 슬롯의 1등이면 뒤 슬롯은 차순위로 밀려난다)
