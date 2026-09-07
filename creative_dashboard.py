@@ -2978,6 +2978,11 @@ def pivot_editor(view: dict, view_key: str) -> dict:
             help="이 표에 담긴 소재의 첫 프레임을 소진 상위 12개까지 보여줍니다.",
         )
 
+        # ⚠ `filters`를 여기서 만든다. 예전에는 이 블록 **밖에서** 만들어서, 안에서
+        #    참조한 순간 `NameError`로 화면이 통째로 죽었다(규리님 스샷의 그 에러).
+        filters = {f: list(filter_values[f]) for f in filter_fields
+                   if filter_values.get(f)}
+
         # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
         # `format=IMG` + `태그=comic`에서 comic을 기준으로 잡으면 같은 IMG 안에서
         # 비교하고, format을 기준으로 잡으면 IMG vs 영상 비교가 된다.
@@ -2997,8 +3002,6 @@ def pivot_editor(view: dict, view_key: str) -> dict:
                 label_visibility="collapsed",
             )
 
-    filters = {f: list(filter_values[f]) for f in filter_fields
-               if filter_values.get(f)}
     return {**view, "rows": [{"field": f} for f in row_fields],
             "values": list(metrics), "filters": filters,
             "include_ads": list(include),
