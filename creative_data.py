@@ -347,6 +347,9 @@ def add_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["CTR"] = _safe_divide(out["click"], out["impression"])
     out["CPC"] = _safe_divide(out["cost"], out["click"])
+    # CPM은 **1,000 노출당** 비용이다. 다른 단가와 달리 배수가 붙으므로 나눈 뒤
+    # 1,000을 곱한다 — 잊으면 값이 1/1000로 나온다.
+    out["CPM"] = _safe_divide(out["cost"], out["impression"]) * 1000
     out["CPI"] = _safe_divide(out["cost"], out["total install"])
     out["D0 read CVR"] = _safe_divide(out["D0 read"], out["total install"])
     out["D0 coin CVR"] = _safe_divide(out["D0 coin"], out["total install"])
@@ -764,7 +767,9 @@ METRIC_DISPLAY = {
 # --------------------------------------------------------------------------- 차트용 준비
 
 #: 값이 **작을수록** 좋은 지표. 정렬 방향과 "평균보다 나은가" 판정이 여기서 갈린다.
-LOWER_IS_BETTER = frozenset({"CPI", "CPC"})
+#: 낮을수록 좋은 지표. **CPM을 빠뜨리면 판정이 뒤집힌다** —
+#: 단가가 올라간 것을 "우수"로 읽는다.
+LOWER_IS_BETTER = frozenset({"CPI", "CPC", "CPM"})
 
 #: 비율 지표의 벤치마크는 **평균의 평균이 아니라 합계에서 다시 계산**해야 한다.
 #: 행별 CPI를 산술평균하면 소진 1%짜리 소재가 소진 40%짜리와 같은 무게를 갖는다.
@@ -904,7 +909,7 @@ DIMENSION_COLUMNS = [
 METRIC_COLUMNS = [
     "cost", "impression", "click", "total install",
     "D0 read", "D0 coin", "D7 coin",
-    "CTR", "CPC", "CPI", "D0 read CVR", "D0 coin CVR", "D7 coin CVR",
+    "CTR", "CPM", "CPC", "CPI", "D0 read CVR", "D0 coin CVR", "D7 coin CVR",
 ]
 
 #: 화면에 내보이는 순서 = 이 목록의 순서. 사용자가 고른 순서를 쓰지 않는다 —
@@ -1226,21 +1231,52 @@ def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
     return pd.DataFrame(records)
 
 
-def contrast_by_media(subject: pd.DataFrame, rest: pd.DataFrame,
-                      metrics: list[str] | None = None) -> list[dict]:
-    """매체별로 대조군 표를 만든다. 매체는 대상 쪽 소진액 큰 순.
+#: 대조군을 나눌 수 있는 축. **집행 조건만** 쓴다 — 소재 속성으로 나누면
+#: 대상 정의와 섞여서 "무엇을 비교하는 표인가"가 흐려진다.
+CONTRAST_GROUP_FIELDS = ("media", "os")
 
-    대상에 없는 매체는 만들지 않는다 — 비교할 것이 없는 표를 그리면
-    "그 매체에서는 안 썼다"가 "성과가 0이다"로 읽힌다.
+
+def contrast_groups(rows) -> list[str]:
+    """행 정의에서 대조군을 나눌 축을 뽑는다. 매체는 없어도 항상 넣는다.
+
+    규리님이 행에 `OS`를 넣으면 대조군도 OS 단까지 갈라 봐야 한다 —
+    iOS와 AOS는 CPI가 3배 이상 벌어져서 한 덩어리로 묶으면 소재 차이가 묻힌다.
     """
-    if "media" not in subject.columns or subject.empty:
+    fields = [r["field"] if isinstance(r, dict) else str(r) for r in (rows or [])]
+    picked = [f for f in CONTRAST_GROUP_FIELDS if f in fields]
+    return picked or ["media"]
+
+
+def contrast_by_media(subject: pd.DataFrame, rest: pd.DataFrame,
+                      metrics: list[str] | None = None,
+                      by: list[str] | None = None) -> list[dict]:
+    """대조군 표를 축(`by`)별로 만든다. 기본은 매체, 소진액 큰 순.
+
+    `by`에 `os`를 더하면 `TikTok · AOS` / `TikTok · iOS`처럼 갈라진다
+    (행에 OS를 넣었을 때 — 규리님 요청).
+
+    대상에 없는 조합은 만들지 않는다 — 비교할 것이 없는 표를 그리면
+    "거기서는 안 썼다"가 "성과가 0이다"로 읽힌다.
+    """
+    by = [c for c in (by or ["media"]) if c in subject.columns] or None
+    if by is None or subject.empty:
         return []
-    order = (subject.groupby("media")["cost"].sum()
+    order = (subject.groupby(by, dropna=False)["cost"].sum()
              .sort_values(ascending=False).index)
     result = []
-    for media in order:
-        mine = subject[subject["media"] == media]
-        other = rest[rest["media"] == media] if "media" in rest.columns else rest.iloc[0:0]
+    for key in order:
+        values = key if isinstance(key, tuple) else (key,)
+        keys = {column: value for column, value in zip(by, values)}
+
+        def slice_of(frame: pd.DataFrame) -> pd.DataFrame:
+            picked = frame
+            for column, value in keys.items():
+                if column not in picked.columns:
+                    return picked.iloc[0:0]
+                picked = picked[picked[column] == value]
+            return picked
+
+        mine, other = slice_of(subject), slice_of(rest)
         table = contrast_rows(mine, other, metrics)
         # ⚠ **판정은 사용자의 값 선택에 흔들려선 안 된다.** `metrics`는 표 위 `값`
         #   멀티셀렉트에서 사용자가 고르는 목록이다. 그걸로 판정하면 표를 예쁘게
@@ -1250,7 +1286,11 @@ def contrast_by_media(subject: pd.DataFrame, rest: pd.DataFrame,
         #   읽고, 화면 표에만 사용자 선택을 적용한다.
         judge = table if not metrics else contrast_rows(mine, other, None)
         result.append({
-            "media": str(media),
+            # 표시용 이름. 축이 여러 개면 `TikTok · AOS`처럼 이어 붙인다.
+            "media": " · ".join(str(v) for v in values),
+            # 실제 축 값. 색(매체색)이나 추가 계산에 쓴다 — 이름을 다시 쪼개면
+            # `·`가 값에 들어 있을 때 깨진다.
+            "keys": keys,
             "table": table,
             "judge": judge,
             "ads": int(mine["ad"].nunique()) if "ad" in mine.columns else 0,

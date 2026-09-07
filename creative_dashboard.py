@@ -52,6 +52,7 @@ from creative_data import (
     pick_best_worst,
     CREATIVE_FIELDS,
     contrast_by_media,
+    contrast_groups,
     contrast_split,
     default_contrast_field,
     filtered_scope,
@@ -171,7 +172,7 @@ COLUMN_HELP = {
 SUMMARY_COLUMN_ORDER = [
     "매체", "os",
     "소진액", "노출", "클릭",
-    "CTR", "CPC",
+    "CTR", "CPM", "CPC",
     "설치", "CPI",
     "D0 Read", "D0 Coin",
     "D0 Read CVR", "D0 Coin CVR",
@@ -250,7 +251,7 @@ COLUMN_LABELS = {
 }
 
 # 퍼센트가 아닌 값은 전부 소수점 없이. 퍼센트만 소수 2자리.
-MONEY_COLUMNS = ("cost", "cost_raw", "CPC", "CPI", "인앱 CPA")
+MONEY_COLUMNS = ("cost", "cost_raw", "CPM", "CPC", "CPI", "인앱 CPA")
 COUNT_COLUMNS = (
     "impression", "click", "total install", "D0 read", "D7 read",
     "D0 coin", "D7 coin", "in_app_action",
@@ -2034,7 +2035,8 @@ def match_conditions(conditions: dict,
     return scope_of_match, len(matched_ads)
 
 
-COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR", "CPC"]
+COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR",
+                   "CPC", "CPM"]
 
 #: 빈 뷰를 만들 때의 기본값. 저장된 뷰에 없는 키는 여기서 채운다 — 나중에 필드를
 #: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
@@ -2486,7 +2488,10 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
 
     label = filter_summary(view)
 
-    cards = contrast_by_media(subject, rest, view["values"] or None)
+    # 행에 걸린 집행 조건(매체·OS)까지 갈라 본다 — iOS와 AOS는 CPI가 3배 이상
+    # 벌어져서 한 덩어리로 묶으면 소재 차이가 묻힌다(규리님 요청).
+    cards = contrast_by_media(subject, rest, view["values"] or None,
+                              by=contrast_groups(view["rows"]))
     if not cards:
         status_row("warn", "비교할 매체가 없습니다", "필터를 완화해 보세요.")
         return
@@ -2510,7 +2515,8 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         #   소재 수가 있고 소진 비중은 바로 아래 `차이` 줄에 있어 **중복**이었다
         #   (규리님 지적). 같은 숫자를 두 곳에 두면 나중에 한쪽만 바뀐다.
         media_cell = (
-            f'<span class="ct-dot" style="background:{media_color(card["media"])}">'
+            f'<span class="ct-dot" '
+            f'style="background:{media_color(card.get("keys", {}).get("media", ""))}">'
             f"</span><b>{html.escape(card['media'])}</b>"
             f'<span class="ct-sub">{html.escape(card["verdict"])}</span>'
         )
@@ -2564,7 +2570,7 @@ def fmt_metric(metric: str, value) -> str:
         return "-"
     if metric in RATIO_METRICS:
         return f"{value:.2%}"
-    if metric in ("cost", "CPI", "CPC"):
+    if metric in ("cost", "CPI", "CPC", "CPM"):
         return f"₩{value:,.0f}"
     return f"{value:,.0f}"
 
@@ -3115,7 +3121,8 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
         subject, rest = contrast_ready(view)
         sections.append({"kind": "contrast", "title": title_of(view),
                          "subject": subject, "rest": rest,
-                         "values": view["values"] or None})
+                         "values": view["values"] or None,
+                         "by": contrast_groups(view["rows"])})
     for view in ad_views:
         sections.append({"kind": "swing", "title": title_of(view),
                          "scope": filtered_scope(named_overview, view["filters"],

@@ -261,3 +261,76 @@ class TestVerdict:
 
         assert insight_draft.MEANINGFUL_RATIO_POINTS is MEANINGFUL_RATIO_POINTS
         assert insight_draft.MEANINGFUL_CHANGE is MEANINGFUL_CHANGE
+
+
+class TestContrastGroups:
+    """행에 걸린 집행 조건까지 대조군을 나눈다(2026-09-07 규리님 요청).
+
+    iOS와 AOS는 CPI가 3배 이상 벌어진다(8월 실측 메타 iOS ₩7,562 / AOS ₩3,531).
+    한 덩어리로 묶으면 소재 차이가 그 격차에 묻힌다.
+    """
+
+    def both_os(self):
+        from creative_data import add_derived_metrics
+
+        return add_derived_metrics(pd.DataFrame([
+            {**rows("s1", "TikTok", 20000, 100000, 20000, 200, 100, 50), "os": "AOS"},
+            {**rows("s2", "TikTok", 20000, 100000, 5000, 50, 20, 5), "os": "iOS"},
+        ]))
+
+    def rest_both_os(self):
+        from creative_data import add_derived_metrics
+
+        return add_derived_metrics(pd.DataFrame([
+            {**rows("r1", "TikTok", 2000000, 10000000, 1000000, 10000, 5000, 2000),
+             "os": "AOS"},
+            {**rows("r2", "TikTok", 2000000, 10000000, 200000, 1000, 400, 100),
+             "os": "iOS"},
+        ]))
+
+    def test_media_only_by_default(self):
+        from creative_data import contrast_groups
+
+        assert contrast_groups([{"field": "media"}]) == ["media"]
+        assert contrast_groups([{"field": "creative_type"}]) == ["media"]
+        assert contrast_groups([]) == ["media"]
+
+    def test_os_in_rows_adds_the_axis(self):
+        from creative_data import contrast_groups
+
+        assert contrast_groups(
+            [{"field": "media"}, {"field": "os"}, {"field": "usp"}]) == ["media", "os"]
+
+    def test_creative_attributes_are_never_axes(self):
+        """소재 속성으로 나누면 대상 정의와 섞여 "무엇을 비교하나"가 흐려진다."""
+        from creative_data import contrast_groups
+
+        assert contrast_groups([{"field": "usp"}, {"field": "format"}]) == ["media"]
+
+    def test_cards_split_by_os(self):
+        cards = contrast_by_media(self.both_os(), self.rest_both_os(),
+                                  by=["media", "os"])
+        assert sorted(c["media"] for c in cards) == ["TikTok · AOS", "TikTok · iOS"]
+
+    def test_each_card_keeps_its_axis_values(self):
+        """이름을 `·`로 다시 쪼개면 값에 `·`가 들어 있을 때 깨진다 — keys를 쓴다."""
+        cards = contrast_by_media(self.both_os(), self.rest_both_os(),
+                                  by=["media", "os"])
+        for card in cards:
+            assert card["keys"]["media"] == "TikTok"
+            assert card["keys"]["os"] in ("AOS", "iOS")
+
+    def test_each_card_is_compared_against_its_own_os(self):
+        cards = {c["keys"]["os"]: c for c in
+                 contrast_by_media(self.both_os(), self.rest_both_os(),
+                                   by=["media", "os"])}
+        aos = by_metric(cards["AOS"]["table"])["CPI"]
+        ios = by_metric(cards["iOS"]["table"])["CPI"]
+        assert aos["rest"] == pytest.approx(200)      # AOS 대조군만
+        assert ios["rest"] == pytest.approx(2000)     # iOS 대조군만
+
+    def test_missing_axis_column_falls_back(self):
+        """구글처럼 OS가 없는 프레임에서도 죽지 않는다."""
+        thin = self.both_os().drop(columns=["os"])
+        cards = contrast_by_media(thin, self.rest_both_os(), by=["media", "os"])
+        assert [c["media"] for c in cards] == ["TikTok"]

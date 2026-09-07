@@ -514,7 +514,8 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
         try:
             if section["kind"] == "contrast":
                 subject, rest = section["subject"], section["rest"]
-                cards = contrast_by_media(subject, rest, section.get("values"))
+                cards = contrast_by_media(subject, rest, section.get("values"),
+                                          by=section.get("by"))
                 spend = float(subject["cost"].fillna(0).sum())
                 count = int(subject["ad"].nunique()) if "ad" in subject else 0
                 scale = f"소재 {count:,}개 · 소진 ₩{spend:,.0f}"
@@ -538,8 +539,8 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
                         if side["state"] != -1 or not side["used"]:
                             continue
                         found = gap_driver(
-                            subject[subject["media"] == card["media"]],
-                            rest[rest["media"] == card["media"]], side["used"])
+                            card_slice(subject, card),
+                            card_slice(rest, card), side["used"])
                         if found:
                             drivers[(title, card["media"])] = found
                             break
@@ -627,6 +628,21 @@ def gap_driver(subject: pd.DataFrame, rest: pd.DataFrame, metric: str,
     return best
 
 
+def card_slice(frame: pd.DataFrame, card: dict) -> pd.DataFrame:
+    """카드가 다루는 조합만 남긴다.
+
+    ⚠ `card["media"]`로 자르면 안 된다 — 축이 매체·OS면 그 값이 `TikTok · AOS`라
+      어떤 컬럼과도 안 맞아 빈 프레임이 된다. 축 값(`keys`)으로 자른다.
+    """
+    keys = card.get("keys") or {"media": card.get("media")}
+    picked = frame
+    for column, value in keys.items():
+        if column not in picked.columns:
+            return picked.iloc[0:0]
+        picked = picked[picked[column] == value]
+    return picked
+
+
 def ad_link(ad: str, links: dict[str, str] | None) -> str:
     """소재명 자체를 링크로. 예전에는 뒤에 `소재 보기`를 따로 붙여 문장이 끊겼다."""
     url = (links or {}).get(ad)
@@ -712,8 +728,8 @@ def contrast_lines(cards: list[dict], month: int, title: str,
         for side, metric in ((front, front["used"]), (back, back["used"])):
             if side["state"] != -1 or not metric or subject is None:
                 continue
-            driver = gap_driver(subject[subject["media"] == card["media"]],
-                                rest[rest["media"] == card["media"]], metric)
+            driver = gap_driver(card_slice(subject, card),
+                                card_slice(rest, card), metric)
             if not driver:
                 continue
             label = METRIC_LABEL.get(metric, metric)
