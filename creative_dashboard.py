@@ -35,6 +35,8 @@ import media_snapshot
 import manual_picks
 import overrides as manual_overrides
 import prefetch
+import reconcile
+import topics
 from creative_data import (
     delta_direction,
     DISPLAY_COLUMNS,
@@ -2205,14 +2207,105 @@ def block_menu(slot: str, block_id: str, month: int, owner: str) -> None:
 
 
 def insert_block_row(slot: str, position: int, block_type: str, default_title: str) -> None:
-    """블록과 블록 사이에 얇은 '+' 줄을 둔다 — 항상 맨 끝이 아니라 원하는 자리에 끼워 넣는다."""
+    """블록과 블록 사이에 얇은 '+' 줄을 둔다 — 항상 맨 끝이 아니라 원하는 자리에 끼워 넣는다.
+
+    분석 슬롯에는 오른쪽에 `＋ 주제 추가`를 나란히 둔다. 빈 블록부터 만들고 표를 손으로
+    세우는 흐름(왼쪽)과, 주제를 고르면 표 두 개가 완성돼 나오는 흐름(오른쪽)을 같은 자리에서
+    고르게 하려는 것이다. 줄을 따로 만들면 삽입 자리마다 점선 박스가 두 개씩 쌓인다.
+    """
     label = "＋ 분석 블록 추가" if block_type == "creative_query" else "＋ 노트 블록 추가"
     with st.container(key=f"insert_{slot}_{position}"):
-        if st.button(label, key=f"insert_btn_{slot}_{position}",
-                     help="이 자리에 블록을 추가합니다", width="stretch"):
-            if commit_blocks(month, lambda d: report_blocks.add_block(
-                    d, slot, block_type, default_title, position=position)):
-                rerun_local()
+        left, right = (st.columns([3, 2]) if block_type == "creative_query"
+                       else (st.container(), None))
+        with left:
+            if st.button(label, key=f"insert_btn_{slot}_{position}",
+                         help="이 자리에 블록을 추가합니다", width="stretch"):
+                if commit_blocks(month, lambda d: report_blocks.add_block(
+                        d, slot, block_type, default_title, position=position)):
+                    rerun_local()
+        if right is not None:
+            with right:
+                topic_picker(slot, position)
+
+
+@st.cache_data(show_spinner=False)
+def _topic_candidates(month: int, rows: int) -> list[dict]:
+    """`rows`는 캐시 키일 뿐이다 — 데이터가 바뀌면 값이 달라져 캐시가 자동으로 풀린다
+    (`_ad_options`와 같은 방식)."""
+    return topics.candidates(all_months[all_months["ad"] != "-"], month)
+
+
+def topic_candidates() -> list[dict]:
+    return _topic_candidates(month, len(all_months))
+
+
+def add_topic_block(slot: str, position: int, label: str, field: str,
+                    value: str) -> None:
+    """주제 하나 = 표 두 개. 블록 생성과 표 채우기를 **한 번의 커밋**으로 끝낸다.
+
+    `add_block`은 새 id를 돌려주지만 `mutate`가 그 반환값을 버린다. 그래서 바깥에서 id를
+    받아 두 번째 저장을 하는 대신, 같은 `fn` 안에서 만들고 그 자리에서 views까지 채운다 —
+    중간 상태(표가 없는 빈 블록)가 저장되는 순간이 아예 없다.
+    """
+    created: dict[str, str] = {}
+
+    def _fn(data):
+        block_id = report_blocks.add_block(
+            data, slot, "creative_query", topics.preset_title(label), position=position
+        )
+        created["id"] = block_id
+        report_blocks.update_block(
+            data, slot, block_id, views=topics.preset_views(label, field, value)
+        )
+
+    if commit_blocks(month, _fn):
+        # `views_<id>`는 `views_editor`가 **한 번만** 시드한다. 새 id라 지금은 비어 있는
+        # 게 정상이지만, 혹시 남아 있으면 새 표가 화면에 안 나오고 다음 `완료`에서 지워진다.
+        st.session_state.pop(f"views_{created.get('id', '')}", None)
+        rerun_local()
+
+
+def topic_picker(slot: str, position: int) -> None:
+    """이번 달 주제 후보 목록 + 직접 고르기. 누르면 표 두 개가 든 블록이 생긴다."""
+    found = topic_candidates()
+    with st.popover("＋ 주제 추가", width="stretch"):
+        st.markdown(
+            '<div class="pv-lab">이번 달 새로 등장하거나 크게 늘어난 소재군'
+            "<span>고르면 매체별 표와 소재단 표가 함께 만들어집니다</span></div>",
+            unsafe_allow_html=True,
+        )
+        if not found:
+            st.caption("해당하는 소재군이 없습니다 — 아래에서 직접 고르세요.")
+        for cand in found:
+            kind = "신규" if cand["kind"] == topics.KIND_NEW else "급증"
+            if st.button(
+                f"[{kind}] {cand['label']} · ₩{cand['cost']:,.0f} · 소재 {cand['ads']}개",
+                key=f"topic_{slot}_{position}_{cand['field']}_{cand['value']}",
+                width="stretch",
+            ):
+                add_topic_block(slot, position, cand["label"], cand["field"],
+                                cand["value"])
+        if found:
+            st.markdown(
+                '<div class="pv-idle">태그는 한 소재가 여러 개를 달 수 있어, 태그별 소진을 '
+                "모두 더하면 전체를 넘습니다 — 순위를 보는 용도입니다.</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+        st.markdown('<div class="pv-lab">직접 고르기<span>후보에 없는 소재군</span></div>',
+                    unsafe_allow_html=True)
+        key = f"pick_{slot}_{position}"
+        field = st.selectbox("구분", list(topics.CANDIDATE_FIELDS) + ["size", "format"],
+                             format_func=field_label, key=f"{key}_field",
+                             label_visibility="collapsed")
+        options = field_value_options(field)
+        value = st.selectbox("값", options, key=f"{key}_value",
+                             label_visibility="collapsed",
+                             placeholder="값을 고르세요", index=None)
+        if st.button("이 소재군으로 주제 만들기", key=f"{key}_go", width="stretch",
+                     disabled=not value):
+            add_topic_block(slot, position, str(value), field, str(value))
 
 
 def condition_editor(block_id: str, conditions: dict,
@@ -4137,6 +4230,101 @@ def _next_step_blocks_section() -> None:
 
 
 _next_step_blocks_section()
+
+# ------------------------------------------------------- 데이터 적합성 점검 (편집자 전용)
+#
+# "화면 숫자가 Media_RAW와 같은가, 누락이 없는가"를 시트 피벗을 만들지 않고 확인한다.
+# 대시보드와 원본 사이에는 **의도된 차이가 여러 겹**(대상 외 매체·소재명 빈 행·non-UA·
+# 포맷·iOS 코호트 대체) 쌓여 있는데 그게 코드에만 있어서, 숫자가 안 맞으면 매번 원인을
+# 처음부터 추적해야 했다. 각 단계가 얼마를 덜어내는지 표로 보여주고 판정을 붙인다.
+#
+# **광고주에게는 보이지 않는다** — 사내 진단 도구다. 최하단 각주 바로 위에 두는 이유는
+# 폭이 필요해서다(사이드바는 300px라 7×5 표가 안 들어간다).
+if editor_allowed:
+    _fingerprint = reconcile.load_fingerprint(sheet_id)
+    with st.container(key="recon_panel"):
+        if _fingerprint is None:
+            with st.expander("데이터 적합성 점검", expanded=False):
+                st.caption(
+                    "시트 원본과 화면을 대조하려면 원본 지문이 한 번 필요합니다. "
+                    "만들고 나면 그 뒤로는 네트워크 없이 즉시 확인됩니다."
+                )
+                if st.button("원본 지문 만들기 (약 40초)", key="recon_build"):
+                    with st.spinner("Media_RAW 원본을 읽는 중…"):
+                        reconcile.fetch_fingerprint(sheet_id, refresh=True)
+                    st.rerun()
+        else:
+            _steps = reconcile.waterfall(_fingerprint, raw, scope, month)
+            _gap = reconcile.install_gap(_fingerprint, scope, month)
+            _orphans = reconcile.cohort_orphans(_fingerprint, raw, month)
+            _issues = reconcile.has_issues(_steps, _gap, _orphans)
+            with st.expander(
+                f"데이터 적합성 점검 — {month}월"
+                + ("  ⚠ 확인이 필요한 항목이 있습니다" if _issues else "  이상 없음"),
+                expanded=False,
+            ):
+                report_table(
+                    [[s["label"], f"{s['rows']:,}", f"₩{s['cost']:,.0f}",
+                      f"{s['install']:,.0f}",
+                      # `round`를 먼저 한다 — 부동소수 잔차가 `-0`으로 찍혀
+                      # "뭔가 줄었다"로 읽힌다(실제로 ⑤에서 그렇게 나왔다).
+                      "" if i == 0 else f"{round(s['d_cost'], 2) + 0:+,.0f}",
+                      "" if i == 0 else f"{round(s['d_install'], 2) + 0:+,.0f}",
+                      s["verdict"], s["reason"]]
+                     for i, s in enumerate(_steps)],
+                    ["단계", "행", "소진액", "설치", "소진 변화", "설치 변화",
+                     "판정", "사유"],
+                    left_columns={"단계", "판정", "사유"},
+                    # `is-bad`는 저조 행에 쓰던 붉은 톤이다 — 새 CSS를 만들지 않고
+                    # "이 줄에 문제가 있다"는 같은 뜻으로 쓴다.
+                    row_classes=["is-bad" if s["verdict"] == reconcile.VERDICT_CHECK
+                                 else "" for s in _steps],
+                    full_height=True,
+                )
+                st.caption(reconcile.summary_line(_steps))
+
+                if _gap["unnamed_install"]:
+                    st.warning(
+                        f"소재명(`최종 AD`)이 빈 행 {_gap['unnamed_rows']:,}개가 "
+                        f"설치 {_gap['unnamed_install']:,.0f}건 · "
+                        f"소진 ₩{_gap['unnamed_cost']:,.0f}을 들고 버려집니다 — "
+                        "소재 단위로 집계할 수 없어 화면에 못 들어옵니다."
+                    )
+                report_table(
+                    [[r["os"], f"{r['sheet']:,.0f}", f"{r['screen']:,.0f}",
+                      f"{r['delta']:+,.0f}",
+                      "iOS 코호트 대체" if (r["delta"] and r["os"] == "iOS")
+                      else ("확인 필요" if r["delta"] else "일치")]
+                     for r in _gap["by_os"]],
+                    ["OS", "시트 원본 설치", "화면 설치", "차이", "설명"],
+                    left_columns={"OS", "설명"},
+                    row_classes=["is-bad" if (r["delta"] and r["os"] != "iOS") else ""
+                                 for r in _gap["by_os"]],
+                    full_height=True,
+                )
+
+                if _orphans:
+                    st.warning(
+                        f"코호트에는 설치가 잡혔는데 Media_RAW에 그 소재의 iOS 행이 없는 건 "
+                        f"{len(_orphans)}개 (설치 {sum(o['install'] for o in _orphans):,.0f}건) "
+                        "— 이 설치는 어디에도 들어가지 않습니다."
+                    )
+                    report_table(
+                        [[o["media"], o["ad"], f"{o['install']:,.0f}"]
+                         for o in sorted(_orphans, key=lambda x: -x["install"])[:10]],
+                        ["매체", "소재명", "설치"],
+                        left_columns={"매체", "소재명"}, full_height=True,
+                    )
+
+                st.caption(
+                    "지문(시트 원본 집계) 기준 시각 "
+                    f"{_fingerprint['fetched_at']} · 원본 {_fingerprint['sheet_rows']:,}행. "
+                    "시트 데이터가 바뀌었으면 다시 만들어 주세요."
+                )
+                if st.button("원본 지문 다시 만들기", key="recon_refresh"):
+                    with st.spinner("Media_RAW 원본을 읽는 중…"):
+                        reconcile.fetch_fingerprint(sheet_id, refresh=True)
+                    st.rerun()
 
 footnote(
     "집계 기준 — 이 리포트의 모든 수치는 Media_RAW 중 UA(신규 유입) 집행분만 합산한 "

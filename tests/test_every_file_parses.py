@@ -82,3 +82,38 @@ def test_진입점_파일명을_하드코딩한_테스트가_없다():
     assert not bad, ("진입점 파일명을 단독으로 하드코딩했습니다 — "
                      "`(\"creative_dashboard.py\", \"app.py\")` 를 순회하세요:\n  "
                      + "\n  ".join(bad))
+
+
+#: 배포 복사본에 들어가지 않는데 **저장소에는 커밋된 소스가 있는** 폴더.
+#: 동기화 스크립트는 최상위 `*.py` 와 `tests/` 만 복사한다 — 여기 파일을 테스트가
+#: 그냥 읽으면 배포 전 pytest가 `FileNotFoundError`로 막힌다(2026-09-08 실제로 막혔다).
+#:
+#: `notes/`·`.cache/`는 넣지 않는다 — 테스트가 그 이름을 쓰는 건 `tmp_path`로 갈아끼운
+#: **쓰기 대상**이고 저장소 파일을 읽지 않는다(넣었더니 오탐 5건이 났다).
+UNSHIPPED_DIRS = ("tools",)
+
+
+def test_배포에_없는_폴더를_읽는_테스트는_존재를_확인한다():
+    """저장소 위생 검사는 배포판에서 **건너뛰어야** 한다.
+
+    진입점 파일명 하드코딩(`test_진입점_파일명을_하드코딩한_테스트가_없다`)과 같은
+    뿌리다 — 배포 복사본은 저장소의 부분집합인데 테스트가 그걸 모른다.
+    """
+    import pathlib
+
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    bad = []
+    for path in sorted(tests_dir.glob("test_*.py")):
+        source = path.read_text(encoding="utf-8")
+        # 실제 위험은 **저장소 파일을 읽는 것**이다. 이름만 등장하는 경우는 뺀다.
+        if "read_text(" not in source:
+            continue
+        touched = [d for d in UNSHIPPED_DIRS if f'"{d}"' in source]
+        if not touched:
+            continue
+        # `exists()` 확인이나 `skip` 이 같은 파일 안에 있어야 한다.
+        if ".exists()" in source or "skip(" in source:
+            continue
+        bad.append(f"{path.name} — {', '.join(touched)} 를 읽는데 존재 확인이 없습니다")
+    assert not bad, ("배포 복사본에 없는 폴더를 무조건 읽습니다:\n  "
+                     + "\n  ".join(bad))
