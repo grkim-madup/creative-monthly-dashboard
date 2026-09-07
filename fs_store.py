@@ -222,9 +222,38 @@ def force_release_lock(key: str) -> tuple[bool, str | None]:
 # 쓰기가 별개 호출이라 여럿이 같은 rev를 보고 전부 통과할 수 있었고, 행 번호가 주소여서
 # 남이 행을 지우면 내 쓰기가 엉뚱한 줄에 떨어졌다. 문서에는 행 번호라는 개념이 없다.
 
+#: 전역 설정(시트 링크 등). 월별이 아니라 문서 하나다 —
+#: 과거 달의 기준은 스냅샷이 지키고, 이건 "지금 무엇을 보는가"만 담는다.
+APP_SETTINGS = "appsettings"
+_APP_SETTINGS_DOC = "current"
+
 BLOCKS = "blocks"
 HLCELLS = "hlcells"
 OVERRIDES = "overrides"
+
+
+def _app_settings_ref():
+    return client().collection(APP_SETTINGS).document(_APP_SETTINGS_DOC)
+
+
+def read_app_settings() -> tuple[str, dict, str | None]:
+    """(상태, {키: 값}, 실패 이유). `ok`·`empty`·`error` 를 구분한다 —
+    실패를 "설정 없음"으로 뭉개면 그 위에 기본값을 저장해 버린다."""
+    try:
+        snap = _app_settings_ref().get()
+    except Exception as error:  # noqa: BLE001
+        return "error", {}, str(error)
+    if not snap.exists:
+        return "empty", {}, None
+    return "ok", dict(snap.to_dict() or {}), None
+
+
+def write_app_setting(key: str, value: str) -> tuple[bool, str | None]:
+    try:
+        _app_settings_ref().set({str(key): str(value)}, merge=True)
+        return True, None
+    except Exception as error:  # noqa: BLE001
+        return False, str(error)
 
 
 def _month_doc(month: int):
@@ -465,27 +494,82 @@ _META_DOC = "current"
 CHUNK_TARGET_BYTES = 300_000
 
 
-def _snap_meta_ref(month: int):
-    return _sub(month, SNAPMETA).document(_META_DOC)
+#: 스냅샷 종류별 컬렉션 이름. `google`은 예전 이름을 그대로 써야 한다 —
+#: 이미 Firestore에 데이터가 들어 있고, 이름을 바꾸면 고정해 둔 달이 사라진다.
+SNAP_KINDS = {
+    "google": (SNAPMETA, SNAPCHUNKS),        # 구글 애셋 보고서
+    "media": ("mediameta", "mediachunks"),   # Media_RAW (메타·틱톡)
+}
 
 
-def _snap_chunks(month: int):
-    return _sub(month, SNAPCHUNKS)
-
-
-def snapshot_exists(month: int) -> bool:
+def _kind(kind: str) -> tuple[str, str]:
     try:
-        return _snap_meta_ref(month).get().exists
+        return SNAP_KINDS[kind]
+    except KeyError:
+        raise ValueError(f"알 수 없는 스냅샷 종류: {kind}") from None
+
+
+def _snap_meta_ref(month: int, kind: str = "google"):
+    return _sub(month, _kind(kind)[0]).document(_META_DOC)
+
+
+def _snap_chunks(month: int, kind: str = "google"):
+    return _sub(month, _kind(kind)[1])
+
+
+def snapshot_exists(month: int, kind: str = "google") -> bool:
+    try:
+        return _snap_meta_ref(month, kind).get().exists
     except Exception:
         return False
 
 
-def snapshot_frozen_at(month: int) -> str | None:
+def snapshot_frozen_at(month: int, kind: str = "google") -> str | None:
     try:
-        snap = _snap_meta_ref(month).get()
+        snap = _snap_meta_ref(month, kind).get()
         return (snap.to_dict() or {}).get("frozen_at") if snap.exists else None
     except Exception:
         return None
+
+
+def snapshot_meta(month: int, kind: str = "google") -> dict | None:
+    """메타 문서 한 번 읽기. 없으면 None, 읽기 실패도 None.
+
+    ⚠ 존재·시각·행수·설정을 각각 묻지 말고 이걸 쓸 것 — 필드마다 따로 물으면
+      월 하나에 Firestore 읽기가 4회씩 나가고, 화면을 열어두는 것만으로 무료 한도
+      (읽기 5만/일)에 다가간다.
+    """
+    try:
+        snap = _snap_meta_ref(month, kind).get()
+    except Exception:
+        return None
+    return (snap.to_dict() or {}) if snap.exists else None
+
+
+def snapshot_row_count(month: int, kind: str = "google") -> int | None:
+    """고정된 행 수. 화면이 "무엇까지 얼려졌나"를 보여주는 데 쓴다 —
+    고정 시각만으로는 8/23까지 담았는지 마감본인지 구분할 수 없다."""
+    try:
+        snap = _snap_meta_ref(month, kind).get()
+        value = (snap.to_dict() or {}).get("row_count") if snap.exists else None
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def snapshot_settings(month: int, kind: str = "google") -> dict:
+    """고정 시점의 설정(시트 링크·드롭박스 폴더·마크업). 예전 스냅샷에는 없다.
+
+    규리님: *"내가 스냅샷을 남기면 구글 드롭박스, 구글 마크업, 구글시트 값이 다
+    당시에 넣었던 그 값으로 고정되어야 해."* 매달 보여야 하는 데이터의 기준이
+    달라지기 때문이다.
+    """
+    try:
+        snap = _snap_meta_ref(month, kind).get()
+        value = (snap.to_dict() or {}).get("settings") if snap.exists else None
+        return dict(value) if isinstance(value, dict) else {}
+    except Exception:
+        return {}
 
 
 def _chunk_rows(rows: list, cols: list) -> list[str]:
@@ -517,7 +601,8 @@ def snapshot_markup(month: int) -> float | None:
 
 
 def write_snapshot(month: int, df, frozen_at: str | None = None,
-                   cost_markup: float | None = None) -> None:
+                   cost_markup: float | None = None, kind: str = "google",
+                   settings: dict | None = None) -> None:
     """이 달 스냅샷을 갈아끼운다. 실패하면 예전 스냅샷이 그대로 남는다.
 
     `frozen_at`은 **이관할 때만** 넘긴다 — 시트에 있던 원래 고정 시각을 보존하기
@@ -538,7 +623,7 @@ def write_snapshot(month: int, df, frozen_at: str | None = None,
     gen = uuid4().hex[:8]
     chunks = _chunk_rows(rows, cols)
     fs = client()
-    coll = _snap_chunks(month)
+    coll = _snap_chunks(month, kind)
 
     # 1) 새 청크
     batch = fs.batch()
@@ -549,7 +634,7 @@ def write_snapshot(month: int, df, frozen_at: str | None = None,
     batch.commit()
 
     # 2) 커밋 — 이 쓰기 하나로 스냅샷이 교체된다
-    _snap_meta_ref(month).set({
+    _snap_meta_ref(month, kind).set({
         "gen": gen,
         "chunks": len(chunks),
         "cols": cols,
@@ -559,6 +644,9 @@ def write_snapshot(month: int, df, frozen_at: str | None = None,
         # 7월 8.3% / 8월 8%(규리님). 이게 없으면 사이드바를 바꿀 때 이미 고정한
         # 달의 숫자까지 함께 움직인다.
         **({"cost_markup": float(cost_markup)} if cost_markup else {}),
+        # 고정 시점의 설정(시트 링크·드롭박스 폴더). 마크업과 같은 이유로 남긴다 —
+        # 나중에 링크를 갈아끼워도 이미 고정한 달의 기준이 흔들려선 안 된다.
+        **({"settings": dict(settings)} if settings else {}),
     })
 
     # 3) 옛 세대 청소 — 실패해도 정확성에 영향 없다.
@@ -571,7 +659,7 @@ def write_snapshot(month: int, df, frozen_at: str | None = None,
     #     - 내가 이겼으면 남이 자기 것을 치우도록 두고, 10분 넘게 방치된 고아만 쓸어낸다
     #       (고정 도중에 죽은 프로세스의 잔해)
     try:
-        live = ((_snap_meta_ref(month).get().to_dict() or {}).get("gen")) or gen
+        live = ((_snap_meta_ref(month, kind).get().to_dict() or {}).get("gen")) or gen
         cutoff = (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds")
         stale = []
         for doc in coll.stream():
@@ -590,7 +678,7 @@ def write_snapshot(month: int, df, frozen_at: str | None = None,
         pass
 
 
-def read_snapshot(month: int):
+def read_snapshot(month: int, kind: str = "google"):
     """스냅샷을 원가 기준 DataFrame으로. 없으면 None. **깨졌으면 예외를 던진다.**
 
     청크가 메타의 개수와 안 맞으면 조용히 일부만 돌려주지 않는다 — 광고주에게 가는
@@ -600,13 +688,13 @@ def read_snapshot(month: int):
 
     import google_sheets_writer
 
-    snap = _snap_meta_ref(month).get()
+    snap = _snap_meta_ref(month, kind).get()
     if not snap.exists:
         return None
     meta = snap.to_dict() or {}
     gen, expected = meta.get("gen"), int(meta.get("chunks") or 0)
 
-    docs = [d for d in _snap_chunks(month).stream()
+    docs = [d for d in _snap_chunks(month, kind).stream()
             if (d.to_dict() or {}).get("gen") == gen]
     if len(docs) != expected:
         raise RuntimeError(

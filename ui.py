@@ -1075,6 +1075,21 @@ section[data-testid="stSidebar"] h2 {
 .freeze-cta-body {
   font-size: 11px; color: var(--ink-2); margin-bottom: 16px; line-height: 1.5;
 }
+/* 고정 패널 항목별 체크리스트(B안, 2026-09-08 규리님 선택).
+   고정 시각만으로는 "8/23까지"인지 "마감본"인지 알 수 없어서 행 수·파일 수를 찍는다. */
+.freeze-rows { margin: 2px 0 8px; }
+.freeze-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; line-height: 1.85; color: var(--ink-2);
+}
+.freeze-row b { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* 아직 라이브인 항목은 값도 흐리게 — 얼려진 것과 한눈에 갈려야 한다. */
+.freeze-row.is-live b { color: var(--muted); font-weight: 400; }
+.freeze-cta-foot {
+  font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--line);
+  padding-top: 6px; margin-bottom: 8px; font-variant-numeric: tabular-nums;
+}
+.freeze-lock { margin-right: 4px; }
 .st-key-google_freeze_pending .stButton button[kind="primary"] {
   min-height: 36px !important; font-size: 13px !important;
   letter-spacing: -.01em !important; border-radius: 5px !important;

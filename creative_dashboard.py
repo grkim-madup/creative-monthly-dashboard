@@ -20,6 +20,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+import app_settings
 import auth
 import blocks as report_blocks
 import drive_materials
@@ -30,6 +31,7 @@ import google_snapshot
 import highlights
 import insight_draft
 import locks
+import media_snapshot
 import manual_picks
 import overrides as manual_overrides
 import prefetch
@@ -135,6 +137,9 @@ DEFAULT_GOOGLE_FOLDER = (
     r"C:\Users\MADUP\주식회사매드업 Dropbox\광고사업부\4. 광고주"
     r"\네이버 웹툰 대만\8. 기타\구글 먼슬리 크리"
 )
+
+#: 고정 메타(월별 고정 시각) 캐시 TTL. 다른 사람이 고정한 것이 곧 보여야 한다.
+_MEDIA_META_TTL = 60
 
 DEFAULT_SHEET = (
     "https://docs.google.com/spreadsheets/d/1U7qbbsqlDhYAXUelEfSbGUP_DMkVS6qE8bo8m_ZFQko/edit"
@@ -768,6 +773,43 @@ def _load(sid: str) -> pd.DataFrame:
     return load_media_raw(sid)
 
 
+#: 고정 메타는 짧게만 캐시한다(쓰기가 있는 값에 긴 TTL은 금물 — `b92de54`).
+@st.cache_data(ttl=_MEDIA_META_TTL, show_spinner=False)
+def _media_meta() -> dict[int, dict]:
+    """{월: 고정 메타}. **월당 Firestore 읽기 1회**로 끝낸다.
+
+    존재·시각·행수·설정을 각각 물으면 월당 4회가 되고, 12개월을 훑는 것만으로
+    리런마다 48회다 — 화면을 열어두는 것만으로 무료 한도(읽기 5만/일)에 다가간다.
+    """
+    found = {}
+    for month in range(1, 13):
+        data = media_snapshot.meta(month)
+        if data:
+            found[month] = data
+    return found
+
+
+def _media_frozen_stamps() -> tuple[tuple[int, str], ...]:
+    """`((월, 고정시각), …)` — 무거운 스냅샷 읽기의 캐시 키.
+
+    다시 고정하면 시각이 바뀌어 키가 달라지므로, TTL을 기다리지 않고 새 스냅샷이
+    반영된다.
+    """
+    return tuple((month, str(data.get("frozen_at") or ""))
+                 for month, data in sorted(_media_meta().items()))
+
+
+@st.cache_data(show_spinner="고정된 월 데이터 불러오는 중…")
+def _media_frozen(sid: str, stamps: tuple) -> tuple[pd.DataFrame, tuple[int, ...]]:
+    """라이브 시트에 고정 스냅샷을 덮어씌운 프레임.
+
+    `sid`·`stamps`는 캐시 키로만 쓴다 — 시트를 갈아끼우거나 다시 고정하면 다시 읽는다.
+    """
+    live = _load(sid)
+    merged, swapped = media_snapshot.apply(live)
+    return merged, tuple(swapped)
+
+
 @st.cache_data(show_spinner="구글 애셋 보고서 읽는 중…")
 def _google(folder: str, markup: float) -> pd.DataFrame:
     return load_google_ads_folder(folder, cost_markup=markup)
@@ -1004,12 +1046,27 @@ def _snapshot_markup(month: int) -> float | None:
 data_card = st.sidebar.container(key="sb_data")
 with data_card:
     st.markdown('<div class="sb-card-t">데이터</div>', unsafe_allow_html=True)
-    # 같은 이유로 `key`를 준다 — 없으면 링크를 갈아끼워도 리런에서 기본값으로 돌아간다.
+    # ⚠ `key`만으로는 **그 세션 동안만** 값이 남는다. 새로고침·재로그인·재배포마다
+    #    코드 상수로 돌아가서, 규리님이 갈아끼운 링크가 조용히 사라졌다(2026-09-08).
+    #    그래서 저장소에 남기고 그 값을 기본값으로 쓴다.
+    _saved_sheet = app_settings.get("sheet_url", DEFAULT_SHEET)
     sheet_url = st.text_input(
         "구글시트 링크", key="sheet_url",
-        value=DEFAULT_SHEET,
-        help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다.",
+        value=_saved_sheet,
+        help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다. "
+             "바꾸면 저장돼서 다음에 열 때도 이 링크를 봅니다(편집 권한 필요).",
     )
+    # 값이 바뀌었으면 저장한다. **전원이 공유하는 상태**라 편집 권한이 있을 때만 —
+    # 광고주가 보는 화면의 데이터 원본이 바뀌는 일이기 때문이다.
+    if sheet_url.strip() and sheet_url.strip() != _saved_sheet.strip():
+        if auth.can_edit():
+            _ok, _why = app_settings.save("sheet_url", sheet_url.strip())
+            if _ok:
+                st.caption("링크를 저장했습니다.")
+            else:
+                st.warning(f"링크를 저장하지 못했습니다: {_why}")
+        else:
+            st.caption("이 세션에서만 적용됩니다(편집 권한 없음).")
 
 try:
     sheet_id = extract_sheet_id(sheet_url)
@@ -1048,7 +1105,10 @@ with data_card:
 
 
 try:
-    raw = _load(sheet_id)
+    # 고정한 달은 스냅샷 행으로 갈아끼운다 — 시트가 나중에 갱신돼도 이미 광고주에게
+    # 보낸 달의 숫자가 움직이지 않는다(규리님 2026-09-08: "매달 보여야 하는 데이터의
+    # 기준이 달라"). 고정 안 한 달은 라이브 시트를 그대로 본다.
+    raw, frozen_media_months = _media_frozen(sheet_id, _media_frozen_stamps())
 except Exception as error:  # 시트 권한/탭 이름 문제를 화면에 그대로 노출
     st.error(f"시트를 읽지 못했습니다: {error}")
     st.stop()
@@ -1432,6 +1492,14 @@ def _load_snapshot(month: int, markup: float, frozen_at: str | None) -> pd.DataF
 # 스냅샷은 구글시트 전용 탭(설정돼 있으면) 또는 로컬 폴더 복사(폴백)로 저장된다 —
 # google_snapshot이 어느 쪽인지 알아서 고른다.
 has_snapshot = _snapshot_exists(month)
+# 고정한 달은 **고정 당시 마크업**으로 계산한다. 사이드바 값을 쓰면 규리님이 다음 달
+# 마크업으로 바꾸는 순간 이미 광고주에게 보낸 달의 구글 소진액이 함께 움직인다
+# (예전에는 위젯 기본값만 고정 마크업이라 "안 만지면 안 흔들린다" 수준의 약한 보장이었다).
+# 마크업을 실제로 바꾸려면 '다시 고정'을 누른다 — 그때는 사이드바 값을 쓴다.
+_frozen_markup = _frozen_markup or (
+    (_media_meta().get(month) or {}).get("settings", {}).get("cost_markup"))
+report_markup = (float(_frozen_markup)
+                 if (has_snapshot and _frozen_markup) else cost_markup)
 snapshot_frozen_at = _snapshot_frozen_at(month) if has_snapshot else None
 google_source_label = google_snapshot.source_label(month) if has_snapshot else google_folder
 
@@ -1439,7 +1507,7 @@ google_all = pd.DataFrame()
 google_error = None
 try:
     if has_snapshot:
-        google_all = _load_snapshot(month, cost_markup, snapshot_frozen_at)
+        google_all = _load_snapshot(month, report_markup, snapshot_frozen_at)
     else:
         google_all = _google(google_folder, cost_markup)
         if not google_all.empty:
@@ -1476,63 +1544,134 @@ with google_files_slot:
 # 그 시점 값으로 재고정된다. 고정 전에는 놓치면 안 되는 일이라 눈에 띄게, 고정 후에는
 # 평소엔 신경 쓸 필요 없는 상태라 조용하게 — 언제 고정됐는지만 작게 남긴다.
 live_source_available = dropbox_source.configured() or Path(google_folder).exists()
+
+
+def freeze_month(month: int) -> list[str]:
+    """이 달을 고정한다 — **메타·틱톡 원본 + 구글 애셋 + 그때의 설정**을 함께.
+
+    규리님(2026-09-08): *"내가 스냅샷을 남기면 구글 드롭박스, 구글 마크업, 구글시트
+    값이 다 당시에 넣었던 그 값으로 고정되어야 해. 매달 보여야 하는 데이터의 기준이
+    달라."*
+
+    돌려주는 것은 **실제로 얼린 항목 목록**이다 — 구글 라이브 폴더에 그 달 파일이
+    없으면 메타·틱톡만 얼린다. 예전에는 그런 달에 고정 버튼 자체가 안 나와서
+    `Media_RAW`를 얼릴 방법이 없었다.
+    """
+    settings = {"sheet_id": sheet_id, "sheet_url": sheet_url,
+                "google_folder": str(google_folder),
+                "cost_markup": float(cost_markup)}
+    done: list[str] = []
+
+    # 메타·틱톡이 먼저다. 구글은 폴더가 없을 수 있지만 이쪽은 항상 가능하다.
+    media_snapshot.save(month, _load(sheet_id), settings=settings)
+    done.append("메타·틱톡")
+
+    if live_source_available:
+        try:
+            google_snapshot.save(month, google_folder, cost_markup=cost_markup)
+            done.append("구글 애셋")
+        except Exception as error:  # noqa: BLE001
+            # 구글이 없어도 메타·틱톡 고정은 살린다 — 부분 성공을 실패로 되돌리면
+            # 방금 얼린 것이 버려진다.
+            st.warning("구글 애셋은 고정하지 못했습니다: "
+                       + google_sheets_writer.friendly_error(str(error)))
+    return done
+
+
+def _freeze_now(month: int) -> None:
+    try:
+        done = freeze_month(month)
+    except Exception as error:  # noqa: BLE001 - 저장소 오류까지 화면에 보여준다
+        st.error("고정 실패: " + google_sheets_writer.friendly_error(str(error)))
+        return
+    st.cache_data.clear()
+    st.session_state["_freeze_done"] = " + ".join(done)
+    st.rerun()
+
+
+def _freeze_rows(month: int) -> list[tuple[str, str, bool]]:
+    """고정 패널에 찍을 `(항목, 값, 얼려졌나)` 목록.
+
+    고정 시각만으로는 **무엇까지 담았는지** 알 수 없다 — 8월을 8/23까지 들어온
+    상태로 얼렸는지 마감본으로 얼렸는지는 행 수로만 구분된다(규리님 B안 선택 이유).
+    """
+    rows: list[tuple[str, str, bool]] = []
+
+    frozen_meta = _media_meta().get(month) or {}
+    media_rows = frozen_meta.get("row_count")
+    rows.append(("메타·틱톡",
+                 f"{media_rows:,}행" if media_rows else "라이브",
+                 bool(media_rows)))
+
+    rows.append(("구글 애셋",
+                 f"{google['source_file'].nunique()}개 파일"
+                 if has_snapshot and not google.empty else
+                 ("고정됨" if has_snapshot else "라이브"),
+                 bool(has_snapshot)))
+
+    frozen = dict(frozen_meta.get("settings") or {})
+    markup = _frozen_markup or frozen.get("cost_markup")
+    rows.append(("마크업", f"×{float(markup):.4f}" if markup else "-", bool(markup)))
+
+    frozen_sheet = str(frozen.get("sheet_id") or "")
+    rows.append(("시트", f"…{frozen_sheet[-6:]}" if frozen_sheet else "-",
+                 bool(frozen_sheet)))
+    return rows
+
+
+def _frozen_stamp(month: int) -> str:
+    """패널 아래 찍는 고정 시각. 메타·틱톡 것을 우선하고 없으면 구글 것을 쓴다."""
+    meta = _media_meta().get(month) or {}
+    return str(meta.get("frozen_at") or snapshot_frozen_at or "")
+
+
 # empty에 다시 쓰면 위에서 띄운 로딩 자리표시자가 이 내용으로 교체된다.
 with freeze_slot.container():
-    if has_snapshot:
-        with st.container(key="google_freeze_done"):
-            done_cols = st.columns([3, 1.4], vertical_alignment="center")
-            # 어떤 마크업으로 고정했는지 보여준다 — 월별로 달라서 안 적으면
-            # 지금 사이드바 값과 같은지 알 수 없다.
-            _frozen_note = (f" · 마크업 ×{_frozen_markup:.4f}"
-                            if _frozen_markup else "")
-            done_cols[0].caption(
-                f"🔒 {month}월 데이터 고정됨 · {snapshot_frozen_at}{_frozen_note}")
-            if _frozen_markup and abs(_frozen_markup - cost_markup) > 1e-9:
-                done_cols[0].caption(
-                    f"⚠ 지금 화면은 ×{cost_markup:.4f} 기준입니다 — "
-                    "'다시 고정'을 누르면 이 값으로 바뀝니다.")
-            if live_source_available:
-                if done_cols[1].button("다시 고정", key="google_freeze", width="stretch"):
-                    try:
-                        google_snapshot.save(month, google_folder,
-                                             cost_markup=cost_markup)
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
-                        st.error(
-                            "고정 실패: "
-                            + google_sheets_writer.friendly_error(str(error))
-                        )
-    elif live_source_available and not google_all.empty:
+    if _just_froze := st.session_state.pop("_freeze_done", None):
+        st.success(f"고정 완료: {_just_froze}")
+
+    if has_snapshot or month in frozen_media_months:
+        with st.container(key="google_freeze_done", border=True):
+            st.markdown(
+                '<div class="freeze-cta-title">'
+                '<span class="freeze-lock">🔒</span>'
+                f'{month}월 고정됨</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="freeze-rows">'
+                + "".join(
+                    f'<div class="freeze-row{"" if ok else " is-live"}">'
+                    f'<span>{html.escape(label)}</span>'
+                    f'<b>{html.escape(value)}</b></div>'
+                    for label, value, ok in _freeze_rows(month))
+                + '</div>'
+                + f'<div class="freeze-cta-foot">{html.escape(_frozen_stamp(month))}</div>',
+                unsafe_allow_html=True)
+
+            # 지금 화면 기준이 고정 당시와 다르면 짚어준다. 안 적으면 광고주에게
+            # 어떤 기준의 숫자가 갔는지 아무도 모른다.
+            _frozen = dict((_media_meta().get(month) or {}).get("settings") or {})
+            if _frozen.get("sheet_id") and _frozen["sheet_id"] != sheet_id:
+                st.caption("⚠ 지금 사이드바 시트는 고정 당시와 다릅니다 — "
+                           "이 달 숫자는 고정본 기준입니다.")
+            if _frozen_markup and abs(float(_frozen_markup) - cost_markup) > 1e-9:
+                st.caption(f"이 달은 고정 당시 ×{float(_frozen_markup):.4f} 기준입니다. "
+                           f"'다시 고정'을 누르면 사이드바 값(×{cost_markup:.4f})으로 바뀝니다.")
+            if auth.can_edit() and st.button("다시 고정", key="google_freeze",
+                                             width="stretch"):
+                _freeze_now(month)
+    else:
         with st.container(key="google_freeze_pending", border=True):
             st.markdown(
                 '<div class="freeze-cta-title">아직 고정 안 됨</div>'
-                '<div class="freeze-cta-body">드롭박스 폴더가 다음 달 파일로 바뀌면 '
-                '지금 이 숫자는 사라집니다.</div>',
+                '<div class="freeze-cta-body">시트가 갱신되거나 드롭박스 폴더가 '
+                '다음 달 파일로 바뀌면 지금 이 숫자는 달라집니다.</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("지금 고정하기", key="google_freeze", type="primary", width="stretch"):
-                try:
-                    google_snapshot.save(month, google_folder,
-                                         cost_markup=cost_markup)
-                    st.cache_data.clear()
-                    st.rerun()
-                except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
-                    st.error(
-                        "고정 실패: " + google_sheets_writer.friendly_error(str(error))
-                    )
-    else:
-        # 안 고정됐고 라이브에도 이 달 데이터가 없는 경우 — 담당자가 드롭박스 폴더를
-        # 이미 다른 달 파일로 덮어썼거나, 애초에 구글 데이터가 없는 달이다. 캡션 한 줄은
-        # 너무 눈에 안 띄어서 놓치기 쉬웠다 — 독립된 박스로 뺀다(강조는 아니고 중립 톤).
-        with st.container(key="google_freeze_nodata", border=True):
-            st.markdown(
-                '<div class="freeze-cta-title freeze-cta-title--muted">'
-                '<span class="freeze-cta-dot freeze-cta-dot--muted"></span>'
-                '이 달은 고정할 데이터 없음</div>'
-                '<div class="freeze-cta-body">구글 라이브 폴더에 이 달 파일이 없어요</div>',
-                unsafe_allow_html=True,
-            )
+            if not live_source_available:
+                st.caption("구글 라이브 폴더에 이 달 파일이 없어 메타·틱톡만 고정됩니다.")
+            if auth.can_edit() and st.button("지금 고정하기", key="google_freeze",
+                                             type="primary", width="stretch"):
+                _freeze_now(month)
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
 # 옮긴다 — 성공적으로 읽었을 때만 채워진다(실패·데이터 없음은 아래 경고로 바로 보여준다).
@@ -1540,7 +1679,7 @@ google_read_hint = None
 if not google_error and not google.empty:
     google_read_hint = (
         ("이 달은 고정된 스냅샷입니다.\n" if has_snapshot else "구글 광고 애셋 보고서를 직접 읽었습니다.\n")
-        + f"{google_source_label} · 원가에 마크업 ×{cost_markup:.4f} 적용 · "
+        + f"{google_source_label} · 원가에 마크업 ×{report_markup:.4f} 적용 · "
         f"캠페인 {google['source_file'].nunique()}개 파일"
     )
 
