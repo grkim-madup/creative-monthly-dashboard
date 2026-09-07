@@ -527,9 +527,13 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
                     scale += (f" (소재 태깅된 집행 ₩{pool:,.0f} 중 "
                               f"{spend / pool:.2%})")
                 links = section.get("links")
+                narrated: list = []
                 lines += contrast_lines(cards, month, title, scale,
-                                        subject=subject, rest=rest, links=links)
-                entries += [(title, card) for card in cards]
+                                        subject=subject, rest=rest, links=links,
+                                        narrated=narrated)
+                # 본문에 쓴 카드만 next step으로 넘긴다.
+                entries += [(title, card) for card in narrated]
+                cards = narrated
                 # 격차를 만든 소재를 next step까지 물고 간다 — 그게 확인되면
                 # `표본 확보 후 재판단`(무응답) 대신 **그 소재를 빼고 재집행**을
                 # 제안할 수 있다. 두 곳이 따로 계산하면 서로 다른 말을 한다.
@@ -694,7 +698,8 @@ def contrast_lines(cards: list[dict], month: int, title: str,
                    scale: str = "", media_limit: int = 2,
                    subject: pd.DataFrame | None = None,
                    rest: pd.DataFrame | None = None,
-                   links: dict[str, str] | None = None) -> list[str]:
+                   links: dict[str, str] | None = None,
+                   narrated: list | None = None) -> list[str]:
     """대조군 표 하나를 **해석까지** 담은 문단으로.
 
     리서치한 3단을 그대로 따른다:
@@ -707,11 +712,16 @@ def contrast_lines(cards: list[dict], month: int, title: str,
     """
     if not cards:
         return []
+    narrated = narrated if narrated is not None else []
     lines = [f"- {title} — 기존 소재 대비 ({month}월 · 그 외 소재 대비)"]
     if scale:
         lines.append(f"   ㄴ 규모 : {scale}")
 
     shown, hidden = cards[:media_limit], cards[media_limit:]
+    # ⚠ 서술한 카드만 돌려준다. 예전에는 `entries`에 전체를 담아서, 본문에서
+    #   "규모가 작아 생략"한 매체가 `추후 제작 인사이트`에는 그대로 나왔다
+    #   (규리님 스샷의 `Meta · iOS` — 소진 비중 1.3%인데 제안까지 붙었다).
+    narrated.extend(shown)
     for card in shown:
         judged = operating_verdict(card)
         table = card.get("judge", card["table"])
@@ -733,14 +743,18 @@ def contrast_lines(cards: list[dict], month: int, title: str,
             if not driver:
                 continue
             label = METRIC_LABEL.get(metric, metric)
-            tail = ("오히려 상회함" if driver["beats"] else "근접함")
+            tail = ("오히려 상회" if driver["beats"] else "근접")
+            # **결론을 앞에 둔다.** 예전에는 문장 끝에 붙여서 에디터 폭에 걸려
+            # `유형 자체의 문제로 보기 / 어려움`으로 줄이 갈렸고, 정작 중요한 결론이
+            # 맨 뒤에 묻혔다(규리님이 "어려움은 뭐야?"라고 물었다).
             lines.append(
-                f"       ㄴ 다만 이 열위는 {ad_link(driver['ad'], links)} "
-                f"1개에 집중돼 있음 — 그 소재를 제외하면 "
-                f"{label}{subject_particle(label)} "
+                f"       ㄴ 유형 자체의 문제로 보기 어려움 — 이 열위는 "
+                f"{ad_link(driver['ad'], links)} 1개에 집중돼 있음")
+            lines.append(
+                f"           ㄴ 그 소재를 빼면 {label} "
                 f"{fmt(metric, driver['base'])} → {fmt(metric, driver['without'])}"
-                f"로, 기존 소재 {fmt(metric, driver['benchmark'])}를 {tail}"
-                f"(격차 {driver['recovery']:.0%} 해소). 유형 자체의 문제로 보기 어려움")
+                f"로 기존 {fmt(metric, driver['benchmark'])} {tail}"
+                f"(격차 {driver['recovery']:.0%} 해소)")
 
         sample = [f"설치 {judged['installs']:,.0f}건"]
         if card.get("share") is not None:

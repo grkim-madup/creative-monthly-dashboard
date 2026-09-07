@@ -82,3 +82,20 @@ def test_병합해도_셀_스타일이_어긋나지_않는다(rendered):
         cell_styles=[{}, {"구분": "background-color:#fdf3f3"}],
     )
     assert "background-color:#fdf3f3" in rendered[0]
+
+
+def test_full_height_opts_out_of_the_scroll_cap(rendered):
+    """대조군 표는 높이를 묶지 않는다(2026-09-07 규리님 요청).
+
+    `.rt-wrap`의 `max-height: 420px`에 걸리면 첫 묶음의 `대상` 줄이 위로 사라져
+    무엇과 비교하는 표인지 알 수 없게 된다(실제로 그렇게 보였다).
+    """
+    ui.report_table([["a"]], ["매체"], full_height=True)
+    assert 'class="rt-wrap is-full"' in rendered[0]
+
+
+def test_normal_tables_keep_the_cap(rendered):
+    """행이 많은 표(소재 목록·작품별)는 화면을 한없이 밀어내면 안 된다."""
+    ui.report_table([["a"]], ["매체"])
+    assert 'class="rt-wrap"' in rendered[0]
+    assert "is-full" not in rendered[0]

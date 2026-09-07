@@ -423,3 +423,63 @@ class TestOneSidedVerdict:
         lines = idf.next_step_lines([("EPN", cards[0])])
         assert any(line.startswith(">>") for line in lines)
         assert any("TikTok" in line for line in lines)
+
+
+class TestNarratedOnly:
+    """본문에서 생략한 매체는 `추후 제작 인사이트`에도 없어야 한다.
+
+    실측(8월 MIX): 본문은 소진 상위 2개(TikTok·AOS, Meta·AOS)만 쓰고 나머지를
+    `그 외 매체 2곳 · 소진 비중 합 1.3% — 규모가 작아 생략`으로 접었는데,
+    next step에는 `Meta · iOS`(비중 1.2%)가 제안까지 붙어 나왔다.
+    """
+
+    def cards_of(self, count):
+        subject = frame([
+            row(f"s{i}", "TikTok", 3000000 - i * 500000, 1000000, 200000,
+                2000, 1000, 200)
+            for i in range(count)
+        ])
+        # 매체를 하나씩 다르게 줘서 카드가 여러 개 생기게 한다.
+        subject["media"] = [f"M{i}" for i in range(count)]
+        rest = frame([
+            row(f"r{i}", "TikTok", 90000000, 11000000, 1600000, 55000, 29000, 2000)
+            for i in range(count)
+        ])
+        rest["media"] = [f"M{i}" for i in range(count)]
+        return subject, rest
+
+    def test_next_step_covers_only_narrated_media(self):
+        subject, rest = self.cards_of(4)
+        sections = [{"kind": "contrast", "title": "MIX", "subject": subject,
+                     "rest": rest, "values": None}]
+        lines = idf.block_lines(sections, 8, pool=200000000.0)
+        proposals = [line for line in lines if line.startswith(">>")]
+        # 기본 media_limit=2 — 제안도 두 개를 넘지 않는다.
+        assert len(proposals) <= 2
+
+    def test_skipped_media_is_named_in_the_body(self):
+        """생략했다는 사실 자체는 남긴다 — 조용히 빠지면 표와 안 맞아 보인다."""
+        subject, rest = self.cards_of(4)
+        sections = [{"kind": "contrast", "title": "MIX", "subject": subject,
+                     "rest": rest, "values": None}]
+        lines = idf.block_lines(sections, 8, pool=200000000.0)
+        assert any("규모가 작아 생략" in line for line in lines)
+
+
+class TestConclusionFirst:
+    def test_gap_driver_line_leads_with_the_conclusion(self):
+        """결론을 문장 끝에 두면 에디터 폭에 걸려 잘린다 — 규리님이 `어려움은 뭐야?`
+        라고 물은 그 줄이다."""
+        subject = frame([
+            row("good1", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("good2", "Meta", 1000000, 300000, 3000, 500, 300, 20),
+            row("bad", "Meta", 3000000, 300000, 3000, 300, 10, 1),
+        ])
+        rest = frame([row("r1", "Meta", 50000000, 15000000, 150000, 25000,
+                          15000, 1000)])
+        cards = contrast_by_media(subject, rest)
+        lines = idf.contrast_lines(cards, 8, "테스트", subject=subject, rest=rest)
+        lead = next((l for l in lines if "유형 자체의 문제로 보기 어려움" in l), None)
+        assert lead is not None
+        # 결론이 줄 **앞쪽**에 있어야 한다.
+        assert lead.strip().startswith("ㄴ 유형 자체의 문제로 보기 어려움")

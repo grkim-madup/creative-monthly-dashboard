@@ -401,6 +401,10 @@ header[data-testid="stHeader"] { background: transparent; }
      10행 남짓이면 그대로 다 보이고, 그보다 길면 표 안에서 스크롤된다. */
   max-height: 420px;
 }
+/* 대조군 비교 표는 **높이를 묶지 않는다**(2026-09-07 규리님 요청).
+   행이 `매체×OS × (대상/그 외/차이)`로 정해져 있어 한없이 길어지지 않고, 잘리면
+   첫 묶음의 `대상` 줄이 위로 사라져서 무엇과 비교하는 표인지 알 수 없게 된다. */
+.rt-wrap.is-full { max-height: none; }
 .rt {
   width: 100%; border-collapse: collapse;
   font-size: 12px; font-variant-numeric: tabular-nums;
@@ -1515,6 +1519,7 @@ def report_table(
     link_columns: set[str] | None = None,
     html_columns: set[str] | None = None,
     row_spans: list[dict[str, int]] | None = None,
+    full_height: bool = False,
 ) -> None:
     """리포트용 HTML 표. `st.dataframe`으로 못 하는 것들을 하기 위해 직접 그린다.
 
@@ -1575,7 +1580,8 @@ def report_table(
             cells.append(f'<td class="{cell_class(name)}"{attr}>{text}</td>')
         body.append(f'<tr class="{klass}">{"".join(cells)}</tr>')
     st.markdown(
-        f'<div class="rt-wrap"><table class="rt">'
+        f'<div class="rt-wrap{" is-full" if full_height else ""}">'
+        f'<table class="rt">'
         f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody>"
         f"</table></div>",
         unsafe_allow_html=True,

@@ -2562,6 +2562,8 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
         cell_styles=styles,
         html_columns={"매체"},
         row_spans=spans,
+        # 잘리면 첫 묶음의 `대상` 줄이 위로 사라져 무엇과 비교하는지 알 수 없다.
+        full_height=True,
     )
 
 
