@@ -107,3 +107,19 @@ def test_table_and_cards_pick_the_same_creatives():
     assert table_best == card_best
     assert table_worst == card_worst
     assert len(card_best) + len(card_worst) == 4
+
+
+def test_top_n_is_displayed_by_spend():
+    """**고르는 기준과 보여주는 순서는 다르다**(2026-09-07 규리님 요청).
+
+    인스톨·인앱 액션으로 TOP N을 고르되, 표는 소진액 내림차순으로 읽는다 —
+    리포트에서 줄을 훑을 때 "돈을 얼마 썼나"가 먼저 눈에 들어와야 한다.
+    진입점 코드가 그 순서로 되어 있는지 소스로 확인한다(진입점은 import할 수 없다).
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    entry = next((root / n for n in ("creative_dashboard.py", "app.py")
+                  if (root / n).exists()))
+    source = entry.read_text(encoding="utf-8")
+    assert 'g_top = g_top.sort_values(g_rank_metric, ascending=False).head' in source
+    assert 'g_top = g_top.sort_values("cost", ascending=False).reset_index' in source

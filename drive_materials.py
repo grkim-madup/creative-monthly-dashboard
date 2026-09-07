@@ -129,10 +129,14 @@ def build_index(files: list[dict]) -> tuple[dict[str, list[dict]], list[tuple[st
 # 집행 데이터에서 규격이 `ALL`인 소재(여러 규격을 한 캠페인으로 묶어 돌린 것)는 Drive에
 # 그 이름으로 올라가 있지 않다 — 실측(2026-08-25) 결과 Drive 8,577개 파일 중 `ALL` 토큰을
 # 가진 파일은 0개였고, 원본 파일은 세로형(9X16) 이름으로 올라가 있었다. 그래서 `ALL`은
-# `9X16`으로 바꿔 한 번 더 찾아본다(실측: 118개 중 0개 → 56개 매칭. `16X9`로 바꾸면 49개라
-# 세로형이 더 잘 맞는다).
+# 실제 규격 이름으로 바꿔 다시 찾아본다(실측: 118개 중 0개 → 56개 매칭. `16X9`로 바꾸면
+# 49개라 세로형이 더 잘 맞는다).
+#
+# **후보를 순서대로 시도한다**(2026-09-07 규리님 요청). `ALL` 집행에는 세로 영상뿐 아니라
+# 정방형 배너도 섞여 있다 — 8월 메타 `ALL` 소재의 행 구성이 VID 164 / IMG 25 / GIF 3이라,
+# 세로형으로만 찾으면 정방형으로 만든 것을 놓친다.
 _DIMENSION_ALL = "all"
-_DIMENSION_ALL_SUBSTITUTE = "9x16"
+_DIMENSION_ALL_SUBSTITUTES = ("9x16", "1x1")
 
 
 def _lookup_key(key: str, exact: dict[str, list[dict]],
@@ -147,14 +151,24 @@ def _lookup_key(key: str, exact: dict[str, list[dict]],
     ]
 
 
-def substitute_all_dimension(key: str) -> str | None:
-    """정규화 키의 `all` 토큰을 `9x16`으로 바꾼다. 바꿀 게 없으면 None."""
+def substitute_all_dimension(key: str, substitute: str | None = None) -> str | None:
+    """정규화 키의 `all` 토큰을 실제 규격으로 바꾼다. 바꿀 게 없으면 None."""
     tokens = key.split("_")
     if _DIMENSION_ALL not in tokens:
         return None
+    replacement = substitute or _DIMENSION_ALL_SUBSTITUTES[0]
     return "_".join(
-        _DIMENSION_ALL_SUBSTITUTE if t == _DIMENSION_ALL else t for t in tokens
+        replacement if t == _DIMENSION_ALL else t for t in tokens
     )
+
+
+def all_dimension_candidates(key: str) -> list[str]:
+    """`all`을 후보 규격으로 바꾼 키들. 앞에서부터 시도한다."""
+    return [
+        candidate for candidate in (
+            substitute_all_dimension(key, s) for s in _DIMENSION_ALL_SUBSTITUTES
+        ) if candidate is not None
+    ]
 
 
 def find_matches(ad_name: str, exact: dict[str, list[dict]], flat: list[tuple[str, dict]]) -> list[dict]:
@@ -165,8 +179,10 @@ def find_matches(ad_name: str, exact: dict[str, list[dict]], flat: list[tuple[st
     캐러셀 분할본 `..._TITLE1-vari-1.jpg`~`-8.jpg`). 이 구분자 체크가 없으면 `_1`이 `_10`,
     `_11`...에도 우연히 매칭되는 오탐이 난다.
 
-    그래도 못 찾으면 마지막으로 규격 `ALL`을 `9X16`으로 바꿔 한 번 더 찾는다. 원래 이름으로
-    찾은 결과가 있으면 그걸 그대로 쓰므로, 이 치환이 정상 매칭을 밀어내는 일은 없다.
+    그래도 못 찾으면 규격 `ALL`을 실제 규격으로 바꿔 다시 찾는다 — `9X16` 먼저, 없으면
+    `1X1`(2026-09-07 규리님 요청). `ALL` 집행에는 세로 영상과 정방형 배너가 섞여 있다.
+    원래 이름으로 찾은 결과가 있으면 그걸 그대로 쓰므로, 이 치환이 정상 매칭을 밀어내는
+    일은 없다.
     """
     key = normalize_name(ad_name)
     if key is None:
@@ -176,9 +192,10 @@ def find_matches(ad_name: str, exact: dict[str, list[dict]], flat: list[tuple[st
     if matches:
         return matches
 
-    substituted = substitute_all_dimension(key)
-    if substituted is not None:
-        return _lookup_key(substituted, exact, flat)
+    for candidate in all_dimension_candidates(key):
+        matches = _lookup_key(candidate, exact, flat)
+        if matches:
+            return matches
     return []
 
 

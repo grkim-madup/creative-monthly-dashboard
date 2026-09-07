@@ -1471,8 +1471,11 @@ else:
             status_row("warn", g_os, "조건에 맞는 소재가 없습니다.")
             continue
 
+        # **고르는 기준과 보여주는 순서를 나눈다**(2026-09-07 규리님 요청).
+        # 인스톨·인앱 액션으로 TOP N을 고르되, 표는 **소진액 내림차순**으로 읽는다 —
+        # 리포트에서 줄을 훑을 때는 "돈을 얼마 썼나"가 먼저 눈에 들어와야 한다.
         g_top = g_top.sort_values(g_rank_metric, ascending=False).head(int(g_top_n))
-        g_top = g_top.reset_index(drop=True)
+        g_top = g_top.sort_values("cost", ascending=False).reset_index(drop=True)
         table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
         render_google_table(g_top)
 
