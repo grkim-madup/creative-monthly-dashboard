@@ -1150,11 +1150,9 @@ BACK_PRIMARY, BACK_SECONDARY = "D0 coin CVR", "D0 read CVR"
 MIN_INSTALLS_FOR_ANY_VERDICT = 30
 #: CTR의 분모는 노출이다. 노출이 몇백이면 클릭 한 번이 CTR을 크게 흔든다.
 MIN_IMPRESSIONS_FOR_VERDICT = 1000
-#: 뒷단 지표를 쓸 수 있는 최소 **원값**. CVR은 분모가 작아 1건이 크게 흔든다.
-#: 코인은 p75가 2건이라 10건을 요구한다(1건 변동 = 상대 10%).
-#: `coin>=10`인데 `read<30`인 카드는 8월에 0개라 계층이 깨끗하다.
-MIN_D0_COIN_FOR_VERDICT = 10
-MIN_D0_READ_FOR_VERDICT = 30
+#: (2026-09-07 제거) 예전에는 코인 10건·열람 30건이라는 **원값 문턱**이 있었다.
+#: 그 때문에 좋아진 Coin CVR이 색 없이 나와서 규리님이 지적했다. 지금은 CVR의
+#: 분모인 **설치**(`MIN_INSTALLS_FOR_ANY_VERDICT`)로만 거른다.
 
 
 def meaningful(delta, unit: str) -> bool:
@@ -1202,10 +1200,20 @@ def contrast_rows(subject: pd.DataFrame, rest: pd.DataFrame,
         blocked |= {"CPI", "CPC"}
     if float(left.get("impression") or 0) < MIN_IMPRESSIONS_FOR_VERDICT:
         blocked |= {"CTR", "CPC"}
-    if float(left.get("D0 coin") or 0) < MIN_D0_COIN_FOR_VERDICT:
-        blocked.add("D0 coin CVR")
-    if float(left.get("D0 read") or 0) < MIN_D0_READ_FOR_VERDICT:
-        blocked.add("D0 read CVR")
+    # 전환율(CVR)의 분모는 **설치**다. 설치가 문턱 미만이면 판정 재료에서 뺀다 —
+    # CPI에 같은 문턱을 거는 것과 같은 이유다.
+    #
+    # ⚠ **코인·열람 건수 자체로는 막지 않는다**(2026-09-07 규리님 결정).
+    #    "Coin CVR이 오르면 좋은 것, 내려가면 나쁜 것"이 확실한 지표라, 코인
+    #    10건 미만을 판정에서 빼면 `+0.02%p`처럼 좋아진 값까지 흑백이 됐다.
+    #    화면은 이제 `better`가 아니라 **델타 방향**으로 색을 칠하므로(항상 칠한다),
+    #    이 문턱은 판정에만 영향을 준다.
+    #
+    #    설치 문턱이 없으면 코인 0건이 곧 `뒷단 저조`가 된다 — 실측으로 그런 카드
+    #    31개의 설치 중위값이 **19건**이었다. 설치 19건에 코인 0건은 좋은 소재도
+    #    흔히 그렇게 나온다(기준 전환율 3%면 기대값 0.6건).
+    if installs < MIN_INSTALLS_FOR_ANY_VERDICT:
+        blocked |= {"D0 read CVR", "D0 coin CVR", "D7 coin CVR"}
     records = []
     for metric in metrics:
         mine = float(left[metric]) if metric in left.index and pd.notna(left[metric]) else None

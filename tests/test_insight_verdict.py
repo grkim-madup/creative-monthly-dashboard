@@ -414,7 +414,9 @@ class TestOneSidedVerdict:
 
         실측: EPN/TikTok은 앞단 CPI가 18% 우수인데 아무 말도 없이 사라졌다.
         """
-        subject = frame([row("s1", "TikTok", 500000, 200000, 30000, 400, 3, 0)])
+        # 앞단은 CTR이 뚜렷하게 우수(30% vs 14.5%)하고, 설치가 문턱(30건) 미만이라
+        # 뒷단 CVR은 판정에서 빠진다.
+        subject = frame([row("s1", "TikTok", 500000, 200000, 60000, 10, 0, 0)])
         rest = frame([row("r1", "TikTok", 90000000, 11000000, 1600000, 55000,
                           29000, 20)])
         cards = contrast_by_media(subject, rest)

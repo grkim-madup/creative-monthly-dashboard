@@ -51,6 +51,7 @@ from creative_data import (
     month_options,
     pick_best_worst,
     CREATIVE_FIELDS,
+    LOWER_IS_BETTER,
     contrast_by_media,
     contrast_groups,
     contrast_split,
@@ -2541,19 +2542,18 @@ def render_contrast(view: dict, month: int, key_prefix: str) -> None:
             else:
                 delta_row.append(f"{line['delta']:+.2f}%p" if line["unit"] == "%p"
                                  else f"{line['delta']:+.1%}")
-                # ⚠ `better`가 None이면 **색을 칠하지 않는다.** 표본 게이트에 걸려
-                #   판정에서 뺀 지표라는 뜻이다(예: 코인 전환 10건 미만).
-                #   예전에는 `if line["better"] else` 로 판단해서 None이 falsy가 되어
-                #   **빨강으로 칠했다** — TikTok·AOS의 D0 Coin CVR `+0.02%p`가
-                #   좋아진 값인데 붉게 나왔다(규리님 지적).
-                if line["better"] is None or pd.isna(line["better"]):
-                    delta_style[name] = "color:#6b7280"
-                    continue
-                # 색 기준은 **좋고 나쁨**이다 — CPI·CPC는 올라가면 빨강.
-                # 판단은 `creative_data.LOWER_IS_BETTER` 한 곳에서만 한다.
+                # 색은 **델타 방향**으로 칠한다 — `better`(판정 재료 여부)를 쓰지
+                # 않는다. 표본이 작아 판정에서 뺀 지표도 오르내림 자체는 사실이고,
+                # 색을 빼면 정보가 사라진다(규리님: "Coin CVR이 오르면 좋은 것,
+                # 내려가면 나쁜 것"). 예전에는 `better`가 None인 칸을 흑백으로 뺐고,
+                # 그전에는 None을 falsy로 읽어 **좋아진 값을 빨강**으로 칠했다.
+                #
+                # 방향 판단은 `creative_data.LOWER_IS_BETTER` 한 곳에서만 한다.
+                improved = ((line["delta"] < 0) if metric in LOWER_IS_BETTER
+                            else (line["delta"] > 0))
                 delta_style[name] = (
                     "background-color:#eefaf4;color:#0F6E56;font-weight:600"
-                    if line["better"] else
+                    if improved else
                     "background-color:#fdf3f3;color:#8a1f1f;font-weight:600")
 
         rows += [subject_row, rest_row, delta_row]

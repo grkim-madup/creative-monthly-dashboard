@@ -181,18 +181,34 @@ class TestSampleGates:
         table = by_metric(contrast_rows(tiny(), rest()))
         assert table["total install"]["subject"] == 4
 
-    def test_few_coin_conversions_do_not_decide_the_back_end(self):
-        """코인 전환은 희소해서 대상만 0건이 되기 쉽다 — 대조군은 절대 0이 아니다.
+    def test_conversion_rates_are_judged_when_installs_suffice(self):
+        """전환율은 **건수 문턱을 두지 않는다**(2026-09-07 규리님 결정).
 
-        8월 실측: 대상 코인 0건 카드 63.7%, 대조군 0건 카드 0개. 문턱이 없으면
-        뒷단 판정이 구조적으로 `저조`로 기운다.
+        예전에는 코인 10건 미만이면 판정에서 뺐다. 그러면 `+0.02%p`처럼 좋아진
+        값까지 색이 빠져서 정보가 사라졌다 — "Coin CVR이 오르면 좋은 것,
+        내려가면 나쁜 것"이 확실한 지표다.
+
+        분모인 **설치**가 충분하면 코인이 1건이어도 판정에 쓴다.
         """
         few = add_derived_metrics(pd.DataFrame([
             rows("c1", "Meta", 20000, 100000, 20000, 200, 100, 1),
         ]))
         table = by_metric(contrast_rows(few, rest()))
+        assert table["D0 coin CVR"]["better"] is not None
+        assert table["D0 read CVR"]["better"] is not None
+
+    def test_conversion_rates_are_blocked_when_installs_are_thin(self):
+        """분모가 얇으면 CVR은 노이즈다 — CPI에 같은 문턱을 거는 것과 같은 이유.
+
+        이 문턱이 없으면 **코인 0건이 곧 `뒷단 저조`**가 된다. 실측으로 그런 카드
+        31개의 설치 중위값이 19건이었다(기준 전환율 3%면 기대 코인 0.6건).
+        """
+        thin = add_derived_metrics(pd.DataFrame([
+            rows("t1", "Meta", 20000, 100000, 20000, 10, 5, 0),
+        ]))
+        table = by_metric(contrast_rows(thin, rest()))
         assert table["D0 coin CVR"]["better"] is None
-        assert table["D0 read CVR"]["better"] is not None   # 열람은 충분하다
+        assert table["D0 read CVR"]["better"] is None
 
 
 class TestVerdict:
@@ -336,40 +352,21 @@ class TestContrastGroups:
         assert [c["media"] for c in cards] == ["TikTok"]
 
 
-class TestNoColourWithoutAVerdict:
-    """`better`가 None인 칸은 **색을 칠하지 않는다.**
+class TestColourFollowsDirection:
+    """색은 **델타 방향**으로 칠한다 — 판정 재료 여부(`better`)를 쓰지 않는다.
 
-    실측(8월 MIX / TikTok·AOS): D0 Coin CVR이 `+0.02%p`로 **좋아진** 값인데
-    붉게 칠해졌다. 코인 전환이 1건뿐이라 표본 게이트에서 판정을 뺐고(`better=None`),
-    화면이 `if better else` 로 판단해 None을 falsy로 읽어 "나쁨"으로 칠한 것이다.
+    두 번 틀렸다:
+      · `if better else` 로 판단해서 `None`을 falsy로 읽고 **좋아진 값을 빨강**으로
+        칠했다(8월 MIX / TikTok·AOS의 D0 Coin CVR `+0.02%p`).
+      · 그걸 고치면서 `None`인 칸을 **흑백**으로 뺐다. 그러자 규리님이
+        "Coin 성과 차이는 왜 흑백으로 빼? 오르면 좋은 것, 내려가면 나쁜 것"이라
+        지적했다 — 오르내림 자체는 표본과 무관한 사실이다.
 
-    이 표의 색은 광고주가 그대로 결론으로 읽는다 — 방향이 반대로 칠리면 그 자체가
+    이 표의 색은 광고주가 그대로 결론으로 읽는다. 방향이 반대로 칠리면 그 자체가
     틀린 보고다.
     """
 
-    def blocked_table(self):
-        """코인 전환이 문턱 미만인 대상 — 값은 좋아졌지만 판정은 없다."""
-        subject = add_derived_metrics(pd.DataFrame([
-            rows("s1", "Meta", 20000, 100000, 20000, 200, 100, 1)]))
-        rest = add_derived_metrics(pd.DataFrame([
-            rows("r1", "Meta", 2000000, 10000000, 1000000, 10000, 5000, 20)]))
-        return by_metric(contrast_rows(subject, rest))
-
-    def test_low_sample_metric_has_no_verdict(self):
-        row = self.blocked_table()["D0 coin CVR"]
-        assert row["better"] is None
-
-    def test_the_delta_is_still_shown(self):
-        """값을 숨기면 왜 색이 없는지 알 수 없다 — 판정만 뺀다."""
-        row = self.blocked_table()["D0 coin CVR"]
-        assert row["delta"] is not None and not pd.isna(row["delta"])
-
-    def test_none_is_not_treated_as_bad(self):
-        """`if better else` 로 판단하면 None이 falsy라 '나쁨'이 된다 — 그 실수를 막는다."""
-        row = self.blocked_table()["D0 coin CVR"]
-        assert (row["better"] is None) and not bool(row["better"])
-
-    def test_the_screen_paints_nothing_for_none(self):
+    def test_screen_paints_by_delta_not_by_verdict(self):
         """진입점은 import할 수 없으니 소스로 확인한다."""
         import pathlib
 
@@ -377,4 +374,11 @@ class TestNoColourWithoutAVerdict:
         entry = next((root / n for n in ("creative_dashboard.py", "app.py")
                       if (root / n).exists()))
         source = entry.read_text(encoding="utf-8")
-        assert 'if line["better"] is None or pd.isna(line["better"]):' in source
+        assert 'improved = ((line["delta"] < 0) if metric in LOWER_IS_BETTER' in source
+        # 판정 재료로 색을 고르던 옛 코드가 남아 있으면 안 된다.
+        assert 'if line["better"] else' not in source
+
+    def test_direction_rule_is_shared(self):
+        """방향 판단은 `LOWER_IS_BETTER` 한 곳에서만 한다."""
+        assert "CPI" in LOWER_IS_BETTER and "CPM" in LOWER_IS_BETTER
+        assert "D0 coin CVR" not in LOWER_IS_BETTER
