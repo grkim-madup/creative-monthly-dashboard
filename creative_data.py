@@ -317,7 +317,14 @@ def parse_raw_values(values: list[list[str]]) -> pd.DataFrame:
 
 
 def attach_creative_attributes(df: pd.DataFrame) -> pd.DataFrame:
-    """소재명 파싱 결과를 컬럼으로 붙인다. 유니크 소재명 단위로만 파싱해 대용량에서도 빠르게."""
+    """소재명 파싱 결과를 컬럼으로 붙인다. 유니크 소재명 단위로만 파싱해 대용량에서도 빠르게.
+
+    ⚠ **`ad`는 절대 덮어쓰지 않는다.** 성과 표에서는 규격이 다른 집행이 따로 보여야
+      한다 — 같은 소재를 메타는 `ALL`로, 틱톡은 `9X16`으로 돌렸으면 두 성과는 별개다
+      (규리님). 한 번 `ad`를 합치도록 만들었다가 되돌렸다.
+
+      소재를 **하나로 세야 하는 곳**(소재 개수·썸네일)은 대신 `ad_group`을 쓴다.
+    """
     if df.empty:
         return df
     unique_ads = pd.Series(df["ad"].unique(), name="ad")
@@ -333,6 +340,9 @@ def attach_creative_attributes(df: pd.DataFrame) -> pd.DataFrame:
     # MIX 판정은 소재명 파싱 결과 세 곳(유형·태그·작품코드)을 함께 봐야 하므로
     # 여기서 붙인다 — 파싱 직후라 세 컬럼이 모두 준비돼 있고, 캐시에도 함께 담긴다.
     parsed["mix_group"] = mix_group(parsed)
+    # 규격을 뺀 소재 식별자. **집계 키가 아니다** — 개수·썸네일에서만 쓴다.
+    parsed["ad_group"] = [ad_group_key(ad, size)
+                          for ad, size in zip(parsed["ad"], parsed["size"])]
     return df.merge(parsed, on="ad", how="left")
 
 
@@ -1557,3 +1567,98 @@ def google_pick_metrics(table: pd.DataFrame,
             metrics.append((column, higher_is_better))
             break
     return metrics
+
+
+#: 소재명에서 규격 자리에 들어가는 "여러 규격을 묶어 돌렸다"는 표기.
+DIMENSION_ALL = "ALL"
+
+
+def _dimension_token(ad_name: str, size: str | None) -> int | None:
+    """소재명 토큰 중 규격이 놓인 자리. 못 찾으면 None."""
+    if not size:
+        return None
+    tokens = str(ad_name).split("_")
+    for index in range(len(tokens) - 1, -1, -1):
+        if tokens[index].upper() == str(size).upper():
+            return index
+    return None
+
+
+def ad_group_key(ad_name: str, size: str | None) -> str:
+    """규격 토큰을 뺀 소재 식별자. 같은 소재의 `ALL`·`1X1`·`9X16`이 한 값이 된다.
+
+    규리님: *"A 소재는 ALL이던 9X16이던 하나의 A 소재로 보여야 한다."*
+
+    ⚠ **집계 키로 쓰지 말 것.** 성과 표에서 이걸로 묶으면 규격이 다른 집행이
+      합산되어, 매체별로 다른 규격을 돌린 사실이 사라진다.
+    """
+    index = _dimension_token(ad_name, size)
+    if index is None:
+        return str(ad_name)
+    tokens = str(ad_name).split("_")
+    del tokens[index]
+    return "_".join(tokens)
+
+
+#: 소재 하나를 대표할 규격을 고르는 순서. 세로형이 원본으로 올라가 있는 경우가
+#: 많아(Drive 실측) 썸네일이 가장 잘 잡힌다.
+REPRESENTATIVE_SIZES = ("9X16", "1X1", "16X9", "4X5", "3X4")
+
+
+def representative_ads(df: pd.DataFrame) -> pd.DataFrame:
+    """소재 묶음마다 **한 행**만 남긴다. 썸네일·개수에서 중복을 없애는 용도다.
+
+    규격이 여러 개면 `REPRESENTATIVE_SIZES` 순서로 고르고, 그래도 못 고르면
+    소진액이 큰 쪽을 쓴다. `ALL`은 대표로 고르지 않는다 — 그 이름으로는 Drive에
+    파일이 없어서 썸네일이 안 잡힌다(실측 8,577개 중 0개).
+    """
+    if df.empty or "ad_group" not in df.columns:
+        return df
+    order = {size: rank for rank, size in enumerate(REPRESENTATIVE_SIZES)}
+    ranked = df.assign(
+        _size_rank=df.get("size", pd.Series(index=df.index, dtype=object))
+        .astype(str).str.upper().map(order).fillna(len(order)),
+        _cost=pd.to_numeric(df.get("cost"), errors="coerce").fillna(0.0),
+    )
+    ranked = ranked.sort_values(["_size_rank", "_cost"], ascending=[True, False])
+    picked = ranked.drop_duplicates(subset=["ad_group"], keep="first")
+    return picked.drop(columns=["_size_rank", "_cost"])
+
+
+def canonical_ad_names(parsed: pd.DataFrame) -> dict[str, str]:
+    """`ALL` 소재 → 같은 소재의 실제 규격 소재명. 짝이 없으면 담지 않는다.
+
+    같은 소재인지는 **규격 토큰만 뺀 나머지가 같은가**로 본다. 그래야
+    `..._1X1_TITLE2-comic`과 `..._ALL_TITLE2-comic`이 묶이고, USP·Extra Info가
+    다른 소재는 안 묶인다.
+
+    ⚠ 실제 규격 짝이 **둘 이상**이면(`1X1`과 `9X16`이 다 있는 경우) 어느 쪽으로
+      합쳐야 하는지 데이터가 말해 주지 않는다 — 그때는 `ALL`을 그대로 둔다.
+      추측해서 합치면 소진액이 엉뚱한 규격 줄로 들어간다.
+    """
+    if parsed.empty or "ad" not in parsed.columns or "size" not in parsed.columns:
+        return {}
+
+    groups: dict[str, dict[str, list[str]]] = {}
+    for ad, size in zip(parsed["ad"], parsed["size"]):
+        index = _dimension_token(ad, size)
+        if index is None:
+            continue
+        tokens = str(ad).split("_")
+        tokens[index] = "\x00"          # 규격 자리를 비운 키
+        key = "_".join(tokens)
+        bucket = groups.setdefault(key, {"all": [], "real": []})
+        bucket["all" if str(size).upper() == DIMENSION_ALL else "real"].append(str(ad))
+
+    mapping: dict[str, str] = {}
+    for bucket in groups.values():
+        if not bucket["all"] or not bucket["real"]:
+            continue
+        # 실제 규격이 여러 가지면 합치지 않는다(위 주석 참고).
+        if len({parsed.loc[parsed["ad"] == ad, "size"].iloc[0]
+                for ad in bucket["real"]}) != 1:
+            continue
+        target = sorted(bucket["real"])[0]
+        for ad in bucket["all"]:
+            mapping[ad] = target
+    return mapping

@@ -58,6 +58,7 @@ from creative_data import (
     default_contrast_field,
     filtered_scope,
     google_pick_metrics,
+    representative_ads,
     METRIC_DISPLAY,
     RATIO_METRICS,
     normalize_rows,
@@ -2631,6 +2632,9 @@ def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
     """
     if scope.empty or "ad" not in scope.columns:
         return
+    # 썸네일도 소재 묶음 단위다 — 같은 소재의 `ALL`·`9X16`이 같은 그림을 두 번
+    # 보여주던 문제(규리님 스샷). 묶음마다 대표 규격 한 행만 남긴다.
+    scope = representative_ads(scope) if "ad_group" in scope.columns else scope
     ranked = scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
     top = ranked.head(limit)
     try:
@@ -3288,8 +3292,12 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     # `마크업 포함`은 유일하게 **이름으로 알 수 없는 정보**라서 남긴다 — 보고된
     # 소진액이 구글 원가가 아니라 8.3% 얹은 값이라는 뜻이고, 광고주가 자기 쪽
     # 숫자와 대조할 때 이 한 줄이 없으면 차이를 설명할 수 없다.
+    # 소재 수는 **`ad_group`**으로 센다 — 같은 소재를 매체별로 다른 규격으로
+    # 돌린 것을 두 개로 세면 안 된다(규리님: "A 소재는 ALL이던 9X16이던 하나").
+    # 성과 표는 `ad`로 집계하므로 규격별 성과는 그대로 분리된다.
+    _count_key = "ad_group" if "ad_group" in scope_of_block.columns else "ad"
     kpi_cards([
-        {"label": "소재 수", "value": f"{scope_of_block['ad'].nunique():,}개",
+        {"label": "소재 수", "value": f"{scope_of_block[_count_key].nunique():,}개",
          "primary": True},
         {"label": "소진액", "value": f"₩{summary['cost']:,.0f}", "sub": "마크업 포함"},
         {"label": "CTR", "value": f"{summary['CTR']:.2%}"},
