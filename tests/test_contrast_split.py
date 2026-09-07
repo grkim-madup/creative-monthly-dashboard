@@ -7,7 +7,8 @@
 import pandas as pd
 import pytest
 
-from creative_data import CREATIVE_FIELDS, SCOPE_FIELDS, contrast_split
+from creative_data import (CREATIVE_FIELDS, SCOPE_FIELDS, contrast_split,
+                           default_contrast_field)
 
 
 @pytest.fixture()
@@ -104,3 +105,67 @@ def test_MIX_필터로_대조군이_만들어진다():
     subject, rest = contrast_split(scope, {"mix_group": ["MIX"]}, [])
     assert set(subject["ad"]) == {"A"}
     assert set(rest["ad"]) == {"B"}
+
+
+class TestContrastField:
+    """대조 기준 하나만 뒤집고 **나머지 필터는 양쪽에 똑같이 건다.**
+
+    규리님: *"comic이랑 hashtag는 내가 creative format = img로 필터 걸었는데,
+    대조군도 같은 img끼리 비교되었으면 좋겠어."*
+
+    예전에는 소재 속성 필터를 전부 뒤집어서, `format=IMG` + `태그=comic`이면
+    대조군이 "IMG도 comic도 아닌 것" = **영상 전체**가 됐다. 배너(CTR 35%)를
+    영상(CTR 14%)과 비교하는 표가 나왔다.
+    """
+
+    def scope(self):
+        return pd.DataFrame([
+            {"ad": "img-comic", "media": "TikTok", "format": "IMG",
+             "extra_info": "comic", "cost": 100.0},
+            {"ad": "img-plain", "media": "TikTok", "format": "IMG",
+             "extra_info": None, "cost": 200.0},
+            {"ad": "vid-comic", "media": "TikTok", "format": "VID",
+             "extra_info": "comic", "cost": 400.0},
+            {"ad": "vid-plain", "media": "TikTok", "format": "VID",
+             "extra_info": None, "cost": 800.0},
+        ])
+
+    def test_other_filters_stay_on_both_sides(self):
+        subject, rest = contrast_split(
+            self.scope(), {"format": ["IMG"], "extra_info_tag": ["comic"]}, [])
+        assert set(subject["ad"]) == {"img-comic"}
+        # 같은 IMG 안에서만 비교한다 — 영상은 대조군에 들어오지 않는다.
+        assert set(rest["ad"]) == {"img-plain"}
+        assert set(rest["format"]) == {"IMG"}
+
+    def test_picking_format_compares_img_against_video(self):
+        """기준을 바꾸면 질문이 바뀐다 — 그래서 고를 수 있어야 한다."""
+        subject, rest = contrast_split(
+            self.scope(), {"format": ["IMG"], "extra_info_tag": ["comic"]}, [],
+            subject_field="format")
+        assert set(subject["ad"]) == {"img-comic"}
+        assert set(rest["ad"]) == {"vid-comic"}   # comic은 양쪽에 걸린다
+
+    def test_default_prefers_the_tag_over_the_format(self):
+        """태그는 "이번에 시험해 본 것", 포맷은 "보는 범위"에 가깝다."""
+        assert default_contrast_field(
+            {"format": ["IMG"], "extra_info_tag": ["comic"]}) == "extra_info_tag"
+        assert default_contrast_field(
+            {"format": ["IMG"], "creative_type": ["Carousel"]}) == "creative_type"
+
+    def test_single_filter_is_the_default(self):
+        assert default_contrast_field({"format": ["IMG"]}) == "format"
+
+    def test_no_creative_filter_has_no_default(self):
+        assert default_contrast_field({"media": ["Meta"]}) is None
+        assert default_contrast_field({}) is None
+
+    def test_subject_and_rest_fill_the_scope_exactly(self):
+        """불변식: 대상 + 대조군 = 대조 기준을 뺀 나머지 필터를 건 범위."""
+        scope = self.scope()
+        filters = {"format": ["IMG"], "extra_info_tag": ["comic"]}
+        subject, rest = contrast_split(scope, filters, [])
+        base = scope[scope["format"] == "IMG"]
+        assert len(subject) + len(rest) == len(base)
+        assert subject["cost"].sum() + rest["cost"].sum() == base["cost"].sum()
+        assert not set(subject["ad"]) & set(rest["ad"])

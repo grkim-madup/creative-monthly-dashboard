@@ -53,6 +53,7 @@ from creative_data import (
     CREATIVE_FIELDS,
     contrast_by_media,
     contrast_split,
+    default_contrast_field,
     filtered_scope,
     google_pick_metrics,
     METRIC_DISPLAY,
@@ -2052,6 +2053,10 @@ VIEW_DEFAULTS = {
     #: 대조군 비교 — 켜면 "동일 조건에서 이 소재군을 제외한 나머지"와 매체별로 견준다.
     #: 규리님 요구: "효율이 좋았냐 안 좋았냐. 그 기준은 그걸 제외한 다른 소재들의 평균."
     "contrast": False,
+    #: 대조 기준으로 삼을 필터 하나. 비우면 `default_contrast_field`가 고른다.
+    #: 이 필터만 뒤집히고 **나머지 필터는 양쪽에 똑같이 걸린다** — `format=IMG` +
+    #: `태그=comic`이면 같은 IMG 안에서 comic vs 나머지를 본다(규리님 요청).
+    "contrast_field": "",
     #: 표 위에 소재 썸네일 줄을 보여줄지. 광고주 Drive 조회가 필요해 기본은 꺼 둔다.
     "thumbs": False,
     #: 필터 결과에 **더할** 소재. 필터를 두 개 걸면 교집합이라 "이 조건에 맞는 소재
@@ -2427,7 +2432,8 @@ def contrast_ready(view: dict) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     if not view["filters"]:
         return None
     subject, rest = contrast_split(named_overview, view["filters"],
-                                   view["include_ads"])
+                                   view["include_ads"],
+                                   subject_field=view["contrast_field"] or None)
     if subject.empty or rest.empty:
         return None
     return subject, rest
@@ -2439,10 +2445,17 @@ def filter_summary(view: dict, limit: int = 20) -> str:
     소재 속성 필터만으로 만든다 — 매체·OS는 양쪽에 똑같이 걸린 비교 범위라서
     대상 열에 적으면 "그 외"와 무엇이 다른지 오히려 흐려진다.
     """
-    parts = [", ".join(map(str, values))
-             for field, values in (view["filters"] or {}).items()
-             if field in CREATIVE_FIELDS and values]
-    label = " · ".join(parts) or "대상"
+    # 대조 기준이 정해져 있으면 **그 필터만** 이름에 쓴다. 나머지는 양쪽에 똑같이
+    # 걸린 범위라서 대상 열에 적으면 "그 외"와 무엇이 다른지 흐려진다.
+    field = view.get("contrast_field") or default_contrast_field(view["filters"])
+    chosen = (view["filters"] or {})
+    if field and chosen.get(field):
+        label = ", ".join(map(str, chosen[field]))
+    else:
+        label = " · ".join(
+            ", ".join(map(str, values))
+            for name, values in chosen.items()
+            if name in CREATIVE_FIELDS and values) or "대상"
     return label[:limit - 1] + "…" if len(label) > limit else label
 
 
@@ -2725,6 +2738,8 @@ def view_from_widgets(view: dict, view_key: str) -> dict:
     merged["values"] = list(take(f"pvvals_{view_key}", merged["values"]))
     merged["include_ads"] = list(take(f"pvads_{view_key}", merged["include_ads"]))
     merged["contrast"] = bool(take(f"pvct_{view_key}", merged["contrast"]))
+    merged["contrast_field"] = str(
+        take(f"pvctf_{view_key}", merged["contrast_field"]) or "")
     merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
 
     filter_fields = take(f"pvfilters_{view_key}", list(merged["filters"] or {}))
@@ -2963,12 +2978,32 @@ def pivot_editor(view: dict, view_key: str) -> dict:
             help="이 표에 담긴 소재의 첫 프레임을 소진 상위 12개까지 보여줍니다.",
         )
 
+        # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
+        # `format=IMG` + `태그=comic`에서 comic을 기준으로 잡으면 같은 IMG 안에서
+        # 비교하고, format을 기준으로 잡으면 IMG vs 영상 비교가 된다.
+        contrast_field = view["contrast_field"]
+        creative_filters = [f for f in filters if f in CREATIVE_FIELDS and filters[f]]
+        if contrast and len(creative_filters) > 1:
+            picked = default_contrast_field(filters)
+            options = creative_filters
+            st.markdown('<div class="pv-lab">대조 기준 <span>이 필터만 뒤집는다 · '
+                        "나머지는 양쪽에 똑같이 걸린다</span></div>",
+                        unsafe_allow_html=True)
+            contrast_field = st.selectbox(
+                "대조 기준", options,
+                index=options.index(contrast_field) if contrast_field in options
+                else (options.index(picked) if picked in options else 0),
+                format_func=field_label, key=f"pvctf_{view_key}",
+                label_visibility="collapsed",
+            )
+
     filters = {f: list(filter_values[f]) for f in filter_fields
                if filter_values.get(f)}
     return {**view, "rows": [{"field": f} for f in row_fields],
             "values": list(metrics), "filters": filters,
             "include_ads": list(include),
-            "contrast": bool(contrast), "thumbs": bool(thumbs)}
+            "contrast": bool(contrast), "thumbs": bool(thumbs),
+            "contrast_field": str(contrast_field or "")}
 
 
 @st.cache_data(show_spinner=False)

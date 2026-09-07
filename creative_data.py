@@ -1363,33 +1363,58 @@ SCOPE_FIELDS = frozenset({"media", "os", "ua_type", "month"})
 CREATIVE_FIELDS = frozenset(set(DIMENSION_COLUMNS) - SCOPE_FIELDS)
 
 
+#: 여러 필터 중 무엇을 **대조 기준**으로 삼을지 고를 때의 기본 우선순위.
+#: 앞쪽일수록 "이번에 시험해 본 것"에 가깝고, 뒤쪽일수록 "보는 범위"에 가깝다.
+#: 예: `format=IMG` + `태그=comic` 이면 comic이 대상, IMG는 범위다.
+CONTRAST_FIELD_PRIORITY = [
+    "extra_info_tag", "mix_group", "usp", "creative_type",
+    "producer_group", "title_kr", "title_code", "size", "orientation",
+    "format", "ad",
+]
+
+
+def default_contrast_field(filters: dict | None) -> str | None:
+    """대조 기준으로 쓸 필터 하나. 소재 속성 필터가 없으면 None."""
+    active = [f for f in (filters or {}) if f in CREATIVE_FIELDS and filters[f]]
+    if not active:
+        return None
+    for field in CONTRAST_FIELD_PRIORITY:
+        if field in active:
+            return field
+    return active[0]
+
+
 def contrast_split(scope: pd.DataFrame, filters: dict | None,
                    include_ads: list[str] | None = None,
+                   subject_field: str | None = None,
                    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(대상, 대조군)으로 가른다. **대조군 = 같은 범위 안, 그 소재가 아닌 것.**
+    """(대상, 대조군)으로 가른다. **대조군 = 같은 범위 안, 그 대상이 아닌 것.**
 
-    두 종류의 필터를 다르게 다뤄야 한다 — 섞으면 조용히 틀린다:
+    필터 하나만 뒤집고 **나머지는 양쪽에 똑같이 건다.** 그 하나가 `subject_field`이고,
+    안 주면 `default_contrast_field`가 고른다.
 
-    - 소재 속성(`CREATIVE_FIELDS`)은 **반대로** 뒤집는다. 태그 필터는 소재 이름으로
-      되받아 걸러지므로(`pivot_frame` 참고) 제외도 이름으로 해야 한다. 태그 컬럼에서
-      빼면 `epn-6s` 소재가 `6s` 줄로 살아남아 양쪽에 동시에 들어간다.
-    - 집행 조건(`SCOPE_FIELDS`)은 **그대로 유지**한다. 이걸 뒤집으면 대조군에 다른
-      매체·OS 행이 들어와 "동일 조건 비교"가 깨진다. 실제로 감사 도구가 이걸 잡았다
-      (매체 TikTok 필터에서 대상 3,701행 + 대조군 1,155행 ≠ 전체 5,672행).
+    ⚠ 예전에는 소재 속성 필터를 **전부** 뒤집었다. 그래서 `format=IMG` + `태그=comic`
+      으로 좁히면 대조군이 "IMG도 comic도 아닌 것" = **영상 전체**가 되어,
+      배너(CTR 35%)를 영상(CTR 14%)과 비교하는 표가 나왔다(규리님 지적).
+      보고 싶은 것은 같은 IMG 안에서 comic vs 나머지다.
 
-    소재 속성 필터가 하나도 없으면 대조군이 없다 — 빈 프레임을 돌려준다.
+    ⚠ 태그 필터는 소재 이름으로 되받아 걸러지므로(`pivot_frame` 참고) 제외도 이름으로
+      해야 한다. 태그 컬럼에서 빼면 `epn-6s` 소재가 `6s` 줄로 살아남아 양쪽에 동시에
+      들어간다.
+
+    ⚠ 집행 조건(`SCOPE_FIELDS`)은 절대 뒤집지 않는다. 뒤집으면 대조군에 다른 매체·OS
+      행이 들어와 "동일 조건 비교"가 깨진다(감사 도구가 이걸 잡았다).
     """
     filters = filters or {}
-    base = scope
-    for field, chosen in filters.items():
-        if field in SCOPE_FIELDS and chosen and field in base.columns:
-            base = base[base[field].astype(str).isin([str(v) for v in chosen])]
+    subject_field = subject_field or default_contrast_field(filters)
+
+    # 비교 범위 = 대조 기준을 **뺀** 나머지 필터를 모두 건 프레임. 양쪽이 이 안에 있다.
+    scope_filters = {f: v for f, v in filters.items() if f != subject_field}
+    base = filtered_scope(scope, scope_filters, None)
 
     subject = filtered_scope(scope, filters, include_ads)
-    # 손으로 더한 소재만으로는 대조군이 안 만들어진다 — 필터가 없으면 대상이 이미
-    # 전체이고, 거기서 이름을 빼면 "그 외"가 아니라 빈 프레임이 된다.
-    creative_narrowed = any(f in CREATIVE_FIELDS for f in filters)
-    if not creative_narrowed:
+    if subject_field is None:
+        # 뒤집을 것이 없다 — 손으로 더한 소재만 있거나 집행 조건만 좁힌 경우.
         return subject, base.iloc[0:0]
     rest = base[~base["ad"].isin(subject["ad"].unique())] \
         if "ad" in base.columns else base.iloc[0:0]
