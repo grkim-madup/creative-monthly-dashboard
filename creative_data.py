@@ -439,6 +439,22 @@ def month_options(df: pd.DataFrame) -> list[int]:
     return months
 
 
+#: OS로 인정하지 않는 값. `Media_RAW`에 `All`이 섞여 들어오는데 AOS/iOS로 갈리지
+#: 않아 분석 단위가 되지 못한다(8월 실측 271행·소진 545만원). 예전 필터가
+#: `os.notna()`뿐이라 **`"All"`은 비어있지 않은 값으로 통과**해 화면에 들어가 있었고,
+#: 2번 섹션에는 색칠 없는 빈 표가 하나 더 그려졌다.
+#: 규리님 확인(2026-09-08): *"OS가 ALL 인 데이터는 포함되지 않는 게 맞아."*
+NON_OS_VALUES = frozenset({"All", "all", "ALL", "-", ""})
+
+
+def os_values(df: pd.DataFrame) -> list[str]:
+    """분석에 쓰는 OS 값만. `All` 같은 비-OS 값은 뺀다."""
+    if df is None or df.empty or "os" not in df.columns:
+        return []
+    values = {str(v).strip() for v in df["os"].dropna().unique()}
+    return sorted(v for v in values if v not in NON_OS_VALUES)
+
+
 def default_month(months: list[int], today) -> int | None:
     """기본으로 열어 줄 리포트 월 — **마감된 마지막 월**.
 
@@ -1744,3 +1760,34 @@ def canonical_ad_names(parsed: pd.DataFrame) -> dict[str, str]:
         for ad in bucket["all"]:
             mapping[ad] = target
     return mapping
+
+
+def describe_media_raw(df: pd.DataFrame, month: int | None = None) -> str:
+    """이 시트에 실제로 무엇이 들어왔는지 한 줄로.
+
+    규리님(2026-09-08): *"시트 링크가 제대로 들어갔는지 일일히 링크 복붙해서
+    확인하기 힘들어."* 시트 id·URL은 사람이 눈으로 대조할 수 없는 문자열이다 —
+    **어느 달 데이터가 몇 행 들어왔는지**가 링크가 맞는지 알려주는 진짜 신호다.
+
+    월이 띄어 있으면(2·3·8월) 범위로 쓰지 않는다 — `2~8월`로 뭉개면 중간 달이
+    있는 것처럼 읽힌다.
+    """
+    if df.empty or "month" not in df.columns:
+        return "Media_RAW · 데이터 없음"
+
+    months = sorted({int(m) for m in df["month"].dropna().unique()})
+    if not months:
+        return f"Media_RAW · {len(df):,}행 (월 해석 실패)"
+
+    if len(months) == 1:
+        span = f"{months[0]}월"
+    elif months == list(range(months[0], months[-1] + 1)):
+        span = f"{months[0]}~{months[-1]}월"
+    else:
+        span = "·".join(str(m) for m in months) + "월"
+
+    text = f"{span} Media_RAW · {len(df):,}행"
+    if month is not None:
+        rows = int((df["month"] == month).sum())
+        text += f" (이 달 {int(month)}월 {rows:,}행)"
+    return text

@@ -41,7 +41,9 @@ from creative_data import (
     display_columns,
     comparison_window,
     default_month,
+    os_values,
     delta_label,
+    describe_media_raw,
     relative_change,
     scope_to_day,
     add_derived_metrics,
@@ -1013,14 +1015,25 @@ def render_table_best_worst(
 
 sidebar_brand("크리에이티브 리포트", "네이버웹툰 대만 · 월간")
 
+# 편집 권한은 **사이드바를 그리기 전에** 판정한다 — 모드 토글뿐 아니라 데이터 카드
+# 구성 자체가 이 값에 따라 갈린다. 광고주(`webtoonscorp.com`)에게는 시트 링크·재로딩
+# 버튼·마크업 배율 같은 사내 운영 컨트롤을 아예 그리지 않고 읽기 전용 요약만 보여준다
+# (2026-09-08, B안). 버튼만 숨기고 위젯을 남기면 광고주가 값을 바꿔 자기 화면의 숫자를
+# 흔들 수 있다 — 실제로 마크업 배율이 그렇게 열려 있었다.
+editor_allowed = auth.can_edit()
+
 # 사이드바는 성격이 다른 것들이 한 줄로 섞여 있으면 금방 산만해진다. 매번 만지는 컨트롤과
 # 어디서 읽어오는지를 알려주는 데이터 정보를 카드 두 개로 갈라 놓는다.
 # 월·모드는 값 계산이 아래에서 이뤄지므로 자리만 먼저 잡고 나중에 채운다.
 with st.sidebar.container(key="sb_controls"):
     st.markdown('<div class="sb-lab">리포트 월</div>', unsafe_allow_html=True)
     month_slot = st.container()
-    st.markdown('<div class="sb-lab">모드</div>', unsafe_allow_html=True)
-    mode_slot = st.container()
+    # ⚠ 라벨을 조건 밖에 두면 **광고주 화면에 라벨만 남고 아래가 빈칸**이 된다
+    #   (토글은 `editor_allowed`일 때만 그려진다).
+    mode_slot = None
+    if editor_allowed:
+        st.markdown('<div class="sb-lab">모드</div>', unsafe_allow_html=True)
+        mode_slot = st.container()
 
 # ⚠ 스냅샷 메타 헬퍼는 사이드바보다 **위**에 있어야 한다 — 마크업 위젯이
 #    그 달의 고정 마크업을 기본값으로 쓰기 때문이다(정의가 아래 있으면
@@ -1052,23 +1065,28 @@ with data_card:
     #    코드 상수로 돌아가서, 규리님이 갈아끼운 링크가 조용히 사라졌다(2026-09-08).
     #    그래서 저장소에 남기고 그 값을 기본값으로 쓴다.
     _saved_sheet = app_settings.get("sheet_url", DEFAULT_SHEET)
-    sheet_url = st.text_input(
-        "구글시트 링크", key="sheet_url",
-        value=_saved_sheet,
-        help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다. "
-             "바꾸면 저장돼서 다음에 열 때도 이 링크를 봅니다(편집 권한 필요).",
-    )
-    # 값이 바뀌었으면 저장한다. **전원이 공유하는 상태**라 편집 권한이 있을 때만 —
-    # 광고주가 보는 화면의 데이터 원본이 바뀌는 일이기 때문이다.
-    if sheet_url.strip() and sheet_url.strip() != _saved_sheet.strip():
-        if auth.can_edit():
+    if editor_allowed:
+        sheet_url = st.text_input(
+            "구글시트 링크", key="sheet_url",
+            value=_saved_sheet,
+            help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다. "
+                 "바꾸면 저장돼서 다음에 열 때도 이 링크를 봅니다.",
+        )
+        # 값이 바뀌었으면 저장한다. **전원이 공유하는 상태**다 — 광고주가 보는 화면의
+        # 데이터 원본이 바뀌는 일이라 편집 권한 게이트 안에서만 일어난다.
+        if sheet_url.strip() and sheet_url.strip() != _saved_sheet.strip():
             _ok, _why = app_settings.save("sheet_url", sheet_url.strip())
             if _ok:
                 st.caption("링크를 저장했습니다.")
             else:
                 st.warning(f"링크를 저장하지 못했습니다: {_why}")
-        else:
-            st.caption("이 세션에서만 적용됩니다(편집 권한 없음).")
+    else:
+        # 광고주는 링크 자체를 보지 않는다. 값은 저장소에 있는 것을 그대로 쓴다.
+        sheet_url = _saved_sheet
+    # 링크가 맞게 들어갔는지는 **URL을 눈으로 대조해서 알 수 없다.** 실제로 읽힌
+    # 데이터가 어느 달 몇 행인지를 찍어 준다(규리님 2026-09-08: "일일히 링크 복붙해서
+    # 확인하기 힘들어"). 내용은 시트를 읽은 뒤 아래에서 채운다.
+    sheet_summary_slot = st.empty()
 
 try:
     sheet_id = extract_sheet_id(sheet_url)
@@ -1077,7 +1095,8 @@ except ValueError as error:
     st.stop()
 
 with data_card:
-    if st.button("시트에서 다시 불러오기", width="stretch"):
+    # 재로딩은 쿼터를 쓰고 전원의 캐시를 비운다 — 편집 권한자만.
+    if editor_allowed and st.button("시트에서 다시 불러오기", width="stretch"):
         # 시트만 다시 읽는다. 예전에는 st.cache_data.clear()로 드롭박스·Drive 목록·
         # 썸네일까지 통째로 날려서, 시트만 갱신하고 싶어도 1분 넘게 기다려야 했다
         # (2026-08-28 분리). 각 소스는 자기 버튼으로만 갱신한다.
@@ -1086,7 +1105,7 @@ with data_card:
         load_media_raw(sheet_id, refresh=True)
         st.rerun()
 
-    stamp = cache_timestamp(sheet_id)
+    stamp = cache_timestamp(sheet_id) if editor_allowed else None
     if stamp:
         # 배포 컨테이너(python:3.12-slim)에는 시간대 설정이 없어 서버 시각이 UTC다.
         # 라벨 없이 그대로 찍으면 한국 사용자에게는 9시간 전으로 보이고, 날짜까지
@@ -1137,11 +1156,23 @@ except (TypeError, ValueError):
     _today_kst = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
     _default_index = months.index(default_month(months, _today_kst))
 
+# 시트가 맞게 들어갔는지는 **읽힌 내용**으로 판단한다(위 슬롯에 자리를 잡아 뒀다).
+# 월 선택보다 먼저 채워야 리런마다 자리가 흔들리지 않는다 — 리포트 월은 그 다음 줄에서
+# 정해지므로 여기서는 시트 전체 범위만 찍고, 이 달 행수는 아래에서 덧붙인다.
+_sheet_summary = describe_media_raw(raw)
+
 with month_slot:
     month = st.selectbox(
         "리포트 월", months, index=_default_index, key="report_month",
         format_func=lambda m: f"2026년 {m}월", label_visibility="collapsed",
     )
+
+# 시트 링크 확인은 이 한 줄로 한다 — id를 눈으로 대조할 수 있는 사람은 없다.
+with sheet_summary_slot.container():
+    if not editor_allowed:
+        # 광고주 카드에서는 이 줄이 "메타·틱톡 데이터가 어디서 왔나"의 답이다.
+        st.markdown('<div class="sb-sub">메타·틱톡</div>', unsafe_allow_html=True)
+    st.caption(describe_media_raw(raw, month))
 
 # 로그인이 없으므로 브라우저 세션이 곧 편집자 신원이다
 # 편집 잠금의 소유자.
@@ -1161,9 +1192,8 @@ else:
     st.session_state.setdefault("editor_token", uuid4().hex)
 # 편집은 매드업 계정만 — 광고주(`webtoonscorp.com`)에게는 토글 자체를 보여주지 않는다.
 # 버튼만 숨기고 편집 경로를 열어두면 세션 상태를 만지는 것만으로 들어갈 수 있으니,
-# `edit_mode`를 아예 False로 못 박는다.
-editor_allowed = auth.can_edit()
-if editor_allowed:
+# `edit_mode`를 아예 False로 못 박는다. (`editor_allowed`는 사이드바 위에서 판정했다.)
+if editor_allowed and mode_slot is not None:
     with mode_slot:
         mode_choice = st.segmented_control(
             "모드", ["보기", "편집"], default="보기", key="mode_toggle",
@@ -1184,7 +1214,10 @@ media_options = sorted(raw["media"].dropna().unique())
 # (cost/install/D0 read/D0 coin)가 메타·틱톡과 같은 스키마로 이미 들어 있다(2026-08-17 확인).
 # 다만 구글은 소재 단위(ad='-')가 없어 2번(TOP 소재) 쪽은 별도로 메타/틱톡만 걸러 쓴다.
 media_selection = [m for m in ("TikTok", "Meta", "Google") if m in media_options]
-os_selection = sorted(raw["os"].dropna().unique())
+# ⚠ `dropna()`만으로는 `os == "All"` 이 통과한다 — 비어있지 않은 값이기 때문이다.
+#    AOS/iOS로 갈리지 않아 분석 단위가 못 되고, 2번 섹션에 색칠 없는 빈 표가 하나
+#    더 그려졌다(8월 271행·545만원). `os_values`가 그 값을 뺀다.
+os_selection = os_values(raw)
 ua_selection = ["UA"]
 format_selection = ["VID", "IMG", "GIF"]
 MIN_COST = 100_000  # 소액 집행 소재가 우연히 좋은 효율로 상위에 오르는 것을 막는 컷
@@ -1210,18 +1243,19 @@ def _synced_google_folder(_cache_bust: int) -> str:
 with data_card:
     st.markdown('<div class="sb-sub">구글 (별도 소스)</div>', unsafe_allow_html=True)
     google_files_slot = st.container()
-    if dropbox_source.configured():
+    if editor_allowed and dropbox_source.configured():
         if st.button("Dropbox에서 다시 불러오기", key="google_refetch", width="stretch"):
             st.session_state["_google_cache_bust"] = (
                 st.session_state.get("_google_cache_bust", 0) + 1
             )
             _google.clear()
-    st.markdown('<div class="sb-sub">소재 영상 (광고주 Drive)</div>', unsafe_allow_html=True)
-    drive_files_slot = st.container()
-    if st.button("소재 목록 새로고침", key="drive_refetch", width="stretch"):
-        drive_materials.clear_file_list_cache()
-        _drive_material_index.clear()
-        st.rerun()
+    if editor_allowed:
+        st.markdown('<div class="sb-sub">소재 영상 (광고주 Drive)</div>',
+                    unsafe_allow_html=True)
+        if st.button("소재 목록 새로고침", key="drive_refetch", width="stretch"):
+            drive_materials.clear_file_list_cache()
+            _drive_material_index.clear()
+            st.rerun()
 
     # ⚠ **`key`가 있어야 값이 남는다.** key 없는 위젯은 Streamlit이 위젯 트리의
     #    위치로 식별하는데, 바로 아래 고정 블록의 컨테이너 키가 리런마다 바뀐다
@@ -1233,15 +1267,21 @@ with data_card:
     # 월마다 키가 다르면 `value=`가 그 달 첫 렌더에 적용된다 — 이미 고정한 달은
     # **고정할 때 쓴 마크업**이 기본값으로 들어오므로 안 만지면 숫자가 안 흔들린다.
     _frozen_markup = _snapshot_markup(month) if _snapshot_exists(month) else None
-    cost_markup = st.number_input(
-        "구글 비용 마크업 배율", key=f"google_cost_markup_{int(month)}",
-        min_value=1.0, max_value=2.0,
-        value=float(_frozen_markup or DEFAULT_COST_MARKUP),
-        step=0.001, format="%.4f",
-        help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 "
-             "맞추려면 이 배율을 곱합니다. **월별로 다릅니다**(2026-07 1.0830 / "
-             "2026-08 1.0800). 값을 바꾸고 '고정하기'를 누르면 그 마크업으로 고정됩니다.",
-    )
+    if editor_allowed:
+        cost_markup = st.number_input(
+            "구글 비용 마크업 배율", key=f"google_cost_markup_{int(month)}",
+            min_value=1.0, max_value=2.0,
+            value=float(_frozen_markup or DEFAULT_COST_MARKUP),
+            step=0.001, format="%.4f",
+            help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 "
+                 "맞추려면 이 배율을 곱합니다. **월별로 다릅니다**(2026-07 1.0830 / "
+                 "2026-08 1.0800). 값을 바꾸고 '고정하기'를 누르면 그 마크업으로 고정됩니다.",
+        )
+    else:
+        # 광고주에게 위젯을 주면 배율을 바꿔 자기 화면의 구글 소진액을 흔들 수 있다.
+        # 고정한 달은 어차피 고정 당시 값이 이기고(`report_markup`), 안 고정한 달은
+        # 기본값으로 본다. 실제 값은 아래 고정 패널의 `마크업` 줄에 찍힌다.
+        cost_markup = float(_frozen_markup or DEFAULT_COST_MARKUP)
     # 고정 여부에 따라 완전히 다른 톤(강조 vs 조용함)으로 그려야 해서, 데이터 카드
     # 맨 아래에 독립된 블록으로 뺀다 — 자리만 먼저 잡아두고 내용은 아래에서 채운다.
     #
@@ -1443,7 +1483,7 @@ rank_metric = controls[0].selectbox(
 )
 top_n = controls[1].number_input("표시 개수", min_value=5, max_value=50, value=10, step=5)
 
-for os_name in sorted(meta_tiktok["os"].dropna().unique()):
+for os_name in os_values(meta_tiktok):
     os_scope = meta_tiktok[meta_tiktok["os"] == os_name]
     top = top_creatives(os_scope, rank_metric, limit=int(top_n), min_cost=min_cost)
     if top.empty:
@@ -1537,15 +1577,19 @@ with google_files_slot:
         st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
     else:
         used_files = sorted(google_all["source_file"].dropna().unique())
-        source_detail = "" if has_snapshot else " (하위 폴더까지 모두 읽습니다)"
-        st.metric(
-            "애셋 보고서 파일", f"{len(used_files)}개",
-            help=f"출처: {google_source_label}{source_detail}",
-        )
-        if not has_snapshot:
-            st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
-        with st.expander("읽은 파일 보기"):
-            st.markdown("\n".join(f"- `{name}`" for name in used_files))
+        if not editor_allowed:
+            # 폴더 경로(`google_source_label`)와 파일명은 사내 운영 정보라 뺀다.
+            st.metric("애셋 보고서 파일", f"{len(used_files)}개")
+        else:
+            source_detail = "" if has_snapshot else " (하위 폴더까지 모두 읽습니다)"
+            st.metric(
+                "애셋 보고서 파일", f"{len(used_files)}개",
+                help=f"출처: {google_source_label}{source_detail}",
+            )
+            if not has_snapshot:
+                st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
+            with st.expander("읽은 파일 보기"):
+                st.markdown("\n".join(f"- `{name}`" for name in used_files))
 
 # 다음 달로 넘어가기 전에 미리 확정해 두고 싶을 때를 위한 수동 고정 — 최신 달에도 쓸 수
 # 있다. 항상 "지금 라이브 상태"를 기준으로 얼리므로, 이미 고정된 달이라도 다시 누르면
@@ -1621,8 +1665,13 @@ def _freeze_rows(month: int) -> list[tuple[str, str, bool]]:
     markup = _frozen_markup or frozen.get("cost_markup")
     rows.append(("마크업", f"×{float(markup):.4f}" if markup else "-", bool(markup)))
 
+    # 시트 id 꼬리 6자(`…_ZFQko`)는 사람이 확인할 수 없는 문자열이었다. 정작 알고
+    # 싶은 것은 **지금 보고 있는 시트가 고정 당시와 같은가**다(다르면 아래 캡션이
+    # 어느 기준의 숫자인지 짚어 준다).
     frozen_sheet = str(frozen.get("sheet_id") or "")
-    rows.append(("시트", f"…{frozen_sheet[-6:]}" if frozen_sheet else "-",
+    rows.append(("시트",
+                 "-" if not frozen_sheet
+                 else ("지금과 같음" if frozen_sheet == sheet_id else "지금과 다름"),
                  bool(frozen_sheet)))
     return rows
 
@@ -1664,9 +1713,10 @@ with freeze_slot.container():
             # 어떤 기준의 숫자가 갔는지 아무도 모른다.
             _frozen = dict((_media_meta().get(month) or {}).get("settings") or {})
             if _frozen.get("sheet_id") and _frozen["sheet_id"] != sheet_id:
-                st.caption("⚠ 지금 사이드바 시트는 고정 당시와 다릅니다 — "
+                st.caption("⚠ 지금 읽는 시트는 고정 당시와 다릅니다 — "
                            "이 달 숫자는 고정본 기준입니다.")
-            if _frozen_markup and abs(float(_frozen_markup) - cost_markup) > 1e-9:
+            if (editor_allowed and _frozen_markup
+                    and abs(float(_frozen_markup) - cost_markup) > 1e-9):
                 st.caption(f"이 달은 고정 당시 ×{float(_frozen_markup):.4f} 기준입니다. "
                            f"'다시 고정'을 누르면 사이드바 값(×{cost_markup:.4f})으로 바뀝니다.")
             if auth.can_edit() and st.button("다시 고정", key="google_freeze",
