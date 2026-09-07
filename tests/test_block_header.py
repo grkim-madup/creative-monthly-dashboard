@@ -90,9 +90,21 @@ def test_이모지를_쓰지_않는다():
 
 
 def test_두_섹션이_같은_부품을_쓴다():
-    """4번(주제)·6번(제안)이 각자 헤더를 만들면 다시 갈라진다."""
-    source = (ROOT / "creative_dashboard.py").read_text(encoding="utf-8")
-    assert 'number=(f"주제 {number}" if number else None)' in source
-    assert 'number=(f"제안 {number}" if number else None)' in source
-    # 두 루프 모두 같은 간격 부품을 쓴다
-    assert source.count("block_gap(first=(index == 0))") == 2
+    """4번(주제)·6번(제안)이 각자 헤더를 만들면 다시 갈라진다.
+
+    ⚠ **진입점 파일명을 하드코딩하지 말 것.** madup.app 배포판은 같은 파일이
+      `app.py`로 이름만 바뀌어 들어간다 — `creative_dashboard.py`로 못 박으면
+      배포 게이트가 `FileNotFoundError`로 막는다(2026-09-08에 실제로 막혔다).
+    """
+    checked = 0
+    for name in ("creative_dashboard.py", "app.py"):
+        path = ROOT / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert 'number=(f"주제 {number}" if number else None)' in source, name
+        assert 'number=(f"제안 {number}" if number else None)' in source, name
+        # 두 루프 모두 같은 간격 부품을 쓴다
+        assert source.count("block_gap(first=(index == 0))") == 2, name
+        checked += 1
+    assert checked, "진입점 파일을 찾지 못했습니다"

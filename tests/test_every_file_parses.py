@@ -57,3 +57,28 @@ def test_진입점이_실제로_검사_대상에_들어있다():
     names = {path.name for path in _python_files()}
     assert names & {"creative_dashboard.py", "app.py"}, "진입점이 검사 대상에서 빠졌다"
     assert "auth.py" in names and "fs_store.py" in names
+
+
+def test_진입점_파일명을_하드코딩한_테스트가_없다():
+    """madup.app 배포판은 진입점이 `app.py`다 — 이름을 못 박으면 배포가 막힌다.
+
+    2026-09-08에 두 번 막혔다(한 번은 소스 스캔 테스트, 한 번은 블록 헤더 테스트).
+    파일을 읽을 때는 항상 두 이름을 순회하고 없는 쪽은 건너뛴다.
+    """
+    import pathlib
+    import re
+
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    bad = []
+    for path in sorted(tests_dir.glob("test_*.py")):
+        source = path.read_text(encoding="utf-8")
+        for line_no, line in enumerate(source.splitlines(), 1):
+            if not re.search(r'"creative_dashboard\.py"', line):
+                continue
+            # 두 이름을 함께 순회하는 형태는 정상이다.
+            if '"app.py"' in line:
+                continue
+            bad.append(f"{path.name}:{line_no} {line.strip()[:70]}")
+    assert not bad, ("진입점 파일명을 단독으로 하드코딩했습니다 — "
+                     "`(\"creative_dashboard.py\", \"app.py\")` 를 순회하세요:\n  "
+                     + "\n  ".join(bad))
