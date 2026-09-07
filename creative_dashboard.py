@@ -40,6 +40,7 @@ from creative_data import (
     DISPLAY_COLUMNS,
     display_columns,
     comparison_window,
+    default_month,
     delta_label,
     relative_change,
     scope_to_day,
@@ -97,6 +98,7 @@ from ui import (
     collapse_sidebar_once,
     inject_css,
     kpi_cards,
+    block_gap,
     note_header,
     report_header,
     report_table,
@@ -1123,11 +1125,17 @@ if not months:
     st.stop()
 
 # ?month=7 처럼 URL로도 월을 지정할 수 있게 해둔다(링크 공유·확인용).
+#
+# 기본값은 **마감된 마지막 월**이다 — 데이터가 있는 가장 최근 월이 아니다.
+# 시트에 다음 달 집행분이 하루라도 들어오면 반쪽 숫자가 광고주 첫 화면이 된다
+# (실제로 9월 데이터가 들어와 9/8에 9월 리포트가 열렸다).
 _query_month = st.query_params.get("month")
 try:
     _default_index = months.index(int(_query_month))
 except (TypeError, ValueError):
-    _default_index = len(months) - 1
+    # 컨테이너가 UTC라 KST 날짜로 판단한다 — 자정 전후로 달이 하루 어긋난다.
+    _today_kst = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+    _default_index = months.index(default_month(months, _today_kst))
 
 with month_slot:
     month = st.selectbox(
@@ -1627,16 +1635,21 @@ def _frozen_stamp(month: int) -> str:
 
 # empty에 다시 쓰면 위에서 띄운 로딩 자리표시자가 이 내용으로 교체된다.
 with freeze_slot.container():
-    if _just_froze := st.session_state.pop("_freeze_done", None):
-        st.success(f"고정 완료: {_just_froze}")
+    # 고정 직후 알림은 **따로 띄우지 않는다.** 초록 블록이 좁은 사이드바에서 두 줄로
+    # 감기고, 이미 끝난 일이 화면에서 제일 시끄러워졌다. 아래 패널의 `완료` 칩과
+    # 항목별 값이 같은 사실을 더 정확하게 말한다.
+    _just_froze = st.session_state.pop("_freeze_done", None)
 
     if has_snapshot or month in frozen_media_months:
         with st.container(key="google_freeze_done", border=True):
+            # ⚠ **이모지를 쓰지 않는다**(하우스 룰). 처음에 자물쇠 이모지를 넣었다가
+            #    걷어냈다 — 상태는 우측 `완료` 칩이 말한다.
             st.markdown(
-                '<div class="freeze-cta-title">'
-                '<span class="freeze-lock">🔒</span>'
-                f'{month}월 고정됨</div>', unsafe_allow_html=True)
-            st.markdown(
+                '<div class="freeze-head">'
+                f'<b>{month}월 고정됨</b>'
+                + ('<span class="freeze-chip">방금 완료</span>' if _just_froze
+                   else '<span class="freeze-chip">완료</span>')
+                + '</div>'
                 '<div class="freeze-rows">'
                 + "".join(
                     f'<div class="freeze-row{"" if ok else " is-live"}">'
@@ -1644,7 +1657,7 @@ with freeze_slot.container():
                     f'<b>{html.escape(value)}</b></div>'
                     for label, value, ok in _freeze_rows(month))
                 + '</div>'
-                + f'<div class="freeze-cta-foot">{html.escape(_frozen_stamp(month))}</div>',
+                + f'<div class="freeze-cta-foot">{html.escape(_frozen_stamp(month))} KST</div>',
                 unsafe_allow_html=True)
 
             # 지금 화면 기준이 고정 당시와 다르면 짚어준다. 안 적으면 광고주에게
@@ -1926,7 +1939,7 @@ def editor_taken_over(block_id: str, month: int) -> bool:
 
 def lock_gate(
     block_id: str, month: int, title: str, edit_mode: bool, info: str | None = None,
-    menu=None, editable_title: bool = False,
+    menu=None, editable_title: bool = False, number: str | None = None,
 ) -> bool:
     """블록 헤더와 잠금 조작을 그리고, 편집 UI를 그려도 되는지 돌려준다.
 
@@ -1954,8 +1967,13 @@ def lock_gate(
         겉보기를 유지한다.
         """
         if not editable:
-            note_header(title, badge, info=info)
+            note_header(title, badge, info=info, number=number)
             return
+        # 편집 중에는 입력칸이 제목 자리를 대신하므로 순번 칩만 위에 남긴다 —
+        # 칩까지 사라지면 지금 몇 번째 블록을 고치는지 알 수 없다.
+        if number:
+            st.markdown(f'<div class="nh-num-solo">{html.escape(number)}</div>',
+                        unsafe_allow_html=True)
         st.text_input(
             "주제 제목", value=title, key=f"blocktitle_{block_id}",
             label_visibility="collapsed", placeholder="주제 제목을 입력하세요",
@@ -3589,7 +3607,8 @@ def cancel_confirm(block: dict, month: int, owner: str) -> None:
         rerun_local()
 
 
-def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
+def render_query_block(block: dict, month: int, edit_mode: bool,
+                       number: int | None = None) -> None:
     """주제 하나. 읽는 순서 = 숫자 → 표 → 해석.
 
     편집 도구는 그 순서를 깨지 않는 자리에만 놓는다:
@@ -3607,6 +3626,8 @@ def render_query_block(block: dict, month: int, edit_mode: bool) -> None:
         # `표 N개` 배지도 편집자용이다. 보기 모드에서는 붙이지 않는다.
         info=(f"표 {len(saved_views)}개" if saved_views else "표 없음") if edit_mode else None,
         menu=lambda: block_menu(report_blocks.SLOT_ANALYSIS, block_id, month, owner),
+        # 실제 리포트 시트가 이 섹션의 주제를 `1) 정방형 / GIF 소재 성과` 로 쓴다.
+        number=(f"주제 {number}" if number else None),
         editable_title=True,
     )
 
@@ -3753,7 +3774,8 @@ def _analysis_blocks_section() -> None:
     if edit_mode:
         insert_block_row(report_blocks.SLOT_ANALYSIS, 0, "creative_query", "새 분석 주제")
     for index, block in enumerate(list(blocks)):
-        render_query_block(block, month, edit_mode)
+        block_gap(first=(index == 0))
+        render_query_block(block, month, edit_mode, number=index + 1)
         if edit_mode:
             insert_block_row(
                 report_blocks.SLOT_ANALYSIS, index + 1, "creative_query", "새 분석 주제"
@@ -3818,7 +3840,8 @@ def render_pasted_table(table: pd.DataFrame) -> None:
     )
 
 
-def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
+def render_note_block(block: dict, month: int, edit_mode: bool,
+                      number: int | None = None) -> None:
     """자유 노트 블록 — 5번 분석 블록과 같은 잠금·조작 UI를 두르고, 본문은 기존 NEXT STEP의
     에디터/이미지/표 UI를 그대로 옮긴다. 위젯 키는 전부 block_id를 섞어 블록끼리 상태가
     안 섞이게 한다.
@@ -3828,6 +3851,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool) -> None:
     editing = lock_gate(
         block_id, month, block.get("title") or "노트", edit_mode,
         menu=lambda: block_menu(report_blocks.SLOT_NEXT_STEP, block_id, month, owner),
+        number=(f"제안 {number}" if number else None),
         # 섹션 4와 같은 방식 — 별도 "블록 제목" 칸을 두지 않고 보이는 제목을 그 자리에서 고친다.
         editable_title=True,
     )
@@ -4054,7 +4078,8 @@ def _next_step_blocks_section() -> None:
     if edit_mode:
         insert_block_row(report_blocks.SLOT_NEXT_STEP, 0, "note", "다음 달 액션")
     for index, block in enumerate(list(blocks)):
-        render_note_block(block, month, edit_mode)
+        block_gap(first=(index == 0))
+        render_note_block(block, month, edit_mode, number=index + 1)
         if edit_mode:
             insert_block_row(
                 report_blocks.SLOT_NEXT_STEP, index + 1, "note", "다음 달 액션"

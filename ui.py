@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import html
 from functools import lru_cache
 from pathlib import Path
@@ -864,11 +865,39 @@ header[data-testid="stHeader"] { background: transparent; }
 
 .nh {
   display: flex; align-items: baseline; justify-content: space-between;
-  gap: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line-soft);
+  gap: 16px; padding-bottom: 8px; border-bottom: 1px solid #cfd5da;
   margin: 6px 0 10px 0;
 }
-.nh-t { font-size: 16.5px; font-weight: 600; color: var(--ink); letter-spacing: -.02em; }
+.nh-l { display: flex; align-items: center; gap: 9px; min-width: 0; }
+/* 블록 순번 칩 — 4번은 `주제 N`, 6번은 `제안 N`.
+   ⚠ **회색이어야 한다.** 섹션 헤더가 초록 번호 + 세로선(`.sec-n`), 표 제목이 초록
+   3px 좌측 바(`.tbl-title-bar`)를 이미 쓴다. 블록에도 초록 번호를 주면 "크기만 줄인
+   같은 그림"이 되어 위계가 안 생기고, 액센트가 세 급에서 반복돼 흔해진다
+   (2026-09-08 규리님 지적: *"메인 제목의 숫자와 블록의 숫자가 너무 겹치지 않을까?
+   디자인이 똑같잖아"*). 세 급은 색이 아니라 **형태**로 갈린다:
+     섹션 = 번호│세로선(초록) · 블록 = 회색 칩 · 표 = 좌측 바(초록) */
+/* 편집 중에는 입력칸이 제목 자리를 대신하므로 칩만 단독으로 위에 남긴다. */
+.nh-num-solo {
+  display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  color: var(--muted); background: var(--line-soft); border-radius: 2px;
+  padding: 3px 7px; margin: 6px 0 4px; font-variant-numeric: tabular-nums;
+}
+.nh-num {
+  flex: 0 0 auto; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  color: var(--muted); background: var(--line-soft); border-radius: 2px;
+  padding: 3px 7px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 섹션(18px) > 블록(15px) > 표 제목(13.5px) 순으로 크기가 내려간다.
+   예전 16.5px는 섹션 제목(18px)과 거의 같아 급이 안 보였다. */
+.nh-t { font-size: 15px; font-weight: 700; color: var(--ink); letter-spacing: -.018em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nh-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 블록 사이 간격 — 예전에는 아무 래퍼도 없어 두 블록이 바로 붙었고, 표·본문 박스가
+   똑같이 생겨서 어디서 다음 주제가 시작하는지 알 수 없었다(2026-09-08 규리님 지적).
+   래퍼 하나로 4번(분석 주제)·6번(NEXT STEP)을 같이 덮는다. */
+.blockgap { height: 34px; }
+/* 첫 블록은 섹션 헤더 바로 아래라 위 여백이 필요 없다. */
+.blockgap.is-first { height: 0; }
 .nh-badge { font-size: 11.5px; border-radius: 3px; padding: 3px 9px; white-space: nowrap; }
 /* 잠금 상태는 상태 색이 정보 전달의 핵심이라 칩 형태를 유지한다 */
 .nh-badge.is-mine { background: #e7f9f0; color: #0f6e56; }
@@ -1063,10 +1092,11 @@ section[data-testid="stSidebar"] h2 {
    원래 톤 그대로 유지한다. 문제는 버튼 쪽이었다: 글자가 좁은 사이드바 폭에서
    두 줄로 어색하게 접혔다 — 라벨을 짧게 줄이고 nowrap을 강제해 고친다. */
 .st-key-google_freeze_pending {
-  border: 1.5px solid var(--brand) !important;
+  border: 1px solid #b8ecd2 !important;
+  border-top: 2px solid var(--brand) !important;
   background: #e7f9f0 !important;
-  border-radius: 6px !important;
-  padding: 14px 14px 16px !important;
+  border-radius: 0 0 4px 4px !important;
+  padding: 12px 12px 14px !important;
 }
 .freeze-cta-title {
   font-size: 12.5px; font-weight: 700; color: var(--brand-deep); margin-bottom: 5px;
@@ -1075,21 +1105,39 @@ section[data-testid="stSidebar"] h2 {
 .freeze-cta-body {
   font-size: 11px; color: var(--ink-2); margin-bottom: 16px; line-height: 1.5;
 }
-/* 고정 패널 항목별 체크리스트(B안, 2026-09-08 규리님 선택).
-   고정 시각만으로는 "8/23까지"인지 "마감본"인지 알 수 없어서 행 수·파일 수를 찍는다. */
-.freeze-rows { margin: 2px 0 8px; }
+/* 고정 패널 — 항목별 체크리스트(B안) + 하우스 톤(A안), 2026-09-08 규리님 선택.
+   고정 시각만으로는 "8/23까지"인지 "마감본"인지 알 수 없어서 행 수·파일 수를 찍는다.
+
+   톤 규칙 세 가지가 여기서 지켜져야 한다:
+     1. **이모지를 쓰지 않는다** — 처음엔 자물쇠 이모지를 썼는데 이 프로젝트 하우스 룰 위반이다.
+        상태는 우측 상단 `완료` 칩으로 말한다.
+     2. **강조는 미고정 CTA에만.** 이미 끝난 일(고정됨)이 제일 시끄럽고 사람이 해야 할
+        일(아직 고정 안 됨)이 조용하면 위계가 뒤집힌다.
+     3. 액센트는 **상단 2px 브랜드선 하나**. 1번 섹션 KPI 카드가 쓰는 어법과 같게 맞춘다
+        — 좌측 레일은 대조군 델타(`.ct-delta`)가 이미 쓰고 있어 뜻이 겹친다. */
+.freeze-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 9px;
+}
+.freeze-head b {
+  font-size: 11.5px; font-weight: 700; color: var(--ink); letter-spacing: -.01em;
+}
+.freeze-chip {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  color: var(--brand-deep); background: #e7f9f0; border-radius: 2px; padding: 2px 5px;
+}
+.freeze-rows { margin: 2px 0 0; }
 .freeze-row {
   display: flex; justify-content: space-between; align-items: baseline;
-  font-size: 11px; line-height: 1.85; color: var(--ink-2);
+  font-size: 11px; line-height: 1.95; color: var(--muted);
 }
 .freeze-row b { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
 /* 아직 라이브인 항목은 값도 흐리게 — 얼려진 것과 한눈에 갈려야 한다. */
-.freeze-row.is-live b { color: var(--muted); font-weight: 400; }
+.freeze-row.is-live b { color: var(--faint); font-weight: 400; }
 .freeze-cta-foot {
-  font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--line);
-  padding-top: 6px; margin-bottom: 8px; font-variant-numeric: tabular-nums;
+  font-size: 10px; color: var(--faint); border-top: 1px solid var(--line-soft);
+  padding-top: 6px; margin-top: 7px; font-variant-numeric: tabular-nums;
 }
-.freeze-lock { margin-right: 4px; }
 .st-key-google_freeze_pending .stButton button[kind="primary"] {
   min-height: 36px !important; font-size: 13px !important;
   letter-spacing: -.01em !important; border-radius: 5px !important;
@@ -1142,13 +1190,35 @@ section[data-testid="stSidebar"] h2 {
 @media (prefers-reduced-motion: reduce) {
   .freeze-cta-bar i { animation: none; left: 0; width: 100%; opacity: .45; }
 }
-.st-key-google_freeze_done { padding: 4px 2px 0; }
-.st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
-  font-size: 10.5px !important; color: var(--faint) !important;
+/* 고정됨 패널 — 회색 카드 안에서 **흰 배경**으로 떠 있어야 경계가 보인다.
+   예전에는 카드와 같은 회색이라 박스가 어디서 시작하는지 알 수 없었다. */
+.st-key-google_freeze_done {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-top: 2px solid var(--brand) !important;
+  border-radius: 0 0 4px 4px !important;
+  padding: 11px 12px 12px !important;
 }
+.st-key-google_freeze_done [data-testid="stMarkdownContainer"] {
+  margin-bottom: 0 !important;
+}
+.st-key-google_freeze_done [data-testid="stCaptionContainer"] p {
+  font-size: 10px !important; color: var(--muted) !important; line-height: 1.5;
+}
+/* `다시 고정`은 가끔 누르는 보조 동작이다 — 사이드바의 "다시 불러오기" 류와 같은
+   조용한 회색 버튼으로 통일한다. 예전에는 배경이 없어 글자처럼 보였다. */
 .st-key-google_freeze_done .stButton button {
-  min-height: 24px !important; padding: 1px 8px !important;
+  min-height: 28px !important; padding: 4px 8px !important;
+  background: var(--line-soft) !important; border: 1px solid var(--line) !important;
+  color: var(--ink-2) !important; border-radius: 3px !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
+}
+.st-key-google_freeze_done .stButton button:hover {
+  background: var(--surface) !important; border-color: var(--brand) !important;
+  color: var(--brand-deep) !important;
+}
+.st-key-google_freeze_done .stButton button p {
+  font-size: 11.5px !important; font-weight: 700 !important; white-space: nowrap !important;
 }
 /* 블록 조작 버튼 — 조건 배지(테두리 없는 평문)와 갈리도록 "누르는 것"은 전부 테두리를
    가진다. 편집은 초록 텍스트 링크처럼, 이동·삭제는 정사각 아이콘 버튼으로 위계를 나눈다. */
@@ -1470,8 +1540,32 @@ def table_title(text: str) -> None:
     )
 
 
-def note_header(title: str, badge: tuple[str, str] | None = None, info: str | None = None) -> None:
+def block_gap(first: bool = False) -> None:
+    """블록 사이 간격. 첫 블록 앞에서는 `first=True`로 붙이지 않는다."""
+    st.markdown(f'<div class="blockgap{" is-first" if first else ""}"></div>',
+                unsafe_allow_html=True)
+
+
+#: 제목 앞에 사람이 손으로 적어 둔 순번 표기. 화면에서는 칩이 순번을 말하므로
+#: 중복되어 보인다 — **저장된 글은 건드리지 않고 표시할 때만** 떼어낸다.
+_NUM_PREFIX = re.compile(
+    r"^\s*(?:신규\s*USP\s*)?(?:주제|제안|제언|USP\s*제안)?\s*"
+    r"\d+\s*[).:\-–]\s*", re.IGNORECASE)
+
+
+def strip_number_prefix(title: str) -> str:
+    """`제안 1: POV형…` → `POV형…`. 못 떼는 표기는 그대로 둔다(지어내지 않는다)."""
+    stripped = _NUM_PREFIX.sub("", str(title or ""), count=1).strip()
+    # 접두어만 있고 내용이 없으면 원문을 살린다 — 제목이 사라지는 게 더 나쁘다.
+    return stripped or str(title or "")
+
+
+def note_header(title: str, badge: tuple[str, str] | None = None,
+                info: str | None = None, number: str | None = None) -> None:
     """블록의 소제목 줄. badge는 (tone, text)이며 tone은 "mine" | "other".
+
+    number는 `주제 1` · `제안 2` 처럼 순번 칩에 들어갈 문구다 — 섹션마다 라벨이
+    다르므로 호출부가 완성해서 넘긴다.
 
     info는 잠금 상태와 무관하게 항상 보여줄 중립 배지다(예: 이 블록의 조건 요약) —
     "이 조건이 무엇에 걸리는지 표 캡션에 있어 눈에 안 띈다"는 피드백을 받아 제목 옆으로 옮겼다.
@@ -1483,8 +1577,10 @@ def note_header(title: str, badge: tuple[str, str] | None = None, info: str | No
     if badge:
         tone, text = badge
         chips += f'<span class="nh-badge is-{_e(tone)}">{_e(text)}</span>'
+    num = f'<span class="nh-num">{_e(number)}</span>' if number else ""
     st.markdown(
-        f'<div class="nh"><span class="nh-t">{_e(title)}</span>'
+        f'<div class="nh"><span class="nh-l">{num}'
+        f'<span class="nh-t">{_e(strip_number_prefix(title))}</span></span>'
         f'<span class="nh-right">{chips}</span></div>',
         unsafe_allow_html=True,
     )

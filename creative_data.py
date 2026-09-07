@@ -439,6 +439,28 @@ def month_options(df: pd.DataFrame) -> list[int]:
     return months
 
 
+def default_month(months: list[int], today) -> int | None:
+    """기본으로 열어 줄 리포트 월 — **마감된 마지막 월**.
+
+    규리님(2026-09-08): *"8월 데이터가 기본으로 보여야 해. 오늘이 9/8이지만 이번
+    먼슬리는 8월 데이터 보고야(8월 먼슬리는 8월이 마감된 후에 진행)."*
+
+    예전에는 "데이터가 있는 가장 최근 월"을 열었다. 시트에 다음 달 집행분이 하루라도
+    들어오면 그 달로 넘어가서, **아직 절반도 안 지난 달의 반쪽 숫자**가 리포트 첫
+    화면이 됐다. 광고주에게 보내는 링크라 그게 그대로 보인다.
+
+    `today`는 **KST 기준 날짜**를 넘긴다(컨테이너가 UTC라 그냥 `date.today()`를 쓰면
+    자정 전후로 달이 하루 어긋난다).
+
+    같은 해 안에서만 고른다 — 이 리포트는 `2026년 N월` 라벨로 한 해를 다룬다.
+    1월처럼 이전 달이 목록에 없으면 **가장 최근 월로 떨어진다**(빈 화면보다 낫다).
+    """
+    if not months:
+        return None
+    closed = [m for m in months if int(m) < int(today.month)]
+    return int(max(closed)) if closed else int(max(months))
+
+
 def benchmark_row(df: pd.DataFrame, label: str) -> pd.DataFrame:
     """전체 평균(합계 기반) 벤치마크 한 줄. TOP 소재 표 아래에 비교 기준으로 붙인다."""
     if df.empty:
