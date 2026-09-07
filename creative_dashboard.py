@@ -911,8 +911,9 @@ with st.sidebar.container(key="sb_controls"):
 data_card = st.sidebar.container(key="sb_data")
 with data_card:
     st.markdown('<div class="sb-card-t">데이터</div>', unsafe_allow_html=True)
+    # 같은 이유로 `key`를 준다 — 없으면 링크를 갈아끼워도 리런에서 기본값으로 돌아간다.
     sheet_url = st.text_input(
-        "구글시트 링크",
+        "구글시트 링크", key="sheet_url",
         value=DEFAULT_SHEET,
         help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다.",
     )
@@ -1061,8 +1062,12 @@ with data_card:
         _drive_material_index.clear()
         st.rerun()
 
+    # ⚠ **`key`가 있어야 값이 남는다.** key 없는 위젯은 Streamlit이 위젯 트리의
+    #    위치로 식별하는데, 바로 아래 고정 블록의 컨테이너 키가 리런마다 바뀐다
+    #    (`google_freeze_loading` → `google_freeze_done`/`pending`/`nodata`).
+    #    그래서 규리님이 1.08로 맞춰도 다음 리런에서 `value=`(1.0830)로 되돌아갔다.
     cost_markup = st.number_input(
-        "구글 비용 마크업 배율",
+        "구글 비용 마크업 배율", key="google_cost_markup",
         min_value=1.0, max_value=2.0, value=DEFAULT_COST_MARKUP, step=0.001, format="%.4f",
         help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 맞추려면 "
              "이 배율을 곱합니다(2026-07 실측 1.0830).",
