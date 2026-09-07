@@ -36,6 +36,7 @@ from google_ads_report import load_google_ads_folder
 
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "notes" / "google_snapshots"
 _STAMP_FILE = "_frozen_at.txt"
+_MARKUP_FILE = "_cost_markup.txt"
 
 
 def path(month: int) -> Path:
@@ -62,6 +63,26 @@ def frozen_at(month: int) -> str | None:
     return stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
 
 
+def frozen_markup(month: int) -> float | None:
+    """이 달을 고정할 때 쓴 마크업. 예전 스냅샷에는 없어서 None이 나온다.
+
+    마크업은 **월별로 다르다**(2026-07 8.3% / 2026-08 8% — 규리님). 원가만 저장하고
+    읽을 때 사이드바 값을 곱하면, 이미 고정한 달의 숫자가 사이드바를 만질 때마다
+    함께 움직인다. 그래서 고정 시점의 값을 함께 남긴다.
+    """
+    if store.is_firestore():
+        return fs_store.snapshot_markup(month)
+    if google_sheets_writer.configured():
+        return google_sheets_writer.snapshot_markup(month)
+    stamp = path(month) / _MARKUP_FILE
+    if not stamp.exists():
+        return None
+    try:
+        return float(stamp.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return None
+
+
 def source_label(month: int) -> str:
     """사이드바 도움말에 보여줄 "어디서 읽었는지" 문구."""
     if store.is_firestore():
@@ -71,10 +92,14 @@ def source_label(month: int) -> str:
     return str(path(month))
 
 
-def save(month: int, live_folder: Path | str) -> None:
+def save(month: int, live_folder: Path | str,
+         cost_markup: float | None = None) -> None:
     """`live_folder`(현재 라이브 드롭박스/로컬 폴더)의 이 달 값을 스냅샷으로 고정한다.
 
     이미 스냅샷이 있으면 덮어쓴다 — 명시적 재고정 버튼도 같은 함수를 쓴다.
+
+    `cost_markup`은 **고정 시점의 마크업**이다. 원가와 함께 남겨 두면 나중에
+    사이드바를 만져도 이 달 숫자가 흔들리지 않는다(월별로 마크업이 다르다).
     """
     if store.is_firestore() or google_sheets_writer.configured():
         df = load_google_ads_folder(live_folder, cost_markup=1.0)
@@ -84,9 +109,9 @@ def save(month: int, live_folder: Path | str) -> None:
                 f"라이브 폴더에 {month}월 데이터가 없어 고정할 수 없습니다: {live_folder}"
             )
         if store.is_firestore():
-            fs_store.write_snapshot(month, df)
+            fs_store.write_snapshot(month, df, cost_markup=cost_markup)
         else:
-            google_sheets_writer.write_month(month, df)
+            google_sheets_writer.write_month(month, df, cost_markup=cost_markup)
         return
 
     dest = path(month)
@@ -97,6 +122,9 @@ def save(month: int, live_folder: Path | str) -> None:
     (dest / _STAMP_FILE).write_text(
         store.report_timestamp(), encoding="utf-8"
     )
+    if cost_markup:
+        (dest / _MARKUP_FILE).write_text(f"{float(cost_markup):.4f}",
+                                         encoding="utf-8")
 
 
 def load(month: int, cost_markup: float) -> pd.DataFrame:

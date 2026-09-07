@@ -46,7 +46,9 @@ import store
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 META_TAB = "_snapshot_meta"
 # 세 번째 컬럼(rev)은 행 단위 upsert용이다. 예전 2컬럼 메타 탭도 그대로 읽힌다.
-META_HEADER = ["month", "frozen_at", "rev"]
+#: `cost_markup`은 2026-09-08에 추가됐다. 예전 행에는 그 칸이 없어서 읽을 때
+#: 길이를 검사한다 — 헤더만 늘리고 옛 행은 그대로 둔다(행 단위 upsert라 안전하다).
+META_HEADER = ["month", "frozen_at", "rev", "cost_markup"]
 _NUMERIC_COLUMNS = ("impression", "click", "cost_raw", "total install", "in_app_action", "month")
 
 
@@ -234,6 +236,23 @@ def month_exists(month: int) -> bool:
         return False
 
 
+def snapshot_markup(month: int) -> float | None:
+    """이 달 스냅샷을 고정할 때 쓴 마크업. 예전 행에는 없어서 None이 나온다."""
+    try:
+        service = _service()
+        if META_TAB not in _existing_tabs(service):
+            return None
+        rows = service.spreadsheets().values().get(
+            spreadsheetId=_sheet_id(), range=META_TAB
+        ).execute(num_retries=API_RETRIES).get("values", [])
+        for row in rows[1:]:
+            if row and row[0] == str(month) and len(row) >= 4 and row[3]:
+                return float(row[3])
+    except Exception:
+        return None
+    return None
+
+
 def frozen_at(month: int) -> str | None:
     try:
         service = _service()
@@ -250,7 +269,8 @@ def frozen_at(month: int) -> str | None:
     return None
 
 
-def write_month(month: int, df: pd.DataFrame) -> None:
+def write_month(month: int, df: pd.DataFrame,
+                cost_markup: float | None = None) -> None:
     """df(마크업 적용 전 원가 기준)를 이 달 스냅샷으로 고정한다. 이미 있으면 갈아끼운다.
 
     **임시 탭에 다 쓴 뒤 이름을 바꿔 통째로 맞바꾼다.** 예전에는 원본 탭을 clear한 다음
@@ -286,7 +306,9 @@ def write_month(month: int, df: pd.DataFrame) -> None:
         META_TAB, META_HEADER,
         {"month": str(int(month)),
          "frozen_at": store.report_timestamp(),
-         REV_COLUMN: ""},
+         REV_COLUMN: "",
+         # 고정 시점의 마크업. 월별로 다르다(7월 8.3% / 8월 8%).
+         "cost_markup": f"{float(cost_markup):.4f}" if cost_markup else ""},
     )
 
 

@@ -463,7 +463,18 @@ def _chunk_rows(rows: list, cols: list) -> list[str]:
     return chunks
 
 
-def write_snapshot(month: int, df, frozen_at: str | None = None) -> None:
+def snapshot_markup(month: int) -> float | None:
+    """이 달 스냅샷을 고정할 때 쓴 마크업. 예전 스냅샷에는 없어서 None이 나온다."""
+    try:
+        snap = _snap_meta_ref(month).get()
+        value = (snap.to_dict() or {}).get("cost_markup") if snap.exists else None
+        return float(value) if value else None
+    except Exception:
+        return None
+
+
+def write_snapshot(month: int, df, frozen_at: str | None = None,
+                   cost_markup: float | None = None) -> None:
     """이 달 스냅샷을 갈아끼운다. 실패하면 예전 스냅샷이 그대로 남는다.
 
     `frozen_at`은 **이관할 때만** 넘긴다 — 시트에 있던 원래 고정 시각을 보존하기
@@ -501,6 +512,10 @@ def write_snapshot(month: int, df, frozen_at: str | None = None) -> None:
         "cols": cols,
         "row_count": len(rows),
         "frozen_at": frozen_at or store.report_timestamp(),
+        # 고정 시점의 마크업을 함께 남긴다. 월별로 다르기 때문이다 —
+        # 7월 8.3% / 8월 8%(규리님). 이게 없으면 사이드바를 바꿀 때 이미 고정한
+        # 달의 숫자까지 함께 움직인다.
+        **({"cost_markup": float(cost_markup)} if cost_markup else {}),
     })
 
     # 3) 옛 세대 청소 — 실패해도 정확성에 영향 없다.

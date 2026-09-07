@@ -908,6 +908,29 @@ with st.sidebar.container(key="sb_controls"):
     st.markdown('<div class="sb-lab">모드</div>', unsafe_allow_html=True)
     mode_slot = st.container()
 
+# ⚠ 스냅샷 메타 헬퍼는 사이드바보다 **위**에 있어야 한다 — 마크업 위젯이
+#    그 달의 고정 마크업을 기본값으로 쓰기 때문이다(정의가 아래 있으면
+#    NameError로 화면이 통째로 죽는다).
+_SNAPSHOT_META_TTL = 60
+
+
+@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
+def _snapshot_exists(month: int) -> bool:
+    # 캐시가 아예 없으면 위젯 하나 건드릴 때마다 API를 다시 불러 눈에 띄게 느려진다(실측 수 초).
+    return google_snapshot.exists(month)
+
+
+@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
+def _snapshot_frozen_at(month: int) -> str | None:
+    return google_snapshot.frozen_at(month)
+
+
+@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
+def _snapshot_markup(month: int) -> float | None:
+    """이 달을 고정할 때 쓴 마크업. 예전 스냅샷에는 없어서 None이 나온다."""
+    return google_snapshot.frozen_markup(month)
+
+
 data_card = st.sidebar.container(key="sb_data")
 with data_card:
     st.markdown('<div class="sb-card-t">데이터</div>', unsafe_allow_html=True)
@@ -1066,11 +1089,20 @@ with data_card:
     #    위치로 식별하는데, 바로 아래 고정 블록의 컨테이너 키가 리런마다 바뀐다
     #    (`google_freeze_loading` → `google_freeze_done`/`pending`/`nodata`).
     #    그래서 규리님이 1.08로 맞춰도 다음 리런에서 `value=`(1.0830)로 되돌아갔다.
+    #
+    # **키에 월을 넣는다.** 마크업은 월별로 다르다(2026-07 8.3% / 2026-08 8%).
+    # 키가 하나면 달을 바꿔도 앞 달 값이 그대로 남아, 8월 값으로 7월을 계산한다.
+    # 월마다 키가 다르면 `value=`가 그 달 첫 렌더에 적용된다 — 이미 고정한 달은
+    # **고정할 때 쓴 마크업**이 기본값으로 들어오므로 안 만지면 숫자가 안 흔들린다.
+    _frozen_markup = _snapshot_markup(month) if _snapshot_exists(month) else None
     cost_markup = st.number_input(
-        "구글 비용 마크업 배율", key="google_cost_markup",
-        min_value=1.0, max_value=2.0, value=DEFAULT_COST_MARKUP, step=0.001, format="%.4f",
-        help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 맞추려면 "
-             "이 배율을 곱합니다(2026-07 실측 1.0830).",
+        "구글 비용 마크업 배율", key=f"google_cost_markup_{int(month)}",
+        min_value=1.0, max_value=2.0,
+        value=float(_frozen_markup or DEFAULT_COST_MARKUP),
+        step=0.001, format="%.4f",
+        help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 "
+             "맞추려면 이 배율을 곱합니다. **월별로 다릅니다**(2026-07 1.0830 / "
+             "2026-08 1.0800). 값을 바꾸고 '고정하기'를 누르면 그 마크업으로 고정됩니다.",
     )
     # 고정 여부에 따라 완전히 다른 톤(강조 vs 조용함)으로 그려야 해서, 데이터 카드
     # 맨 아래에 독립된 블록으로 뺀다 — 자리만 먼저 잡아두고 내용은 아래에서 채운다.
@@ -1308,20 +1340,6 @@ st.markdown(
 # 걸었다가, 다른 세션(또는 다른 사람 브라우저)에서 고정한 스냅샷을 이 세션이 최대 1시간
 # 동안 못 보고 "아직 고정 안 됨"을 계속 띄우는 문제가 실제로 났다 — st.cache_data.clear()는
 # 버튼을 누른 그 세션에만 듣기 때문이다.
-_SNAPSHOT_META_TTL = 60
-
-
-@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
-def _snapshot_exists(month: int) -> bool:
-    # 캐시가 아예 없으면 위젯 하나 건드릴 때마다 API를 다시 불러 눈에 띄게 느려진다(실측 수 초).
-    return google_snapshot.exists(month)
-
-
-@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
-def _snapshot_frozen_at(month: int) -> str | None:
-    return google_snapshot.frozen_at(month)
-
-
 @st.cache_data(ttl=3600, show_spinner="구글 스냅샷 읽는 중…")
 def _load_snapshot(month: int, markup: float, frozen_at: str | None) -> pd.DataFrame:
     """스냅샷 행 전체를 읽는 무거운 호출이라 길게 캐시한다.
@@ -1387,11 +1405,21 @@ with freeze_slot.container():
     if has_snapshot:
         with st.container(key="google_freeze_done"):
             done_cols = st.columns([3, 1.4], vertical_alignment="center")
-            done_cols[0].caption(f"🔒 {month}월 데이터 고정됨 · {snapshot_frozen_at}")
+            # 어떤 마크업으로 고정했는지 보여준다 — 월별로 달라서 안 적으면
+            # 지금 사이드바 값과 같은지 알 수 없다.
+            _frozen_note = (f" · 마크업 ×{_frozen_markup:.4f}"
+                            if _frozen_markup else "")
+            done_cols[0].caption(
+                f"🔒 {month}월 데이터 고정됨 · {snapshot_frozen_at}{_frozen_note}")
+            if _frozen_markup and abs(_frozen_markup - cost_markup) > 1e-9:
+                done_cols[0].caption(
+                    f"⚠ 지금 화면은 ×{cost_markup:.4f} 기준입니다 — "
+                    "'다시 고정'을 누르면 이 값으로 바뀝니다.")
             if live_source_available:
                 if done_cols[1].button("다시 고정", key="google_freeze", width="stretch"):
                     try:
-                        google_snapshot.save(month, google_folder)
+                        google_snapshot.save(month, google_folder,
+                                             cost_markup=cost_markup)
                         st.cache_data.clear()
                         st.rerun()
                     except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다
@@ -1409,7 +1437,8 @@ with freeze_slot.container():
             )
             if st.button("지금 고정하기", key="google_freeze", type="primary", width="stretch"):
                 try:
-                    google_snapshot.save(month, google_folder)
+                    google_snapshot.save(month, google_folder,
+                                         cost_markup=cost_markup)
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as error:  # noqa: BLE001 - 시트 API 오류까지 화면에 보여준다

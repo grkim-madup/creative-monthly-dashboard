@@ -116,7 +116,7 @@ def test_source_label_mentions_sheet_tab_in_sheet_mode(sheet_mode):
 def test_save_writes_raw_cost_dataframe_to_sheet(sheet_mode, monkeypatch, tmp_path):
     captured = {}
 
-    def fake_write_month(month, df):
+    def fake_write_month(month, df, cost_markup=None):
         captured["month"] = month
         captured["df"] = df
 

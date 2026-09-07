@@ -24,3 +24,5 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — default_contrast_field / contrast_field (2026-09-07)
 
 # 재시작 마커 — CPM 파생지표 / contrast_groups (2026-09-07)
+
+# 재시작 마커 — 월별 마크업 고정 (2026-09-08)
