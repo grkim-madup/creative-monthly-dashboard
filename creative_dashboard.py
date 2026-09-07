@@ -30,6 +30,7 @@ import google_snapshot
 import highlights
 import insight_draft
 import locks
+import manual_picks
 import overrides as manual_overrides
 import prefetch
 from creative_data import (
@@ -852,16 +853,77 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
     st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
+def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
+                       rank_metric: str) -> None:
+    """이 표의 우수·저조를 손으로 고른다. **편집 모드에서만 보인다.**
+
+    지정이 하나라도 있으면 그 표의 자동 선정은 통째로 버린다(`manual_picks.apply`) —
+    섞으면 5~6줄이 칠해져서 무엇이 사람 판단인지 알 수 없다.
+    """
+    if table.empty or "ad" not in table.columns:
+        return
+    key = f"{month}_{os_name}_{rank_metric}"
+    current = manual_picks.for_table(month, os_name, rank_metric)
+    options = [str(a) for a in table["ad"]]
+
+    with st.expander(f"우수·저조 수기 지정 ({os_name})",
+                     expanded=bool(current)):
+        st.markdown('<div class="pv-lab">우수 <span>지정하면 이 표의 자동 선정은 '
+                    "쓰지 않는다</span></div>", unsafe_allow_html=True)
+        best = st.multiselect(
+            "우수", options,
+            default=[a for a in options if current.get(a) == manual_picks.BEST],
+            key=f"pickbest_{key}", label_visibility="collapsed",
+            placeholder="비우면 자동 선정을 씁니다",
+        )
+        st.markdown('<div class="pv-lab">저조</div>', unsafe_allow_html=True)
+        worst = st.multiselect(
+            "저조", [a for a in options if a not in best],
+            default=[a for a in options
+                     if current.get(a) == manual_picks.WORST and a not in best],
+            key=f"pickworst_{key}", label_visibility="collapsed",
+            placeholder="비우면 자동 선정을 씁니다",
+        )
+        if st.button("지정 저장", key=f"picksave_{key}"):
+            wanted = {a: manual_picks.BEST for a in best}
+            wanted.update({a: manual_picks.WORST for a in worst})
+            failed = []
+            # 바뀐 것만 쓴다 — 표 10줄을 매번 다 쓰면 시트 쿼터를 그만큼 먹는다.
+            for ad in set(current) | set(wanted):
+                if current.get(ad) == wanted.get(ad):
+                    continue
+                ok, reason = manual_picks.save(month, os_name, rank_metric, ad,
+                                               wanted.get(ad))
+                if not ok:
+                    failed.append(reason or "알 수 없는 오류")
+            if failed:
+                st.error("저장 실패: "
+                         + google_sheets_writer.friendly_error(failed[0]))
+            else:
+                st.success("지정을 저장했습니다.")
+                rerun_local()
+
+
 def render_table_best_worst(
     df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False,
-    rank_metric: str | None = None,
+    rank_metric: str | None = None, os_name: str | None = None,
+    month: int | None = None,
 ):
     """지표별 히트맵 대신, 우수 2행·저조 2행만 행 전체를 색칠한다(시트 컨벤션).
 
     link_materials=True면 하이라이트된 소재를 광고주 Drive 영상과 잇는 카드를 표 아래에 붙인다
     (2번 메타/틱톡 전용 — 3번 구글은 소재 식별자가 URL이라 이 네이밍 매칭이 원리적으로 안 된다).
+
+    `os_name`·`month`를 주면 **수기 지정이 자동 선정을 덮어쓴다**(2026-09-08).
+    자동 규칙이 팀원 판단과 어긋나는 동안에도 리포트가 사람 판단대로 나가야 한다.
     """
     best, worst = pick_best_worst(df, metrics)
+    manual_used = False
+    if os_name is not None and month is not None and rank_metric is not None:
+        picked_best, picked_worst = manual_picks.apply(
+            df, month, os_name, rank_metric, best, worst)
+        manual_used = (picked_best, picked_worst) != (best, worst)
+        best, worst = picked_best, picked_worst
     # 표에는 지표 컬럼만 보여준다 — title_kr처럼 카드 전용으로 딸려온 컬럼은 여기서 뺀다
     # (소재명 컬럼과 내용이 겹쳐 표를 어지럽힌다).
     display_df = df[display_columns(df, rank_metric)]
@@ -1319,7 +1381,11 @@ for os_name in sorted(meta_tiktok["os"].dropna().unique()):
         metrics=[("CPI", False), ("D0 coin CVR", True)],
         link_materials=True,
         rank_metric=rank_metric,
+        os_name=os_name,
+        month=month,
     )
+    if edit_mode:
+        manual_pick_editor(top, month, os_name, rank_metric)
 
 # OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 남긴다.
 # st.caption 기본 크기가 리포트 톤(정보 위계 절제)에 비해 도드라져 보인다는 피드백을 받아,

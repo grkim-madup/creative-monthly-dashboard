@@ -1029,6 +1029,8 @@ def delete_block_row(month: int, block_id: str) -> None:
 # 때문에 두 사람이 다른 키를 저장해도 서로를 지웠다.
 
 OVERRIDE_HEADER = ["ad", REV_COLUMN, "json"]
+#: 수기 지정(우수·저조). 키는 `os|정렬기준|소재명` — 표마다 지정이 다르다.
+PICK_HEADER = ["key", REV_COLUMN, "json"]
 HIGHLIGHT_HEADER = ["table_key", REV_COLUMN, "json"]
 LOCK_HEADER = ["key", REV_COLUMN, "owner", "acquired_at", "touched_at"]
 LOCKS_TAB = "locks_state"
@@ -1069,6 +1071,22 @@ def write_override(month: int, ad: str, fields: dict) -> tuple[bool, str | None]
         f"overrides_{int(month)}", OVERRIDE_HEADER,
         {"ad": ad, REV_COLUMN: "", "json": json.dumps(fields, ensure_ascii=False)},
     )
+
+
+def read_picks(month: int) -> tuple[str, dict, str | None]:
+    return _json_store_read(f"picks_{int(month)}", PICK_HEADER)
+
+
+def write_pick(month: int, key: str, verdict: str) -> tuple[bool, str | None]:
+    return store_upsert(
+        f"picks_{int(month)}", PICK_HEADER,
+        {"key": key, REV_COLUMN: "",
+         "json": json.dumps({"pick": verdict}, ensure_ascii=False)},
+    )
+
+
+def delete_pick(month: int, key: str) -> tuple[bool, str | None]:
+    return store_delete(f"picks_{int(month)}", PICK_HEADER, key)
 
 
 def delete_override(month: int, ad: str) -> tuple[bool, str | None]:

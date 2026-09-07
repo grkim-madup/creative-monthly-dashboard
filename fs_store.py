@@ -371,6 +371,49 @@ def remove_hl_cells(month: int, table_key: str, cells: list) -> tuple[bool, str 
         return False, f"{type(error).__name__}: {error}"
 
 
+PICKS = "picks"
+
+
+def _doc_id(key: str) -> str:
+    """Firestore 문서 id로 쓸 수 있게 다듬는다.
+
+    ⚠ `/`가 있으면 **경로로 해석**돼 엉뚱한 컬렉션에 쓰인다. `__x__` 형태도
+      예약어라 못 쓴다(이 프로젝트에서 이미 400을 받았다).
+    """
+    safe = str(key).replace("/", "／")
+    return safe[:1400] or "_"
+
+
+def read_picks(month: int) -> tuple[str, dict, str | None]:
+    """(상태, {행 키: {"pick": 판정}}, 실패 이유)."""
+    try:
+        out = {}
+        for snap in _sub(month, PICKS).stream():
+            data = snap.to_dict() or {}
+            if data.get("pick"):
+                out[snap.id] = {"pick": data["pick"]}
+        return ("ok" if out else "empty"), out, None
+    except Exception as error:  # noqa: BLE001
+        return "error", {}, f"{type(error).__name__}: {error}"
+
+
+def write_pick(month: int, key: str, verdict: str) -> tuple[bool, str | None]:
+    try:
+        _sub(month, PICKS).document(_doc_id(key)).set({"pick": str(verdict),
+                                                       "key": str(key)})
+        return True, None
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+
+
+def delete_pick(month: int, key: str) -> tuple[bool, str | None]:
+    try:
+        _sub(month, PICKS).document(_doc_id(key)).delete()
+        return True, None
+    except Exception as error:  # noqa: BLE001
+        return False, f"{type(error).__name__}: {error}"
+
+
 def read_overrides(month: int) -> tuple[str, dict, str | None]:
     """(상태, {소재명: {필드: 값}}, 실패 이유)."""
     try:
