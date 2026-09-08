@@ -179,3 +179,64 @@ def test_카드_렌더가_없는_컬럼에도_죽지_않는다():
             continue
         source = path.read_text(encoding="utf-8")
         assert 'df.loc[idx, column] if column in df.columns' in source, name
+
+
+# ------------------------------------------------- 구글 표 (식별자가 URL)
+
+def test_구글_키는_메타틱톡과_공간이_나뉜다():
+    assert manual_picks.google_os("iOS") == "google:iOS"
+    parts = manual_picks.split_key(
+        manual_picks.row_key(manual_picks.google_os("iOS"), "total install",
+                             "https://www.youtube.com/watch?v=abc"))
+    # URL에 `|`가 없으므로 키는 여전히 세 조각으로 정확히 갈린다.
+    assert parts == ("google:iOS", "total install",
+                     "https://www.youtube.com/watch?v=abc")
+
+
+def test_구글_지정은_asset_컬럼으로_붙는다(tmp_path, monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(manual_picks, "PICKS_DIR", tmp_path)
+    table = pd.DataFrame([
+        {"asset": "https://www.youtube.com/watch?v=A", "cost": 2.0, "CPI": 10},
+        {"asset": "https://www.youtube.com/watch?v=B", "cost": 1.0, "CPI": 20},
+    ])
+    gos = manual_picks.google_os("iOS")
+    manual_picks.save(8, gos, "total install",
+                      "https://www.youtube.com/watch?v=A", "best")
+    manual_picks.save(8, gos, "total install",
+                      "https://www.youtube.com/watch?v=B", "worst")
+    best, worst = manual_picks.apply(table, 8, gos, "total install", {}, {},
+                                     id_column="asset")
+    assert list(best) == [0] and list(worst) == [1]
+    for column in list(best.values()) + list(worst.values()):
+        assert column in table.columns
+
+
+def test_ad_컬럼이_없는_표는_그냥_넘어간다(tmp_path, monkeypatch):
+    """`id_column`을 안 넘기면 구글 표에는 아무 일도 일어나지 않아야 한다."""
+    import pandas as pd
+
+    monkeypatch.setattr(manual_picks, "PICKS_DIR", tmp_path)
+    table = pd.DataFrame([{"asset": "u", "cost": 1.0}])
+    manual_picks.save(8, manual_picks.google_os("iOS"), "total install", "u", "best")
+    best, worst = manual_picks.apply(
+        table, 8, manual_picks.google_os("iOS"), "total install", {}, {})
+    assert (best, worst) == ({}, {})
+
+
+def test_화면이_구글_표에_수기_지정을_적용한다():
+    """진입점은 import할 수 없어 소스를 훑는다."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    checked = 0
+    for name in ("creative_dashboard.py", "app.py"):
+        path = root / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert 'id_column="asset"' in source, name
+        assert "manual_picks.google_os(os_name)" in source, name
+        checked += 1
+    assert checked

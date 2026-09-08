@@ -408,6 +408,13 @@ def _doc_id(key: str) -> str:
 
     ⚠ `/`가 있으면 **경로로 해석**돼 엉뚱한 컬렉션에 쓰인다. `__x__` 형태도
       예약어라 못 쓴다(이 프로젝트에서 이미 400을 받았다).
+
+    ⚠⚠ **이 변환은 되돌릴 수 없다.** 전각 `／`가 원래 `/`였는지 원문에 있던
+        전각이었는지 구분할 방법이 없다. 그래서 이 id를 키로 되읽지 말고,
+        **원본 키를 문서의 `key` 필드에 함께 저장하고 그것을 읽는다.**
+        2026-09-08에 구글 애셋 URL을 키로 쓰자마자 이 문제가 드러났다 —
+        저장은 됐는데 읽을 때 `https:／／…`가 되어 표에 하나도 안 붙었다
+        (메타·틱톡 소재명에는 `/`가 없어 여태 안 보였다).
     """
     safe = str(key).replace("/", "／")
     return safe[:1400] or "_"
@@ -419,8 +426,12 @@ def read_picks(month: int) -> tuple[str, dict, str | None]:
         out = {}
         for snap in _sub(month, PICKS).stream():
             data = snap.to_dict() or {}
-            if data.get("pick"):
-                out[snap.id] = {"pick": data["pick"]}
+            if not data.get("pick"):
+                continue
+            # 원본 키는 `key` 필드에서 읽는다 — 문서 id는 `/`가 전각으로 바뀌어
+            # 있어 되돌릴 수 없다(`_doc_id` 주석 참고). 예전 문서에는 이 필드가
+            # 없을 수 있어 id로 폴백한다.
+            out[str(data.get("key") or snap.id)] = {"pick": data["pick"]}
         return ("ok" if out else "empty"), out, None
     except Exception as error:  # noqa: BLE001
         return "error", {}, f"{type(error).__name__}: {error}"
@@ -451,7 +462,9 @@ def read_overrides(month: int) -> tuple[str, dict, str | None]:
             data = snap.to_dict() or {}
             fields = data.get("fields")
             if isinstance(fields, dict):
-                out[snap.id] = fields
+                # 픽과 같은 이유로 원본 키를 우선한다(소재명에는 `/`가 없지만,
+                # 문서 id를 키로 되읽는 구조 자체가 위험하다).
+                out[str(data.get("key") or snap.id)] = fields
         return ("ok" if out else "empty"), out, None
     except Exception as error:  # noqa: BLE001
         return "error", {}, f"{type(error).__name__}: {error}"
@@ -459,7 +472,8 @@ def read_overrides(month: int) -> tuple[str, dict, str | None]:
 
 def write_override(month: int, ad: str, fields: dict) -> tuple[bool, str | None]:
     try:
-        _sub(month, OVERRIDES).document(ad).set({"fields": dict(fields)})
+        _sub(month, OVERRIDES).document(_doc_id(ad)).set(
+            {"fields": dict(fields), "key": str(ad)})
         return True, None
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
@@ -467,7 +481,7 @@ def write_override(month: int, ad: str, fields: dict) -> tuple[bool, str | None]
 
 def delete_override(month: int, ad: str) -> tuple[bool, str | None]:
     try:
-        _sub(month, OVERRIDES).document(ad).delete()
+        _sub(month, OVERRIDES).document(_doc_id(ad)).delete()
         return True, None
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"

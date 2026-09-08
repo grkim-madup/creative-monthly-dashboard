@@ -165,8 +165,19 @@ def for_table(month: int, os_name: str, rank_metric: str) -> dict[str, str]:
     return picked
 
 
+#: 구글 표의 OS 키 접두사. 구글은 소재 식별자가 URL이라 메타·틱톡과 **키 공간을
+#: 나눠야 한다** — 같은 달·같은 정렬 기준에서 이름이 겹칠 일은 없지만, 섞어 두면
+#: `for_table`이 엉뚱한 표의 지정을 끌어온다.
+GOOGLE_PREFIX = "google:"
+
+
+def google_os(os_name: str) -> str:
+    """구글 표의 OS 키(`google:iOS`). 키는 여전히 세 조각이라 `split_key`가 그대로 산다."""
+    return f"{GOOGLE_PREFIX}{os_name}"
+
+
 def apply(table, month: int, os_name: str, rank_metric: str,
-          best: dict, worst: dict) -> tuple[dict, dict]:
+          best: dict, worst: dict, id_column: str = "ad") -> tuple[dict, dict]:
     """자동 선정 결과에 수기 지정을 덮어쓴다. `(best, worst)`를 새로 돌려준다.
 
     **지정이 하나라도 있으면 그 표의 자동 선정은 통째로 버린다.** 섞으면 화면에
@@ -176,6 +187,8 @@ def apply(table, month: int, os_name: str, rank_metric: str,
     표에 없는 소재를 지정해 둔 경우(정렬 기준을 바꿔 그 소재가 TOP N에서 빠졌을 때)는
     조용히 무시된다 — 그 줄이 화면에 없으므로 칠할 자리도 없다.
 
+    구글 표는 `id_column="asset"`(URL)과 `os_name=google_os("iOS")`로 부른다.
+
     ⚠ **값은 반드시 표에 실제로 있는 컬럼 이름이어야 한다.** 소비하는 쪽이 이 값을
       `df.loc[index, 값]`으로 쓴다 — 예전에 `"수기 지정"`이라는 문구를 넣었더니
       썸네일 카드가 KeyError로 죽어 **배포판 3번 섹션이 통째로 안 떴다**(2026-09-08).
@@ -184,13 +197,14 @@ def apply(table, month: int, os_name: str, rank_metric: str,
     manual = for_table(month, os_name, rank_metric)
     if not manual or table is None or getattr(table, "empty", True):
         return best, worst
-    if "ad" not in table.columns:
+    # `id_column`은 표마다 다르다 — 메타·틱톡은 소재명(`ad`), 구글은 애셋 URL(`asset`).
+    if id_column not in table.columns:
         return best, worst
 
     column = label_column(table, rank_metric)
     new_best: dict = {}
     new_worst: dict = {}
-    for index, ad in table["ad"].items():
+    for index, ad in table[id_column].items():
         verdict = manual.get(str(ad))
         if verdict == BEST:
             new_best[index] = column

@@ -700,7 +700,9 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
     st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
-def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: bool = True):
+def render_google_table(df: pd.DataFrame, highlight: bool = True,
+                        link_column: bool = True, month: int | None = None,
+                        os_name: str | None = None, rank_metric: str | None = None):
     """구글 표 — 소재 식별자가 URL이라 링크 컬럼이 필요해서 별도 렌더러를 쓴다.
 
     강조 규칙은 매체별 TOP 소재와 동일하게 우수/저조 행 단위. 다만 구글은 Coin CVR이
@@ -711,6 +713,16 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
     view = df[[c for c in GOOGLE_COLUMNS if c in df.columns]].copy()
     metrics = google_pick_metrics(view)
     best, worst = pick_best_worst(view, metrics) if highlight else ({}, {})
+
+    # 수기 지정이 자동 선정을 덮어쓴다(메타·틱톡과 같은 규칙). 구글은 소재 식별자가
+    # URL이라 `id_column="asset"`이고, 키 공간도 `google:` 로 나눈다.
+    manual_used = False
+    if highlight and None not in (month, os_name, rank_metric):
+        picked_best, picked_worst = manual_picks.apply(
+            view, month, manual_picks.google_os(os_name), rank_metric,
+            best, worst, id_column="asset")
+        manual_used = (picked_best, picked_worst) != (best, worst)
+        best, worst = picked_best, picked_worst
     # 예전에는 여기서 CTR에 100을 곱했다 — st.dataframe의 NumberColumn '%.2f%%'가 값을
     # 그대로 찍기 때문이었다. HTML 렌더는 FORMATS의 '{:.2%}'를 쓰므로 비율 그대로 둔다.
     # (곱한 채로 넘기면 3.01%가 301%로 나온다.)
@@ -736,7 +748,13 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True, link_column: b
         row_classes=row_classes,
         link_columns={"소재 링크"} if link_column else None,
     )
-    if highlight:
+    if highlight and manual_used:
+        st.markdown(
+            '<div class="tbl-note">녹색 = 우수 · 붉은색 = 저조 — '
+            '이 표는 <b>직접 지정한 소재</b>로 표시했습니다(자동 선정 미적용).</div>',
+            unsafe_allow_html=True,
+        )
+    elif highlight:
         # 무슨 기준으로 칠했는지 각주로 남긴다. 구글은 표마다 두 번째 지표가 달라질
         # 수 있어서(설치 목적 표는 인앱 CPA가 없다) 안 적으면 읽는 사람이 못 맞춘다.
         names = " · ".join(
@@ -1353,7 +1371,7 @@ report_header(
     kicker="LINE WEBTOON TAIWAN · MONTHLY CREATIVE REVIEW",
     title=f"{month}월 크리에이티브 성과 리포트",
     meta=[("기간", f"2026년 {month}월")],
-    agenda=["총괄 성과", "매체별 TOP 소재 성과", "신규 소재 유형별 성과", "NEXT STEP"],
+    agenda=["매체별 TOP 소재 성과", "신규 소재 유형별 성과", "NEXT STEP"],
 )
 
 if scope.empty:
@@ -1362,47 +1380,24 @@ if scope.empty:
 
 # --------------------------------------------------------------------------- 1. 총괄
 
-section("1", "총괄 성과")
-
-overview_controls = st.columns(4)
-overview_media = overview_controls[0].multiselect(
-    "매체", sorted(scope["media"].dropna().unique()), key="ov_media",
-    placeholder="전체",
-)
-overview_format = overview_controls[1].multiselect(
-    "Creative Format", sorted(scope["format"].dropna().unique()), key="ov_format",
-    placeholder="전체",
-)
-overview_type = overview_controls[2].multiselect(
-    "Creative Type", sorted(scope["creative_type"].dropna().unique()), key="ov_type",
-    placeholder="전체",
-)
-overview_dimension = overview_controls[3].multiselect(
-    "Dimension", sorted(scope["size"].dropna().unique()), key="ov_dim",
-    placeholder="전체",
-)
-
+# 리포트 프레임 — 1번 총괄 섹션을 없앤 뒤에도(2026-09-08 규리님 요청) 아래 섹션들이
+# 쓰는 기준 데이터는 그대로 필요하다. 예전에는 이 정의가 총괄 섹션 본문 안에 섞여 있었다.
+#
+# 총괄 섹션에 있던 매체·포맷·유형·규격 드롭다운도 함께 사라졌으므로 `overview`는
+# `scope`(사이드바 고정 필터까지 적용된 그 달 범위)와 같다.
 overview = scope
-for column, selection in (
-    ("media", overview_media),
-    ("format", overview_format),
-    ("creative_type", overview_type),
-    ("size", overview_dimension),
-):
-    if selection:
-        overview = overview[overview[column].isin(selection)]
 
 if overview.empty:
-    status_row("warn", "총괄 필터 조건에 맞는 데이터가 없습니다", "필터를 완화해 주세요.")
+    status_row("warn", "이 달 조건에 맞는 데이터가 없습니다", "사이드바 설정을 확인해 주세요.")
     st.stop()
 
-# 소재명이 명명 규칙과 안 맞아 자동 분류가 실패한 실제 소재를, 사용자가 4·5번 섹션에서
-# 수동으로 채워 넣은 값으로 패치한다(성과 수치는 그대로, 분류 컬럼만 덮어씀).
+# 소재명이 명명 규칙과 안 맞아 자동 분류가 실패한 실제 소재를, 사용자가 신규 소재 유형별
+# 성과 섹션에서 수동으로 채워 넣은 값으로 패치한다(성과 수치는 그대로, 분류 컬럼만 덮어씀).
 overview = manual_overrides.apply(overview, month)
 
-# 4번(소재 속성별 성과)·5번(소재 분석)은 소재명 규칙(작품코드_작품명_...) 파싱이
-# 있어야 의미가 있다. 구글은 소재 단위 태깅이 없어 ad가 전부 "-"라 규칙 파싱 대상이
-# 아니다 — 두 섹션의 기준 데이터에서 미리 뺀다(1·2·3번 총괄/매체별 표는 그대로 포함).
+# 신규 소재 유형별 성과는 소재명 규칙(작품코드_작품명_...) 파싱이 있어야 의미가 있다.
+# 구글은 소재 단위 태깅이 없어 ad가 전부 "-"라 규칙 파싱 대상이 아니다 — 그 섹션의
+# 기준 데이터에서 미리 뺀다(매체별 TOP 소재 표는 그대로 포함).
 named_overview = overview[overview["ad"] != "-"]
 
 # 기간 비교 뷰는 **리포트 월 하나가 아니라 여러 달**을 본다. `raw`가 이미 전 월치를 들고
@@ -1415,82 +1410,13 @@ named_overview = overview[overview["ad"] != "-"]
 all_months = add_derived_metrics(_apply_base_filters(raw))
 all_months_named = all_months[all_months["ad"] != "-"]
 
-totals = aggregate_by(overview.assign(_all="전체"), ["_all"]).iloc[0]
-
-# 전월 대비 델타. 리포트는 다음 달 초에 나가므로 발송 시점에는 그 달이 완결돼 있어
-# 전체 월끼리 비교하는 게 맞다. 월중에 미리 열어볼 때만 같은 기간끼리로 자동 전환한다
-# (8/23까지 들어온 8월을 7월 31일치와 비교하면 소진액이 -26.2%로 나온다 — 실제로는
-# 같은 기간끼리 -0.4%다). 사람이 매번 올바른 쪽을 고르게 두면 언젠가 틀린다.
-previous_month = month - 1
-max_day = comparison_window(scope["date"], month) if "date" in scope.columns else None
-previous_scope = _apply_base_filters(scope_to_day(raw, previous_month, max_day))
-for _column, _selection in (
-    ("media", overview_media),
-    ("format", overview_format),
-    ("creative_type", overview_type),
-    ("size", overview_dimension),
-):
-    if _selection and not previous_scope.empty:
-        previous_scope = previous_scope[previous_scope[_column].isin(_selection)]
-if not previous_scope.empty:
-    previous_scope = add_derived_metrics(previous_scope)
-    previous_scope = manual_overrides.apply(previous_scope, previous_month)
-previous_totals = None
-if not previous_scope.empty:
-    previous_totals = aggregate_by(previous_scope.assign(_all="전체"), ["_all"]).iloc[0]
-
-
-# 비교 기준은 카드마다 반복하지 않고 묶음 우측 상단에 한 번만 적는다. 달이 안 끝나
-# 같은 기간끼리 맞춘 경우에는 그 사실이 문구에 드러나야 한다 — 안 적으면 왜 숫자가
-# 리포트의 전월 실적과 다른지 설명할 방법이 없다.
-if previous_totals is None:
-    comparison_note = f"{previous_month}월 데이터가 없어 전월 대비를 표시하지 않습니다"
-elif max_day is not None:
-    comparison_note = (
-        f"전월({previous_month}월 1~{max_day}일) 대비 — "
-        f"{month}월이 {max_day}일까지만 집계돼 같은 기간끼리 맞췄습니다"
-    )
-else:
-    comparison_note = f"전월({previous_month}월) 대비"
-
-
-def _kpi(label, column, value_text, fmt=None, sub="", primary=False):
-    """KPI 카드 하나. sub(회색 설명)는 소진액의 '마크업 포함'처럼 값의 정의가 달라져
-    오해가 생길 수 있는 곳에만 남긴다 — 나머지는 라벨만으로 충분하다(2026-08-28)."""
-    card = {"label": label, "value": value_text, "sub": sub}
-    if primary:
-        card["primary"] = True
-    if previous_totals is not None and column in previous_totals:
-        change = relative_change(totals[column], previous_totals[column])
-        card["delta"] = delta_label(change)
-        card["delta_direction"] = delta_direction(change)
-    return card
-
-
-kpi_cards([
-    # UA 기준이라는 사실은 최하단 각주에서 한 번만 설명한다 — 카드에도 붙였더니
-    # 라벨이 길어져 지저분했다(2026-09-02 사용자 지적).
-    _kpi("소진액", "cost", f"₩{totals['cost']:,.0f}", sub="마크업 포함", primary=True),
-    _kpi("노출", "impression", f"{totals['impression']:,.0f}"),
-    _kpi("CTR", "CTR", f"{totals['CTR']:.2%}"),
-    _kpi("인스톨", "total install", f"{totals['total install']:,.0f}"),
-    _kpi("CPI", "CPI", f"₩{totals['CPI']:,.0f}"),
-    _kpi("D0 Read CVR", "D0 read CVR", f"{totals['D0 read CVR']:.2%}"),
-], note=comparison_note)
-
-table_title("매체 × OS 요약")
-by_media_os = aggregate_by(overview, ["media", "os"])
-render_table(
-    by_media_os, color_columns=["CPI"], highlight_key="media_os", month=month,
-    column_order=SUMMARY_COLUMN_ORDER,
-)
 
 # --------------------------------------------------------------------------- 2. TOP 소재
 
 meta_tiktok = overview[overview["media"].isin(["Meta", "TikTok"])]
 
 section(
-    "2", "메타/틱톡 TOP 소재 성과",
+    "1", "메타/틱톡 TOP 소재 성과",
     note="*앱스플라이어 코호트 데이터 기준",
     badge=f"소재 {meta_tiktok['ad'].nunique():,}개",
 )
@@ -1796,7 +1722,7 @@ if not google_error and not google.empty:
     )
 
 section(
-    "3", "구글 TOP 소재 성과",
+    "2", "구글 TOP 소재 성과",
     note="*매체 대시보드 데이터 기준",
     badge=f"소재 {len(google):,}개" if not google.empty else "데이터 없음",
     extra_hint=google_read_hint,
@@ -1840,7 +1766,8 @@ else:
         g_top = g_top.sort_values(g_rank_metric, ascending=False).head(int(g_top_n))
         g_top = g_top.sort_values("cost", ascending=False).reset_index(drop=True)
         table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
-        render_google_table(g_top)
+        render_google_table(g_top, month=month, os_name=g_os,
+                            rank_metric=g_rank_metric)
 
         render_google_material_cards(g_top)
         st.markdown(
@@ -3897,7 +3824,7 @@ analysis_blocks = page_blocks[report_blocks.SLOT_ANALYSIS]
 # 편집 상태는 블록마다 자기 헤더에 이미 표시되므로(편집 중 · 나 / 다른 사람이 편집 중),
 # 섹션 배지에 또 요약하지 않는다 — 중복이다.
 section(
-    "4", "신규 소재 유형별 성과",
+    "3", "신규 소재 유형별 성과",
     "분석 주제를 하나 만들고, 그 안에 필요한 표를 여러 개 붙입니다. 소재명 규칙"
     "(작품코드_작품명_Creative Format_제작주체_Creative Type_Dimension_USP_Extra Info)을 "
     "자동 분해해 집계하며, 규칙에 맞지 않는 소재명은 추정하지 않고 '미분류'로 남깁니다.",
@@ -3975,39 +3902,6 @@ def _analysis_blocks_section() -> None:
 _analysis_blocks_section()
 
 # --------------------------------------------------------------------------- 6. 작품별
-
-section("5", "작품별 성과")
-
-# 작품별 성과는 "이 작품이 iOS에서 잘 도는지 / 메타에서 잘 도는지"를 자주 따로 봐야 해서, 상단 총괄
-# 필터와 별개로 이 섹션 전용 OS·매체 필터를 둔다(비워두면 전체).
-title_controls = st.columns(2)
-title_os = title_controls[0].multiselect(
-    "OS", sorted(overview["os"].dropna().unique()), key="title_os", placeholder="전체",
-)
-title_media = title_controls[1].multiselect(
-    "매체", sorted(overview["media"].dropna().unique()), key="title_media", placeholder="전체",
-)
-
-title_scope = overview
-if title_os:
-    title_scope = title_scope[title_scope["os"].isin(title_os)]
-if title_media:
-    title_scope = title_scope[title_scope["media"].isin(title_media)]
-
-if title_scope.empty:
-    status_row("warn", "선택한 OS·매체 조건에 맞는 작품 데이터가 없습니다", "필터를 완화해 주세요.")
-else:
-    by_title = aggregate_by(title_scope, ["title_kr"])
-    by_title = by_title[by_title["cost"].fillna(0) >= min_cost].head(20)
-    scope_label = " · ".join(
-        [", ".join(title_os) if title_os else "전체 OS",
-         ", ".join(title_media) if title_media else "전체 매체"]
-    )
-    st.caption(f"{scope_label} · 상위 {len(by_title)}개 작품")
-    render_table(
-        by_title.rename(columns={"title_kr": "작품"}),
-        color_columns=["CPI"], highlight_key="sec6_by_title", month=month,
-    )
 
 # --------------------------------------------------------------------------- 7. NEXT STEP
 
@@ -4255,7 +4149,7 @@ def render_note_block(block: dict, month: int, edit_mode: bool,
 
 next_step_blocks = page_blocks[report_blocks.SLOT_NEXT_STEP]
 
-section("6", "NEXT STEP")
+section("4", "NEXT STEP")
 if not next_step_blocks:
     st.caption("아직 작성된 내용이 없습니다.")
 
