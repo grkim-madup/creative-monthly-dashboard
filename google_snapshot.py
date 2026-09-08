@@ -83,6 +83,34 @@ def frozen_markup(month: int) -> float | None:
         return None
 
 
+def all_meta() -> dict[int, dict]:
+    """{월: 메타(frozen_at·cost_markup)} — 고정된 달 전부를 **한 번에**.
+
+    ⚠ 존재·시각·마크업을 달마다 따로 묻지 말 것. Firestore는 없는 문서를 읽어도
+      읽기 1회를 쓰므로, 달마다 3회 × 여러 달이면 금방 무료 한도를 태운다
+      (2026-09-08에 실제로 소진돼 팀원 화면이 429로 막혔다).
+    """
+    if store.is_firestore():
+        return fs_store.all_snapshot_meta(kind="google")
+
+    found: dict[int, dict] = {}
+    if google_sheets_writer.configured():
+        # 시트 백엔드에는 목록 질의가 없다 — 예전처럼 달마다 묻되, 시트는 쿼터
+        # 성격이 달라(분당 60회) 하루 한도에 걸리는 문제가 아니다.
+        for month in range(1, 13):
+            stamp = google_sheets_writer.frozen_at(month)
+            if stamp:
+                found[month] = {"frozen_at": stamp,
+                                "cost_markup": google_sheets_writer.snapshot_markup(month)}
+        return found
+
+    for month in range(1, 13):
+        stamp = frozen_at(month)
+        if stamp:
+            found[month] = {"frozen_at": stamp, "cost_markup": frozen_markup(month)}
+    return found
+
+
 def source_label(month: int) -> str:
     """사이드바 도움말에 보여줄 "어디서 읽었는지" 문구."""
     if store.is_firestore():

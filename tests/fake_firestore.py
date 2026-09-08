@@ -54,6 +54,11 @@ class _DocRef:
     def collection(self, name):
         return _CollRef(self._book, self._path + (name,))
 
+    @property
+    def parent(self):
+        """이 문서를 담은 컬렉션. `collection_group` 결과에서 부모 월을 찾는 데 쓴다."""
+        return _CollRef(self._book, self._path[:-1])
+
     def get(self, transaction=None):
         # 트랜잭션 안의 읽기도 같은 저장소를 본다. 직렬화는 transactional이 담당한다.
         with _LOCK:
@@ -76,8 +81,16 @@ class _DocRef:
 
 
 class _CollRef:
+    """컬렉션 참조. `parent`는 이 컬렉션을 담은 문서(최상위면 None)."""
+
     def __init__(self, book, path):
         self._book, self._path = book, path
+
+    @property
+    def parent(self):
+        """이 컬렉션을 담은 문서. `reports/8/mediameta` → `reports/8`."""
+        return _DocRef(self._book, self._path[:-1]) if len(self._path) > 1 else None
+
 
     def document(self, doc_id=None):
         if doc_id is None:
@@ -131,6 +144,20 @@ class _Batch(_Tx):
             self._commit()
 
 
+class _Group:
+    def __init__(self, book, name):
+        self._book, self._name = book, name
+
+    def stream(self):
+        with _LOCK:
+            paths = [p for p in self._book.data
+                     if len(p) >= 2 and p[-2] == self._name]
+        for path in sorted(paths):
+            self._book.reads += 1
+            yield _Snap(path, self._book.data.get(path),
+                        _DocRef(self._book, path))
+
+
 class FakeFirestore:
     def __init__(self):
         self.data: dict = {}
@@ -141,6 +168,15 @@ class FakeFirestore:
 
     def document(self, path):
         return _DocRef(self, tuple(str(path).split("/")))
+
+    def collection_group(self, name):
+        """이름이 같은 모든 컬렉션의 문서를 한 번에 훑는다.
+
+        **가짜에도 반드시 있어야 한다.** 없으면 `all_snapshot_meta`가 조용히 빈
+        dict를 돌려주고, 그걸 검증하는 테스트가 통과해 버린다 — 2026-09-08에
+        읽기 폭증을 이 경로로 고쳤으므로 회귀를 막는 유일한 테스트다.
+        """
+        return _Group(self, str(name))
 
     def transaction(self):
         return _Tx(self)

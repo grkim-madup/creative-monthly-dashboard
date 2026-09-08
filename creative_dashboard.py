@@ -46,6 +46,7 @@ from creative_data import (
     os_values,
     delta_label,
     describe_media_raw,
+    month_date_span,
     relative_change,
     scope_to_day,
     add_derived_metrics,
@@ -782,17 +783,15 @@ def _load(sid: str) -> pd.DataFrame:
 #: 고정 메타는 짧게만 캐시한다(쓰기가 있는 값에 긴 TTL은 금물 — `b92de54`).
 @st.cache_data(ttl=_MEDIA_META_TTL, show_spinner=False)
 def _media_meta() -> dict[int, dict]:
-    """{월: 고정 메타}. **월당 Firestore 읽기 1회**로 끝낸다.
+    """{월: 고정 메타}. **컬렉션 그룹 질의 한 번**으로 끝낸다.
 
-    존재·시각·행수·설정을 각각 물으면 월당 4회가 되고, 12개월을 훑는 것만으로
-    리런마다 48회다 — 화면을 열어두는 것만으로 무료 한도(읽기 5만/일)에 다가간다.
+    ⚠ 처음에는 월 1~12를 돌며 물었다. 없는 달도 읽기 1회를 쓰므로 리런마다 12회,
+      TTL 60초면 프로세스 하나당 하루 17,280회다. 배포판 둘 + 로컬이면 무료 한도
+      (읽기 5만/일)를 태운다 — **2026-09-08에 실제로 소진**돼 팀원 화면에
+      `429 Quota exceeded`가 뜨고 4·6번 블록이 통째로 안 보였다.
+      (데이터는 멀쩡했다. 읽기만 막힌 것이고 편집은 fail-closed로 잠겼다.)
     """
-    found = {}
-    for month in range(1, 13):
-        data = media_snapshot.meta(month)
-        if data:
-            found[month] = data
-    return found
+    return media_snapshot.all_meta()
 
 
 def _media_frozen_stamps() -> tuple[tuple[int, str], ...]:
@@ -812,7 +811,8 @@ def _media_frozen(sid: str, stamps: tuple) -> tuple[pd.DataFrame, tuple[int, ...
     `sid`·`stamps`는 캐시 키로만 쓴다 — 시트를 갈아끼우거나 다시 고정하면 다시 읽는다.
     """
     live = _load(sid)
-    merged, swapped = media_snapshot.apply(live)
+    # 이미 읽어 둔 메타를 넘겨, 달마다 존재 확인을 다시 묻지 않게 한다.
+    merged, swapped = media_snapshot.apply(live, known=_media_meta())
     return merged, tuple(swapped)
 
 
@@ -1044,20 +1044,27 @@ _SNAPSHOT_META_TTL = 60
 
 
 @st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
+def _google_meta() -> dict[int, dict]:
+    """{월: 구글 스냅샷 메타} — 컬렉션 그룹 질의 한 번.
+
+    예전에는 존재·시각·마크업을 **각각** 캐시된 함수로 물어 달마다 읽기 3회였다.
+    미디어 쪽 12개월 스캔과 함께 무료 한도를 태운 원인이다(2026-09-08).
+    """
+    return google_snapshot.all_meta()
+
+
 def _snapshot_exists(month: int) -> bool:
-    # 캐시가 아예 없으면 위젯 하나 건드릴 때마다 API를 다시 불러 눈에 띄게 느려진다(실측 수 초).
-    return google_snapshot.exists(month)
+    return int(month) in _google_meta()
 
 
-@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
 def _snapshot_frozen_at(month: int) -> str | None:
-    return google_snapshot.frozen_at(month)
+    return (_google_meta().get(int(month)) or {}).get("frozen_at")
 
 
-@st.cache_data(ttl=_SNAPSHOT_META_TTL, show_spinner=False)
 def _snapshot_markup(month: int) -> float | None:
     """이 달을 고정할 때 쓴 마크업. 예전 스냅샷에는 없어서 None이 나온다."""
-    return google_snapshot.frozen_markup(month)
+    value = (_google_meta().get(int(month)) or {}).get("cost_markup")
+    return float(value) if value else None
 
 
 data_card = st.sidebar.container(key="sb_data")
@@ -1170,11 +1177,15 @@ with month_slot:
     )
 
 # 시트 링크 확인은 이 한 줄로 한다 — id를 눈으로 대조할 수 있는 사람은 없다.
-with sheet_summary_slot.container():
-    if not editor_allowed:
-        # 광고주 카드에서는 이 줄이 "메타·틱톡 데이터가 어디서 왔나"의 답이다.
-        st.markdown('<div class="sb-sub">메타·틱톡</div>', unsafe_allow_html=True)
-    st.caption(describe_media_raw(raw, month))
+#
+# 광고주 화면에서는 여기서 그리지 않는다. 예전에는 `.sb-sub`(섹션 구분선 + 위아래
+# 여백 24px)에 `st.caption`(회색 10.5px) 한 줄이 카드의 전부여서 뭉개져 보였고, 바로
+# 아래 `애셋 보고서 파일`은 `st.metric`(24px 굵게)이라 같은 성격의 사실이 두 가지
+# 무게로 찍혔다. 광고주 카드는 **고정 패널과 같은 행 모양**으로 아래에서 한 번에
+# 그린다(A안, 규리님 2026-09-08).
+if editor_allowed:
+    with sheet_summary_slot.container():
+        st.caption(describe_media_raw(raw, month))
 
 # 로그인이 없으므로 브라우저 세션이 곧 편집자 신원이다
 # 편집 잠금의 소유자.
@@ -1243,8 +1254,13 @@ def _synced_google_folder(_cache_bust: int) -> str:
 # 폴더 경로 대신 '실제로 읽은 파일'을 보여준다 — 잘못된 파일을 읽었을 때 바로 알아채려면
 # 경로보다 파일 목록이 유용하다. 경로는 물음표 도움말로 옮긴다.
 with data_card:
-    st.markdown('<div class="sb-sub">구글 (별도 소스)</div>', unsafe_allow_html=True)
-    google_files_slot = st.container()
+    # 광고주 화면에는 이 구분선·metric을 쓰지 않는다(위 주석 참고) — 아래에서
+    # `데이터` 카드에 한 행으로 합쳐 그린다.
+    google_files_slot = None
+    if editor_allowed:
+        st.markdown('<div class="sb-sub">구글 (별도 소스)</div>',
+                    unsafe_allow_html=True)
+        google_files_slot = st.container()
     if editor_allowed and dropbox_source.configured():
         if st.button("Dropbox에서 다시 불러오기", key="google_refetch", width="stretch"):
             st.session_state["_google_cache_bust"] = (
@@ -1569,20 +1585,51 @@ google = pd.DataFrame()
 if not google_all.empty:
     google = creative_assets(google_all)
 
-# 사이드바에 '이번 달 실제로 읽은 파일'을 채운다(위에서 자리만 잡아둔 곳).
-with google_files_slot:
+def _viewer_data_rows() -> None:
+    """광고주 `데이터` 카드 — 아래 고정 패널과 **같은 행 모양**(A안).
+
+    시트 전체 범위(`2~9월 · 83,091행`)는 넣지 않는다. 그건 편집자가 "링크가 맞게
+    들어갔나"를 확인하려고 만든 값이고, 광고주에게 의미가 있는 것은 **이 달 것**이다.
+    폴더 경로·파일명·재로딩은 사내 운영 정보라 애초에 여기 없다.
+    """
     if google_error:
-        st.metric("애셋 보고서 파일", "읽기 실패", help=f"출처: {google_source_label}")
-        st.caption(google_error[:120])
+        google_value = "읽기 실패"
     elif google_all.empty:
-        st.metric("애셋 보고서 파일", "0개", help=f"출처: {google_source_label}")
-        st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
+        google_value = "0개 파일"
     else:
-        used_files = sorted(google_all["source_file"].dropna().unique())
-        if not editor_allowed:
-            # 폴더 경로(`google_source_label`)와 파일명은 사내 운영 정보라 뺀다.
-            st.metric("애셋 보고서 파일", f"{len(used_files)}개")
+        google_value = f"{google_all['source_file'].nunique()}개 파일"
+
+    rows = [("메타·틱톡", f"{int((raw['month'] == month).sum()):,}행"),
+            ("구글 애셋", google_value)]
+    # 며칠까지 들어온 데이터인지 — 8월은 옛 시트가 8/30까지, 새 시트가 8/31까지였다.
+    span = month_date_span(raw, month)
+    if span:
+        rows.append(("기간", span))
+
+    with sheet_summary_slot.container():
+        st.markdown(
+            '<div class="sb-rows">'
+            + "".join(f'<div class="sb-row"><span>{html.escape(label)}</span>'
+                      f'<b>{html.escape(value)}</b></div>'
+                      for label, value in rows)
+            + '</div>',
+            unsafe_allow_html=True)
+
+
+# 사이드바에 '이번 달 실제로 읽은 파일'을 채운다(위에서 자리만 잡아둔 곳).
+if not editor_allowed:
+    _viewer_data_rows()
+else:
+    with google_files_slot:
+        if google_error:
+            st.metric("애셋 보고서 파일", "읽기 실패",
+                      help=f"출처: {google_source_label}")
+            st.caption(google_error[:120])
+        elif google_all.empty:
+            st.metric("애셋 보고서 파일", "0개", help=f"출처: {google_source_label}")
+            st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
         else:
+            used_files = sorted(google_all["source_file"].dropna().unique())
             source_detail = "" if has_snapshot else " (하위 폴더까지 모두 읽습니다)"
             st.metric(
                 "애셋 보고서 파일", f"{len(used_files)}개",

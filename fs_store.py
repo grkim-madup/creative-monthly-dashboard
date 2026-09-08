@@ -546,6 +546,34 @@ def snapshot_meta(month: int, kind: str = "google") -> dict | None:
     return (snap.to_dict() or {}) if snap.exists else None
 
 
+def all_snapshot_meta(kind: str = "google") -> dict[int, dict]:
+    """{월: 메타} — **컬렉션 그룹 질의 한 번**으로 고정된 달만 가져온다.
+
+    ⚠ 월 1~12를 돌며 `snapshot_meta(m)`을 부르지 말 것. 없는 달도 읽기 1회를 쓰므로
+      리런마다 12회가 나가고, 캐시 TTL 60초면 프로세스 하나당 하루 **17,280회**다.
+      배포판 둘 + 로컬이면 무료 한도(읽기 5만/일)를 그대로 태운다 —
+      2026-09-08에 실제로 소진돼 팀원 화면에 `429 Quota exceeded`가 떴고 블록이
+      통째로 안 보였다(데이터는 멀쩡했다. 읽기만 막힌 것).
+
+    컬렉션 그룹 질의는 **돌려주는 문서 수만큼만** 과금된다 — 고정된 달이 하나면 1회다.
+    """
+    meta_name = _kind(kind)[0]
+    found: dict[int, dict] = {}
+    try:
+        for snap in client().collection_group(meta_name).stream():
+            parent = snap.reference.parent.parent      # reports/{월}
+            if parent is None:
+                continue
+            try:
+                month = int(parent.id)
+            except (TypeError, ValueError):
+                continue
+            found[month] = snap.to_dict() or {}
+    except Exception:
+        return {}
+    return found
+
+
 def snapshot_row_count(month: int, kind: str = "google") -> int | None:
     """고정된 행 수. 화면이 "무엇까지 얼려졌나"를 보여주는 데 쓴다 —
     고정 시각만으로는 8/23까지 담았는지 마감본인지 구분할 수 없다."""

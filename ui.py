@@ -1127,6 +1127,15 @@ section[data-testid="stSidebar"] h2 {
   color: var(--brand-deep); background: #e7f9f0; border-radius: 2px; padding: 2px 5px;
 }
 .freeze-rows { margin: 2px 0 0; }
+/* 광고주 `데이터` 카드도 고정 패널과 **같은 행 모양**을 쓴다(A안, 2026-09-08).
+   예전에는 섹션 구분선(.sb-sub) + st.caption(회색) + st.metric(24px)이 섞여서,
+   같은 성격의 사실이 두 가지 무게로 보이고 카드에 빈 여백만 남았다. */
+.sb-rows { margin: 2px 0 0; }
+.sb-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; line-height: 1.95; color: var(--muted);
+}
+.sb-row b { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
 .freeze-row {
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 11px; line-height: 1.95; color: var(--muted);

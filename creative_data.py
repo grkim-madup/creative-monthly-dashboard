@@ -1791,3 +1791,17 @@ def describe_media_raw(df: pd.DataFrame, month: int | None = None) -> str:
         rows = int((df["month"] == month).sum())
         text += f" (이 달 {int(month)}월 {rows:,}행)"
     return text
+
+def month_date_span(df: pd.DataFrame, month: int) -> str:
+    """그 달 데이터가 실제로 며칠까지 들어왔는지 — `8/1~8/31`.
+
+    고정 시각만으로는 마감본인지 알 수 없다(8월은 옛 시트가 8/30까지, 새 시트가
+    8/31까지였다). 광고주 화면에 이 줄이 있으면 어느 범위의 숫자인지 바로 보인다.
+    """
+    if df.empty or "date" not in df.columns or "month" not in df.columns:
+        return ""
+    dates = pd.to_datetime(df.loc[df["month"] == month, "date"], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    first, last = dates.min(), dates.max()
+    return f"{first.month}/{first.day}~{last.month}/{last.day}"

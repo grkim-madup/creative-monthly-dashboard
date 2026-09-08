@@ -35,3 +35,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — media_snapshot / app_settings 새 모듈 (2026-09-08)
 # 재시작 마커 — block_gap / strip_number_prefix / default_month (2026-09-08)
 # 재시작 마커 — topics / reconcile 새 모듈 (2026-09-08)
+# 재시작 마커 — all_snapshot_meta 읽기 예산 (2026-09-08)

@@ -79,6 +79,28 @@ def meta(month: int) -> dict | None:
             "settings": frozen_settings(month)}
 
 
+def all_meta() -> dict[int, dict]:
+    """{월: 고정 메타} — 고정된 달 전부를 **한 번에**.
+
+    ⚠ 월 1~12를 돌며 확인하지 말 것. 없는 달도 Firestore 읽기 1회를 쓴다
+      (2026-09-08에 그렇게 무료 한도를 소진해 팀원 화면이 429로 막혔다).
+    """
+    if store.is_firestore():
+        return fs_store.all_snapshot_meta(kind=_KIND)
+    if not SNAPSHOT_DIR.exists():
+        return {}
+    found: dict[int, dict] = {}
+    for path in SNAPSHOT_DIR.glob("*.parquet"):
+        try:
+            month = int(path.stem)
+        except ValueError:
+            continue
+        data = meta(month)
+        if data:
+            found[month] = data
+    return found
+
+
 def exists(month: int) -> bool:
     if store.is_firestore():
         return fs_store.snapshot_exists(month, kind=_KIND)
@@ -127,12 +149,8 @@ def source_label(month: int) -> str:
 
 
 def frozen_months() -> list[int]:
-    """고정된 달 목록. 화면이 '어느 달이 얼려졌나'를 묻는 데 쓴다.
-
-    Firestore에는 월 목록을 훑는 값싼 방법이 없어서, 데이터가 있을 수 있는 달만
-    확인한다(리포트는 월 단위이고 12개를 넘지 않는다).
-    """
-    return [month for month in range(1, 13) if exists(month)]
+    """고정된 달 목록. 컬렉션 그룹 질의 한 번으로 얻는다(`all_meta`)."""
+    return sorted(all_meta())
 
 
 def save(month: int, frame: pd.DataFrame, frozen_at: str | None = None,
@@ -179,7 +197,8 @@ def load(month: int) -> pd.DataFrame | None:
     return pd.read_parquet(target) if target.exists() else None
 
 
-def apply(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[int]]:
+def apply(raw: pd.DataFrame, known: dict | None = None,
+          ) -> tuple[pd.DataFrame, list[int]]:
     """고정된 달의 행을 스냅샷 것으로 갈아끼운다. `(프레임, 갈아끼운 달)`.
 
     라이브 시트를 나중에 갱신해도 이미 고정한 달의 숫자가 안 움직이게 하는 지점이다.
@@ -190,11 +209,15 @@ def apply(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[int]]:
     if raw is None or raw.empty or "month" not in raw.columns:
         return raw, []
 
+    # 어느 달이 고정됐는지는 **한 번만** 묻는다 — 달마다 `exists()`를 부르면
+    # 라이브 달(대부분)에서도 읽기가 1회씩 나간다.
+    frozen_set = set(known if known is not None else all_meta())
+
     swapped: list[int] = []
     pieces: list[pd.DataFrame] = []
     for month in sorted({int(m) for m in raw["month"].dropna().unique()}):
         live = raw[raw["month"] == month]
-        if not exists(month):
+        if month not in frozen_set:
             pieces.append(live)
             continue
         frozen = load(month)

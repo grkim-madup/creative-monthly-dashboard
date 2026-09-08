@@ -38,3 +38,22 @@ def test_빈_프레임():
 def test_월_컬럼이_전부_비었을_때():
     frame = pd.DataFrame({"month": [None, None]})
     assert describe_media_raw(frame) == "Media_RAW · 2행 (월 해석 실패)"
+
+
+def test_기간은_그_달_실제_범위를_말한다():
+    from creative_data import month_date_span
+    frame = pd.DataFrame({"month": [8, 8, 7],
+                          "date": ["2026-08-01", "2026-08-30", "2026-07-15"]})
+    # 옛 시트는 8/30까지, 새 시트는 8/31까지였다 — 이 줄이 그 차이를 드러낸다.
+    assert month_date_span(frame, 8) == "8/1~8/30"
+
+
+def test_기간은_그_달_데이터가_없으면_빈_문자열():
+    from creative_data import month_date_span
+    frame = pd.DataFrame({"month": [7], "date": ["2026-07-01"]})
+    assert month_date_span(frame, 8) == ""
+
+
+def test_기간은_date_컬럼이_없어도_죽지_않는다():
+    from creative_data import month_date_span
+    assert month_date_span(pd.DataFrame({"month": [8]}), 8) == ""
