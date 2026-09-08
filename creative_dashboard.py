@@ -608,14 +608,17 @@ GOOGLE_RANK_METRICS = {
 }
 
 GOOGLE_COLUMNS = [
-    "asset", "asset_type", "title_kr", "objective", "direction", "rating",
+    # ⚠ `direction`(방향)·`rating`(구글 실적 평가)은 **뺐다**(2026-09-08 규리님 요청).
+    #    `direction`은 유튜브 동영상 1,880행 중 1,489행이 비어 있고(파일명이 규격이
+    #    아니라 중문 광고 문구), `rating`은 광고주 리포트에서 쓸 데가 없었다.
+    "asset", "asset_type", "title_kr", "objective",
     "cost", "impression", "click", "CTR", "CPC",
     "total install", "CPI", "in_app_action", "인앱 CPA",
 ]
 
 GOOGLE_LABELS = {
     "asset": "소재 링크", "asset_type": "애셋 유형", "title_kr": "작품",
-    "objective": "캠페인 목적", "direction": "방향", "rating": "구글 실적 평가",
+    "objective": "캠페인 목적",
     "in_app_action": "인앱 액션",
 }
 
@@ -663,7 +666,7 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
             if title_kr and title_kr != "nan" else ""
         )
         detail = " · ".join(
-            str(row.get(key)) for key in ("asset_type", "objective", "direction")
+            str(row.get(key)) for key in ("asset_type", "objective")
             if row.get(key) and str(row.get(key)) != "nan"
         )
         meta = (
@@ -1753,7 +1756,9 @@ else:
         g_os_scope = google[google["os"] == g_os]
         g_top = aggregate_google(
             g_os_scope,
-            ["asset", "asset_type", "title_kr", "objective", "direction", "rating"],
+            # 등급·방향을 키에서 빼도 TOP10 구성과 소진 합계는 동일하다(실측
+            # 2026-09-08). 키에 남기면 같은 애셋이 등급별로 쪼개져 두 줄로 보인다.
+            ["asset", "asset_type", "title_kr", "objective"],
         )
         g_top = g_top[g_top["cost"].fillna(0) >= min_cost]
         if g_top.empty:
