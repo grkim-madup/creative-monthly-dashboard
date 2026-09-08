@@ -72,41 +72,57 @@ def test_tiny_table_does_not_pick_from_two_values():
     assert [m for m, _ in metrics] == ["CPI", "CTR"]
 
 
-def test_pick_metrics_is_the_single_source():
-    """표 색칠과 소재 카드가 **같은 함수**로 기준을 얻어야 한다.
+def test_소재_카드는_선정을_다시_계산하지_않는다():
+    """카드는 **표가 정한 결과를 받는다.** 두 곳에서 계산하면 반드시 갈린다.
 
-    예전에는 카드 쪽만 `인앱 CPA`로 고정돼 있어서, 표는 CPI·CTR로 4줄을 칠하는데
-    카드는 CPI 하나만 잡아 2개만 나왔다. 같은 화면에서 색칠과 카드가 다른 소재를
-    가리키면 어느 쪽이 맞는지 알 수 없다.
+    같은 실수를 두 번 했다:
+      ① 카드만 `인앱 CPA`로 고정돼 있어 표는 4줄을 칠하는데 카드는 2개만 나왔다.
+      ② 수기 지정을 표에만 붙였더니, 카드가 자동 선정을 그려서 **표에서 안 칠한
+         소재의 카드가 나오고 칠한 소재의 카드는 빠졌다**(2026-09-08 규리님 지적:
+         "이 옆집에는 호랑이가 산다 작품은 왜 썸네일 안 넣었어?").
+
+    ⚠ 이 테스트는 예전에 `google_pick_metrics(df)`가 진입점에 **있어야** 한다고
+      단정했다 — 카드가 자체 계산하는 구조를 정답으로 못 박고 있었던 것이다.
+      그래서 ②를 못 잡았다. 지금은 반대를 단정한다.
     """
     import pathlib
 
     # ⚠ madup.app 배포판은 진입점 이름이 `app.py`다(포털이 그걸 요구한다).
     #    파일명을 하나만 박아 두면 그쪽에서 테스트가 깨져 push가 막힌다(실제로 막혔다).
     root = pathlib.Path(__file__).resolve().parent.parent
-    entry = next((root / name for name in ("creative_dashboard.py", "app.py")
-                  if (root / name).exists()), None)
-    assert entry is not None, "진입점을 찾지 못했습니다"
-    source = entry.read_text(encoding="utf-8")
-    # 구글 경로에 지표 목록을 손으로 적어 둔 곳이 없어야 한다.
-    assert '[("CPI", False), ("인앱 CPA", False)]' not in source
-    # 표(`render_google_table`)와 카드(`render_google_material_cards`) 두 곳.
-    # 표(`render_google_table`의 `view`)와 카드(`render_google_material_cards`
-    # 의 `df`) 두 곳이 각각 이 함수로 기준을 얻는다.
-    assert "google_pick_metrics(df)" in source
-    assert "google_pick_metrics(view)" in source
+    checked = 0
+    for name in ("creative_dashboard.py", "app.py"):
+        path = root / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        # 구글 경로에 지표 목록을 손으로 적어 둔 곳이 없어야 한다.
+        assert '[("CPI", False), ("인앱 CPA", False)]' not in source, name
+        # 기준 계산은 표 한 곳(`view`)에서만.
+        assert "google_pick_metrics(view)" in source, name
+        assert "google_pick_metrics(df)" not in source, (
+            f"{name}: 카드가 선정을 다시 계산합니다 — 표에서 받아야 합니다")
+        # 카드는 표의 결정을 인자로 받는다.
+        assert "def render_google_material_cards(df: pd.DataFrame, best: dict, worst: dict)" in source, name
+        assert "render_google_material_cards(g_top, g_best, g_worst)" in source, name
+        checked += 1
+    assert checked
 
 
-def test_table_and_cards_pick_the_same_creatives():
+def test_표가_고른_것이_카드에_그대로_간다():
+    """표가 한 번 고르고 카드는 그것을 받는다 — 계산이 한 곳이라 갈릴 수가 없다.
+
+    수기 지정이 걸린 표에서도 성립해야 한다(자동 선정과 다른 소재를 가리킨다).
+    """
     from creative_data import pick_best_worst
 
     top = table(10, cpa_rows=1)
-    metrics = google_pick_metrics(top)
-    table_best, table_worst = pick_best_worst(top, metrics)
-    card_best, card_worst = pick_best_worst(top, google_pick_metrics(top))
-    assert table_best == card_best
-    assert table_worst == card_worst
-    assert len(card_best) + len(card_worst) == 4
+    best, worst = pick_best_worst(top, google_pick_metrics(top))
+    assert len(best) + len(worst) == 4
+
+    # 수기 지정처럼 **자동과 다른** 결과를 넘겨도 카드는 그것을 따라야 한다.
+    manual_best, manual_worst = {0: "CPI"}, {9: "CPI"}
+    assert manual_best != best or manual_worst != worst
 
 
 def test_top_n_is_displayed_by_spend():

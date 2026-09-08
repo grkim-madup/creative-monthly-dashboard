@@ -624,7 +624,7 @@ GOOGLE_LABELS = {
 
 
 
-def render_google_material_cards(df: pd.DataFrame) -> None:
+def render_google_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
     """구글 우수·저조 소재를 메타/틱톡과 같은 카드로 보여준다(2026-08-29).
 
     예전에는 여기에 "전체 평균(벤치마크)" 한 줄짜리 표가 있었다. 같은 자리에 표가 두 개
@@ -635,11 +635,12 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
     YouTube는 영상 ID로 썸네일 주소를 조합하고, 이미지 애셋은 URL이 곧 그림이다.
     광고주 Drive를 뒤지지 않으므로 메타/틱톡 카드보다 오히려 빠르다.
     """
-    # ⚠ **표와 같은 기준을 써야 한다.** 예전에는 여기만 `인앱 CPA`로 고정돼 있어서,
-    #   표는 CPI·CTR로 4줄을 칠하는데 카드는 CPI 하나만 잡아 **2개만 나왔다**
-    #   (규리님 지적). 같은 화면에서 색칠과 카드가 다른 소재를 가리키면 어느 쪽이
-    #   맞는지 알 수 없다 — 기준 계산은 `google_pick_metrics` 한 곳에만 둔다.
-    best, worst = pick_best_worst(df, google_pick_metrics(df))
+    # ⚠ **선정을 여기서 다시 계산하지 않는다.** 표가 정한 결과를 그대로 받는다.
+    #   같은 실수를 두 번 했다:
+    #     ① 카드만 `인앱 CPA`로 고정돼 있어 표는 4줄을 칠하는데 카드는 2개만 나왔다.
+    #     ② 수기 지정을 표에만 붙였더니 카드가 자동 선정을 그려서, 표에서 안 칠한
+    #        소재의 카드가 나오고 칠한 소재의 카드는 빠졌다(2026-09-08 규리님 지적).
+    #   기준이 두 곳에서 계산되는 구조 자체가 원인이므로, 이제 인자로만 받는다.
     if not best and not worst:
         return
 
@@ -705,7 +706,8 @@ def render_google_material_cards(df: pd.DataFrame) -> None:
 
 def render_google_table(df: pd.DataFrame, highlight: bool = True,
                         link_column: bool = True, month: int | None = None,
-                        os_name: str | None = None, rank_metric: str | None = None):
+                        os_name: str | None = None, rank_metric: str | None = None,
+                        ) -> tuple[dict, dict]:
     """구글 표 — 소재 식별자가 URL이라 링크 컬럼이 필요해서 별도 렌더러를 쓴다.
 
     강조 규칙은 매체별 TOP 소재와 동일하게 우수/저조 행 단위. 다만 구글은 Coin CVR이
@@ -771,6 +773,9 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
         note = shared_pick_note(view, best, worst, "asset", "objective")
         if note:
             status_row("info", "동일 소재 중복 선정", note)
+
+    # 카드가 **같은 결정**을 쓰도록 돌려준다 — 카드 쪽에서 다시 계산하면 표와 갈린다.
+    return best, worst
 
 
 @st.cache_data(ttl=3600, show_spinner="소재 목록 불러오는 중…")
@@ -1771,10 +1776,10 @@ else:
         g_top = g_top.sort_values(g_rank_metric, ascending=False).head(int(g_top_n))
         g_top = g_top.sort_values("cost", ascending=False).reset_index(drop=True)
         table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
-        render_google_table(g_top, month=month, os_name=g_os,
-                            rank_metric=g_rank_metric)
+        g_best, g_worst = render_google_table(
+            g_top, month=month, os_name=g_os, rank_metric=g_rank_metric)
 
-        render_google_material_cards(g_top)
+        render_google_material_cards(g_top, g_best, g_worst)
         st.markdown(
             '<div class="tbl-note">영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.</div>',
             unsafe_allow_html=True,
