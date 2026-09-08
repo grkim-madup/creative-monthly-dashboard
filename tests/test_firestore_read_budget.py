@@ -77,3 +77,41 @@ def test_고정된_달만_돌려준다(monkeypatch):
     found = media_snapshot.all_meta()
     assert sorted(found) == [8]
     assert media_snapshot.frozen_months() == [8]
+
+
+def test_잠금은_해제하면_문서를_지운다():
+    """소유자만 비우면 껍데기가 쌓이고 `read_locks`가 매번 전부 스트림한다.
+
+    2026-09-08 실측: 껍데기 32개 · 살아있는 잠금 0건 → 리런당 읽기 32회를
+    아무것도 아닌 것에 쓰고 있었다(무료 한도 소진의 절반).
+    Firestore에는 행 번호 개념이 없어 지워도 남의 쓰기가 어긋나지 않는다.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "fs_store.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+                "release_lock", "force_release_lock"):
+            body = ast.unparse(node)
+            assert "delete(" in body, f"{node.name}: 문서를 지워야 한다"
+            assert '"owner": ""' not in body, (
+                f"{node.name}: 소유자만 비우면 껍데기가 쌓인다")
+
+
+def test_껍데기_청소_창구가_있다():
+    import fs_store
+
+    assert hasattr(fs_store, "purge_released_locks")
+
+
+def test_수기_지정은_표마다_다시_읽지_않는다():
+    """한 화면에 표가 6개다 — 캐시가 없으면 같은 문서를 6번 읽는다(실측 22×6=132회)."""
+    import manual_picks
+
+    assert hasattr(manual_picks, "_CACHE")
+    assert hasattr(manual_picks, "invalidate")
+    source = (ROOT / "manual_picks.py").read_text(encoding="utf-8")
+    # 저장 직후에는 캐시를 버려야 내가 넣은 지정이 바로 보인다.
+    assert "invalidate(month)" in source
+    # 읽기 실패를 캐시하면 그 동안 자동 선정이 사람 판단을 덮는다.
+    assert 'if status != "error":' in source

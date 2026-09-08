@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import fs_store
@@ -96,16 +97,46 @@ def _write_local(month: int, data: dict[str, str]) -> None:
     os.replace(tmp, path)
 
 
-def load(month: int) -> dict[str, str]:
+#: 지정 목록 캐시. 한 화면에 표가 6개(메타·틱톡 4 + 구글 2)이고 표마다 `for_table`이
+#: 불리므로, 캐시가 없으면 **같은 문서를 표마다 다시 읽는다**(8월 실측 22건 × 6 = 132회).
+#: 강조(`highlights`)와 같은 방식이다. 쓰기가 있는 값이라 TTL을 짧게 둔다 —
+#: 남이 방금 넣은 지정이 최대 이 시간만큼 늦게 보인다(`b92de54`의 교훈).
+_CACHE_TTL = 20.0
+_CACHE: dict[int, tuple[float, dict[str, str]]] = {}
+
+
+def _cached(month: int) -> dict[str, str] | None:
+    hit = _CACHE.get(int(month))
+    if hit and (time.monotonic() - hit[0]) < _CACHE_TTL:
+        return hit[1]
+    return None
+
+
+def invalidate(month: int) -> None:
+    """저장 직후 캐시를 버린다 — 내가 넣은 지정이 바로 보여야 한다."""
+    _CACHE.pop(int(month), None)
+
+
+def load(month: int, use_cache: bool = True) -> dict[str, str]:
     """{행 키: 판정}. 없거나 읽기가 실패하면 빈 dict.
 
     ⚠ Firestore 분기가 **먼저** 와야 한다. `configured()`(시트 자격증명)를 먼저 보면,
       시트가 설정 안 된 환경에서 Firestore로 저장했을 때 **저장은 되는데 화면에는
       로컬 파일이 보인다** — `overrides`에서 계약 테스트가 잡아낸 실수다.
     """
+    if use_cache:
+        hit = _cached(month)
+        if hit is not None:
+            return hit
+
     if store.is_firestore():
         status, data, _reason = fs_store.read_picks(month)
-        return _normalize(data) if status != "error" else {}
+        found = _normalize(data) if status != "error" else {}
+        # ⚠ 읽기 실패는 캐시하지 않는다 — 실패를 "지정 없음"으로 굳히면 그 20초 동안
+        #   자동 선정이 사람 판단을 덮는다.
+        if status != "error":
+            _CACHE[int(month)] = (time.monotonic(), found)
+        return found
 
     if not google_sheets_writer.configured():
         return _read_local(month)
@@ -137,6 +168,7 @@ def save(month: int, os_name: str, rank_metric: str, ad: str,
     if verdict is not None and verdict not in VERDICTS:
         return False, f"알 수 없는 판정: {verdict}"
 
+    invalidate(month)
     if store.is_firestore():
         if verdict:
             return fs_store.write_pick(month, key, verdict)

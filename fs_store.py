@@ -179,6 +179,12 @@ def release_lock(key: str, owner: str) -> tuple[bool, str | None]:
 
     시트 시절에는 사전 확인과 쓰기가 떨어져 있어, 확인이 낡으면 남이 방금 가져간 잠금을
     지울 수 있었다. 여기서는 같은 트랜잭션 안에서 확인하고 쓴다.
+
+    ⚠ **문서를 지운다.** 예전에는 소유자만 비웠는데(시트 시절 묘비 규칙을 그대로 옮긴
+      것이다), Firestore에는 행 번호라는 개념이 없어 지워도 남의 쓰기가 어긋나지 않는다.
+      비워만 두면 껍데기가 쌓이고 `read_locks`가 **매번 전부 스트림**한다 —
+      2026-09-08 실측으로 32개까지 쌓여 리런당 읽기 32회를 살아있는 잠금 0건에
+      쓰고 있었다(무료 한도 소진 사고의 절반이 이것이었다).
     """
     from google.cloud import firestore
 
@@ -188,7 +194,7 @@ def release_lock(key: str, owner: str) -> tuple[bool, str | None]:
         data = (snap.to_dict() or {}) if snap.exists else {}
         if str(data.get("owner") or "") != owner:
             return False                   # 내 것이 아니다(이미 풀렸거나 뺏겼다)
-        tx.set(ref, {"owner": "", "acquired_at": "", "touched_at": ""})
+        tx.delete(ref)
         return True
 
     try:
@@ -200,14 +206,35 @@ def release_lock(key: str, owner: str) -> tuple[bool, str | None]:
 
 
 def force_release_lock(key: str) -> tuple[bool, str | None]:
-    """소유자와 무관하게 푼다(강제 해제·테스트 정리용)."""
+    """소유자와 무관하게 푼다(강제 해제·테스트 정리용). 문서를 지운다 —
+    `release_lock`과 같은 이유(껍데기가 쌓이면 읽기가 늘어난다)."""
     try:
-        client().collection(LOCKS).document(key).set(
-            {"owner": "", "acquired_at": "", "touched_at": ""}
-        )
+        client().collection(LOCKS).document(key).delete()
         return True, None
     except Exception as error:  # noqa: BLE001
         return False, f"{type(error).__name__}: {error}"
+
+
+def purge_released_locks() -> tuple[int, str | None]:
+    """소유자가 없는 잠금 껍데기를 지운다. `(지운 수, 실패 이유)`.
+
+    예전 `release_lock`이 소유자만 비워서 껍데기가 쌓였고, `read_locks`가 매번
+    전부 스트림했다(2026-09-08 실측 32개 · 살아있는 잠금 0건). 지금은 해제할 때
+    문서를 지우므로 새로 쌓이지 않지만, 이미 쌓인 것과 죽은 프로세스의 잔해를
+    치우는 창구는 남겨 둔다.
+
+    ⚠ **소유자가 있는 문서는 건드리지 않는다** — 지금 편집 중인 사람의 잠금이다.
+    """
+    try:
+        removed = 0
+        for snap in client().collection(LOCKS).stream():
+            if str((snap.to_dict() or {}).get("owner") or ""):
+                continue
+            snap.reference.delete()
+            removed += 1
+        return removed, None
+    except Exception as error:  # noqa: BLE001
+        return 0, f"{type(error).__name__}: {error}"
 
 
 # ---------------------------------------------------------------------------
