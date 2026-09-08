@@ -656,23 +656,73 @@ PICK_CANDIDATE_SHARE = 0.30
 BACK_PICK_CANDIDATES = [("D0 coin CVR", True), ("CTR", True)]
 
 
-def pick_metrics_for(table: pd.DataFrame, min_coverage: float = 0.5,
-                     ) -> list[tuple[str, bool]]:
-    """이 표에서 실제로 쓸 수 있는 선정 기준 두 개(앞단 CPI + 뒷단).
+def metric_spread(table: pd.DataFrame, column: str) -> float:
+    """이 표에서 그 지표가 실제로 갈리는 폭. 비율은 **%p**로 돌려준다.
 
-    구글 표의 `google_pick_metrics`와 같은 발상이다 — 값이 없는 지표로 뽑으면
-    "이 표에서 가장 좋은 소재"가 아무 뜻이 없어진다.
+    커버리지(값이 있는 행 수)만으로는 부족하다 — 구글 iOS 표의 CTR은 열 줄 모두
+    값이 있는데 0.27~0.86%로 **0.59%p** 차이뿐이다. 그걸로 우수/저조를 가르면
+    아무 뜻이 없다(규리님은 그 표에서 CTR을 쓰지 않았다).
     """
-    metrics: list[tuple[str, bool]] = [("CPI", False)]
+    if table is None or column not in getattr(table, "columns", []):
+        return 0.0
+    values = pd.to_numeric(table[column], errors="coerce").dropna()
+    values = values[values > 0]
+    if len(values) < 2:
+        return 0.0
+    gap = float(values.max() - values.min())
+    # 비율은 소수로 저장된다(CTR 0.0061 = 0.61%) — %p로 환산해 문턱과 비교한다.
+    return gap * 100 if (column in RATIO_METRICS and values.max() <= 1.5) else gap
+
+
+def _covered(table: pd.DataFrame, column: str, min_coverage: float) -> bool:
+    if column not in getattr(table, "columns", []):
+        return False
+    need = max(2, int(len(table) * min_coverage))
+    return int(pd.to_numeric(table[column], errors="coerce").gt(0).sum()) >= need
+
+
+def pick_metrics_for(table: pd.DataFrame, min_coverage: float = 0.5,
+                     money_candidates: list[tuple[str, bool]] | None = None,
+                     ) -> list[tuple[str, bool]]:
+    """이 표에서 실제로 쓸 수 있는 선정 기준 **두 개**(앞단 CPI + 보조).
+
+    규칙(2026-09-08, 팀원 픽 22건에 대고 실측해 정한 것):
+      1. 주 지표는 항상 `CPI` — 돈 지표다.
+      2. 보조는 **돈 지표 후보**(구글의 `인앱 CPA`)가 커버리지를 넘으면 그것.
+      3. 아니면 비율 후보 중 **스프레드가 가장 큰 것**(문턱 `MEANINGFUL_RATIO_POINTS`).
+      4. 어느 것도 못 쓰면 **`CPI`를 한 번 더** 넣는다.
+
+    ⚠ 4번이 핵심이다. 예전에는 보조가 없으면 지표가 하나뿐이라 **슬롯이 1:1로
+      줄었다** — 우수·저조가 각 1줄만 칠해진다. 실측에서 구글 표가 그 경우였고,
+      재현율이 3/5에서 2/5로 **떨어졌다**. 지표 개수와 칠할 줄 수는 별개다.
+
+    실측 재현율(팀원 픽 22건): 커버리지만 볼 때 15/22(68%) · 정밀 75%
+    → 이 규칙 **16/22(73%) · 정밀 80%**. 칠하는 줄 수는 그대로(20).
+    도구: `tools/analyze_pick_rules.py`.
+    """
+    primary: tuple[str, bool] = ("CPI", False)
+    metrics: list[tuple[str, bool]] = [primary]
     if table is None or table.empty:
         return metrics
-    need = max(2, int(len(table) * min_coverage))
-    for column, higher_is_better in BACK_PICK_CANDIDATES:
-        if column not in table.columns:
-            continue
-        if int(pd.to_numeric(table[column], errors="coerce").gt(0).sum()) >= need:
+
+    # ② 돈 지표 보조 — 있으면 비율보다 우선한다(뒷단 성과가 곧 매출이다).
+    for column, higher_is_better in (money_candidates or []):
+        if _covered(table, column, min_coverage):
             metrics.append((column, higher_is_better))
-            break
+            return metrics
+
+    # ③ 비율 보조 — 커버리지 + 스프레드를 함께 본다. 가장 크게 갈리는 것을 쓴다.
+    best: tuple[str, bool] | None = None
+    best_spread = 0.0
+    for column, higher_is_better in BACK_PICK_CANDIDATES:
+        if not _covered(table, column, min_coverage):
+            continue
+        gap = metric_spread(table, column)
+        if gap >= MEANINGFUL_RATIO_POINTS and gap > best_spread:
+            best, best_spread = (column, higher_is_better), gap
+
+    # ④ 쓸 보조가 없으면 CPI를 한 번 더 — 슬롯을 2:2로 유지한다.
+    metrics.append(best or primary)
     return metrics
 
 
@@ -1653,18 +1703,11 @@ def google_pick_metrics(table: pd.DataFrame,
     지표로 뽑으면 나머지 6개는 애초에 비교 대상이 아니었는데도 "이 표에서 가장
     나쁜 소재"처럼 읽힌다.
     """
-    metrics = [GOOGLE_PICK_PRIMARY]
-    if table is None or table.empty:
-        return metrics
-    need = max(2, int(len(table) * min_coverage))
-    for column, higher_is_better in GOOGLE_PICK_SECONDARY:
-        if column not in table.columns:
-            continue
-        usable = int(pd.to_numeric(table[column], errors="coerce").gt(0).sum())
-        if usable >= need:
-            metrics.append((column, higher_is_better))
-            break
-    return metrics
+    # 메타·틱톡과 **같은 함수**를 쓴다(2026-09-08). 다른 점은 돈 지표 보조가
+    # `인앱 CPA` 하나 더 있다는 것뿐이다 — 예전에는 로직이 두 벌이라 한쪽만
+    # 고치면 갈렸다(CLAUDE.md에 "사실상 중복 구현"으로 적혀 있었다).
+    return pick_metrics_for(table, min_coverage,
+                            money_candidates=[GOOGLE_PICK_SECONDARY[0]])
 
 
 #: 소재명에서 규격 자리에 들어가는 "여러 규격을 묶어 돌렸다"는 표기.

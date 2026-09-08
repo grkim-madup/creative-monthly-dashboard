@@ -95,18 +95,38 @@ def test_코인_전환이_없는_표는_CTR로_뽑는다():
     assert pick_metrics_for(df) == [("CPI", False), ("CTR", True)]
 
 
-def test_코인_전환이_있는_표는_코인으로_뽑는다():
+def test_코인_전환이_갈리면_코인으로_뽑는다():
+    """⚠ 값이 **있는 것**만으로는 부족하다 — 값이 전부 같으면 갈리지 않는다.
+    예전 픽스처는 코인 CVR이 6줄 모두 3.0(스프레드 0)이었는데도 통과했다."""
     df = table([
         {"ad": f"a{i}", "cost": 1_000_000, "CPI": 2_000,
-         "D0 coin CVR": 3.0, "CTR": 10.0}
+         "D0 coin CVR": 1.0 + i * 1.5, "CTR": 10.0}
         for i in range(6)
     ])
     assert pick_metrics_for(df) == [("CPI", False), ("D0 coin CVR", True)]
 
 
-def test_지표가_아예_없으면_CPI만_남는다():
-    df = table([{"ad": "a", "cost": 1_000_000, "CPI": 2_000}])
-    assert pick_metrics_for(df) == [("CPI", False)]
+def test_스프레드가_큰_쪽을_보조로_고른다():
+    """실측: AOS·인스톨은 코인이 0.01%p라 CTR(28%p)을, iOS는 코인(6.8%p)을 썼다."""
+    coin_wins = table([
+        {"ad": f"a{i}", "cost": 1e6, "CPI": 2000,
+         "D0 coin CVR": 1.0 + i * 1.4, "CTR": 10.0 + i * 0.1}
+        for i in range(6)])
+    assert pick_metrics_for(coin_wins)[1][0] == "D0 coin CVR"
+    ctr_wins = table([
+        {"ad": f"a{i}", "cost": 1e6, "CPI": 2000,
+         "D0 coin CVR": 1.0 + i * 0.01, "CTR": 6.0 + i * 5.0}
+        for i in range(6)])
+    assert pick_metrics_for(ctr_wins)[1][0] == "CTR"
+
+
+def test_쓸_보조가_없으면_CPI를_두_번_넣는다():
+    """지표 개수와 칠할 줄 수는 별개다 — 보조가 없어도 슬롯은 2:2를 유지한다."""
+    df = table([{"ad": f"a{i}", "cost": 1_000_000, "CPI": 2_000 + i * 100}
+                for i in range(6)])
+    assert pick_metrics_for(df) == [("CPI", False), ("CPI", False)]
+    best, worst = pick_best_worst(df, pick_metrics_for(df))
+    assert len(best) == 2 and len(worst) == 2
 
 
 def test_빈_표에도_안전하다():

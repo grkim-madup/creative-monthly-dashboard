@@ -15,11 +15,18 @@ from creative_data import (
 )
 
 
-def table(rows: int, cpa_rows: int = 0) -> pd.DataFrame:
-    """구글 표 흉내. `cpa_rows`개에만 인앱 CPA가 있다."""
+def table(rows: int, cpa_rows: int = 0, ctr_step: float = 0.005) -> pd.DataFrame:
+    """구글 표 흉내. `cpa_rows`개에만 인앱 CPA가 있다.
+
+    ⚠ CTR 간격을 실제 표 수준으로 벌려 둔다. 예전 픽스처는 `0.001` 간격이라
+      10줄 스프레드가 **0.9%p**였고, 스프레드 문턱(1%p)이 생기자 "CTR을 쓴다"는
+      단정이 전부 깨졌다 — 픽스처가 비현실적이었던 것이다(실제 AOS 표는 28%p).
+      스프레드가 문턱 미달일 때의 동작은 `test_스프레드가_작으면_CPI를_두_번`에서
+      따로 단정한다.
+    """
     return pd.DataFrame([
         {"asset": f"a{i}", "media": "Google", "cost": 1_000_000 - i * 10_000,
-         "CPI": 1000 + i * 100, "CTR": 0.01 + i * 0.001,
+         "CPI": 1000 + i * 100, "CTR": 0.01 + i * ctr_step,
          "인앱 CPA": (5000 + i * 100) if i < cpa_rows else None}
         for i in range(rows)
     ])
@@ -70,6 +77,21 @@ def test_tiny_table_does_not_pick_from_two_values():
     """값이 2개뿐인 지표로 뽑으면 그 둘이 자동으로 best/worst가 되어 의미가 없다."""
     metrics = google_pick_metrics(table(10, cpa_rows=2))
     assert [m for m, _ in metrics] == ["CPI", "CTR"]
+
+
+def test_스프레드가_작으면_CPI를_두_번():
+    """열 줄 모두 값이 있어도 **갈리지 않으면** 쓰지 않는다.
+
+    구글 iOS 실측: CTR 0.27~0.86%(0.59%p). 규리님은 그 표에서 CTR을 쓰지 않고
+    CPI만 봤다(저조 = CPI 최고 2개 정확히). 커버리지만 보면 이걸 못 잡는다.
+
+    ⚠ 보조가 없다고 지표를 하나만 두면 **슬롯이 1:1로 줄어** 우수·저조가 각 한 줄만
+      칠해진다. 실측에서 재현율이 3/5 → 2/5로 떨어졌다. 그래서 CPI를 한 번 더 넣는다.
+    """
+    flat = table(10, ctr_step=0.0005)          # 스프레드 0.45%p
+    assert [m for m, _ in google_pick_metrics(flat)] == ["CPI", "CPI"]
+    best, worst = pick_best_worst(flat, google_pick_metrics(flat))
+    assert len(best) == 2 and len(worst) == 2
 
 
 def test_소재_카드는_선정을_다시_계산하지_않는다():

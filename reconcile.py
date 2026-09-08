@@ -281,11 +281,20 @@ def waterfall(fingerprint: dict, parsed: pd.DataFrame, scope: pd.DataFrame,
     total = _totals(named, rows_column="rows")
     step = _step("③ − 소재명 빈 행", total, steps[-1],
                  "`최종 AD`가 비어 소재 단위로 집계할 수 없는 행", VERDICT_INTENDED)
-    if step["d_install"] != 0 or step["d_cost"] != 0:
-        # 소진도 설치도 0이면 버려도 잃는 게 없다. 값이 실려 있으면 그 값이 화면에
-        # 영영 안 들어온다는 뜻이라 사람이 판단해야 한다(8월 설치 11,047건).
+    # ✅ 2026-09-08 규리님 확정: **소진액과 소재명이 함께 찍힌 소재만** 집계한다.
+    #    즉 소재명이 빈 행은 설치를 들고 있어도 제외하는 것이 의도된 기준이다
+    #    (8월 145행 · 설치 11,340건 · 소진 ₩0). 이건 판단이 끝난 항목이라
+    #    `확인 필요`로 띄우지 않는다 — 매달 같은 경고가 뜨면 정작 새로 생긴
+    #    문제를 못 알아본다.
+    #
+    #    ⚠ 다만 **소진이 실려 있는데 소재명이 빈 행**은 다르다. 그건 집행비가
+    #      화면에서 사라지는 것이라 사람이 봐야 한다.
+    if step["d_cost"] != 0:
         step["verdict"] = VERDICT_CHECK
-        step["reason"] += " — 버려지는 값이 있습니다"
+        step["reason"] += " — 소진액이 실린 행이 버려집니다"
+    elif step["d_install"] != 0:
+        step["reason"] += (f" — 설치 {abs(step['d_install']):,.0f}건이 함께 빠집니다"
+                           " (소진 ₩0 · 규리님 확정 기준)")
     steps.append(step)
 
     ua_kept = named[named["ua_type"].isin(ua)] if len(named) else named
@@ -393,9 +402,16 @@ def cohort_orphans(fingerprint: dict, parsed: pd.DataFrame, month: int) -> list[
 
 
 def has_issues(steps: list[dict], gap: dict, orphans: list[dict]) -> bool:
+    """`확인 필요`가 하나라도 있는가.
+
+    ⚠ `gap["unnamed_install"]`(소재명 빈 행의 설치)은 **더 이상 이슈가 아니다.**
+      2026-09-08 규리님 확정: *"소진액과 소재명이 찍힌 소재 대상으로 인스톨을
+      집계하자."* 즉 그 설치를 빼는 것이 의도된 기준이다. 판단이 끝난 항목을
+      매달 경고로 띄우면, 정작 **새로 생긴** 문제를 못 알아본다.
+      단계 ③이 소진이 실린 채 버려질 때만 `확인 필요`를 올린다.
+    """
     return (any(s["verdict"] == VERDICT_CHECK for s in steps)
-            or bool(orphans)
-            or bool(gap.get("unnamed_install")))
+            or bool(orphans))
 
 
 def summary_line(steps: list[dict]) -> str:

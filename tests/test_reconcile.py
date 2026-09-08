@@ -168,12 +168,29 @@ def test_대상_외_매체는_의도된_제외():
     assert "Apple Search Ads" in step["reason"]
 
 
-def test_소재명_빈_행이_값을_들고_있으면_확인_필요():
-    """8월에 설치 11,047건이 이 경로로 사라졌다 — 조용히 넘기면 안 되는 항목이다."""
+def test_소재명_빈_행의_설치는_의도된_제외다():
+    """✅ 2026-09-08 규리님 확정: *"소진액과 소재명이 찍힌 소재 대상으로 인스톨을
+    집계하자."* → 소재명이 빈 행의 설치를 빼는 것이 **기준**이다.
+
+    ⚠ 이 테스트는 예전에 `확인 필요`를 정답으로 못 박고 있었다. 판단이 끝난 항목을
+      매달 경고로 띄우면 정작 새로 생긴 문제를 못 알아본다.
+    """
     fp, parsed, scope = full_case()
     step = steps_by_label(reconcile.waterfall(fp, parsed, scope, 8))["③"]
-    assert step["verdict"] == reconcile.VERDICT_CHECK
+    assert step["verdict"] == reconcile.VERDICT_INTENDED
     assert step["d_install"] == -40
+    assert "설치 40건" in step["reason"]
+
+
+def test_소재명_빈_행에_소진이_실려_있으면_확인_필요():
+    """설치와 달리 **소진은** 화면에서 사라지면 안 된다 — 그건 집행비다."""
+    values = sheet([{"cost": "1000"},
+                    {"최종 AD": "", "cost": "500", "total install": "3"}])
+    fp = reconcile.build_fingerprint(values)
+    parsed = parsed_frame([{"cost": 1000.0}])
+    step = steps_by_label(reconcile.waterfall(fp, parsed, parsed, 8))["③"]
+    assert step["verdict"] == reconcile.VERDICT_CHECK
+    assert "소진액이 실린" in step["reason"]
 
 
 def test_소재명_빈_행이_비어_있으면_의도된_제외():
@@ -332,7 +349,9 @@ def test_설명되지_않는_차이가_있으면_경고한다():
 @pytest.mark.parametrize("orphans, unnamed, expected", [
     ([], 0, False),
     ([{"media": "Meta", "ad": "x", "install": 1}], 0, True),
-    ([], 40, True),
+    # ✅ 소재명 빈 행의 설치는 **확정된 기준**이라 더 이상 이슈가 아니다
+    #    (2026-09-08 규리님). 예전에는 이 줄이 `True`였다.
+    ([], 40, False),
 ])
 def test_확인_필요_판정(orphans, unnamed, expected):
     steps = [{"verdict": reconcile.VERDICT_INTENDED}]
