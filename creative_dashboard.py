@@ -4287,7 +4287,12 @@ _next_step_blocks_section()
 #
 # **광고주에게는 보이지 않는다** — 사내 진단 도구다. 최하단 각주 바로 위에 두는 이유는
 # 폭이 필요해서다(사이드바는 300px라 7×5 표가 안 들어간다).
-if editor_allowed:
+#
+# ⚠ `editor_allowed`만으로는 부족하다 — 그건 **권한**(madup 계정)이고 보기 모드 여부가
+#   아니다. 규리님은 편집 권한이 있으니 보기 모드에서도 이 패널이 보였고, 그 화면을
+#   광고주에게 공유한다(2026-09-08 지적). `edit_mode`를 함께 본다 —
+#   수동 분류 패널(`sec4_override`)·편집자 안내와 같은 규칙이다.
+if editor_allowed and edit_mode:
     _fingerprint = reconcile.load_fingerprint(sheet_id)
     with st.container(key="recon_panel"):
         if _fingerprint is None:
