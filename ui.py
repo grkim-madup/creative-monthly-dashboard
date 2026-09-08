@@ -788,6 +788,35 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-pv_"] { padding: 0 !important; border: none !important; }
 
+/* 우수·저조 수기 지정(시안 A, 2026-09-09 승인) — 카드가 아니라 섹션과 같은 문법으로.
+   `st.expander`를 쓰지 않는 이유: 편집 모드에서만 뜨는 패널이므로, 그때는
+   "자동으로 무엇이 뽑혔고 기준이 무엇인지"가 클릭 없이 바로 보여야 한다. */
+[class*="st-key-mp_"] {
+  border-top: 1.5px solid var(--ink) !important;
+  padding: 10px 0 2px !important; margin: 14px 0 6px;
+}
+.mp-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+.mp-t { font-size: 13px; font-weight: 700; color: var(--ink); }
+.mp-badge {
+  font-size: 10.5px; font-weight: 700; border-radius: 3px; padding: 3px 8px;
+  background: var(--line-soft); color: var(--ink-2);
+}
+/* 수기 지정이 살아 있으면 자동 선정이 통째로 버려진다 — 상태가 바뀐 것이므로
+   조용한 회색이 아니라 주의 톤으로 찍는다. */
+.mp-badge.is-manual { background: #fdf8ec; color: #8a5d05; border: 1px solid #d9a021; }
+.mp-basis { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+.mp-lab { font-size: 11px; font-weight: 700; padding-top: 7px; letter-spacing: .04em; }
+.mp-lab.is-best { color: #04703a; }
+.mp-lab.is-worst { color: #9b2c2c; }
+.mp-lab span { display: block; font-weight: 400; color: var(--faint); font-size: 10px; letter-spacing: 0; }
+/* 칩 색은 표에서 실제로 칠하는 색과 같아야 한다 — 다르면 "이 지정이 그 색인가"를 다시 확인해야 한다. */
+[class*="st-key-mpbest_"] [data-baseweb="tag"] {
+  background: #eefaf3 !important; border-color: #00b855 !important; color: #04703a !important;
+}
+[class*="st-key-mpworst_"] [data-baseweb="tag"] {
+  background: #fdf1f1 !important; border-color: #d95757 !important; color: #9b2c2c !important;
+}
+
 /* 필터가 실제로 무엇을 걸고 있는지 한 줄로 — 값 없는 칩은 아무 일도 하지 않는다. */
 .pv-state { font-size: 11.5px; color: var(--muted); margin: 3px 0 2px 2px; }
 .pv-state b { color: var(--ink); font-weight: 600; }

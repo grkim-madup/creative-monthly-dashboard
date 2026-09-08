@@ -930,37 +930,91 @@ def render_material_cards(df: pd.DataFrame, best: dict, worst: dict) -> None:
     st.markdown(f'<div class="mat-cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
+def google_pick_label(row) -> str:
+    """구글 선택 목록에 보여줄 한 줄. 식별자가 URL이라 **그대로 쓰면 못 읽는다.**
+
+    `작품 · 애셋 유형 · 소진액` — 표에서 그 줄을 눈으로 찾을 수 있는 최소 정보다
+    (같은 작품이 네 줄인 표가 실제로 있어서 소진액이 없으면 특정되지 않는다).
+    """
+    # ⚠ `x or ""`로 비우면 안 된다 — **`NaN`은 파이썬에서 참**이라 `str(nan)`이
+    #   그대로 `"nan"`으로 찍힌다(테스트가 잡았다: `nan · 이미지`).
+    def text(field: str) -> str:
+        value = row.get(field)
+        return str(value).strip() if pd.notna(value) else ""
+
+    title = text("title_kr")
+    kind = text("asset_type").replace("YouTube ", "")
+    cost = row.get("cost")
+    parts = [p for p in (title or "(작품 없음)", kind) if p]
+    if pd.notna(cost):
+        parts.append(f"₩{float(cost):,.0f}")
+    return " · ".join(parts)
+
+
 def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
-                       rank_metric: str) -> None:
+                       rank_metric: str, id_column: str = "ad",
+                       label_fn=None, title: str | None = None) -> None:
     """이 표의 우수·저조를 손으로 고른다. **편집 모드에서만 보인다.**
 
-    지정이 하나라도 있으면 그 표의 자동 선정은 통째로 버린다(`manual_picks.apply`) —
-    섞으면 5~6줄이 칠해져서 무엇이 사람 판단인지 알 수 없다.
+    자동 선정이 기본이고 이건 **덮어쓰기**다(규리님: *"너가 자동으로 선택하되, 내가
+    맘에 안 들 땐 수기로 수정도 가능한 거야"*). 지정이 하나라도 있으면 그 표의 자동
+    선정은 통째로 버린다(`manual_picks.apply`) — 섞으면 5~6줄이 칠해져서 무엇이
+    사람 판단인지 알 수 없다.
+
+    `id_column`은 표마다 다르다 — 메타·틱톡은 소재명(`ad`), 구글은 애셋 URL(`asset`).
+    `label_fn`은 그 식별자를 사람이 읽을 수 있는 문구로 바꾼다(구글 URL 때문에 필요하다).
     """
-    if table.empty or "ad" not in table.columns:
+    if table.empty or id_column not in table.columns:
         return
     key = f"{month}_{os_name}_{rank_metric}"
     current = manual_picks.for_table(month, os_name, rank_metric)
-    options = [str(a) for a in table["ad"]]
+    options = [str(a) for a in table[id_column]]
+    # 라벨은 **보여주기 전용**이다. 저장 키는 언제나 식별자(`options`)다 —
+    # 라벨로 저장하면 소진액이 바뀌는 다음 달에 지정이 통째로 끊긴다.
+    labels = {}
+    if label_fn is not None:
+        for ident, (_, row) in zip(options, table.iterrows()):
+            labels[ident] = label_fn(row)
 
-    with st.expander(f"우수·저조 수기 지정 ({os_name})",
-                     expanded=bool(current)):
-        st.markdown('<div class="pv-lab">우수 <span>지정하면 이 표의 자동 선정은 '
-                    "쓰지 않는다</span></div>", unsafe_allow_html=True)
-        best = st.multiselect(
-            "우수", options,
-            default=[a for a in options if current.get(a) == manual_picks.BEST],
-            key=f"pickbest_{key}", label_visibility="collapsed",
-            placeholder="비우면 자동 선정을 씁니다",
-        )
-        st.markdown('<div class="pv-lab">저조</div>', unsafe_allow_html=True)
-        worst = st.multiselect(
-            "저조", [a for a in options if a not in best],
-            default=[a for a in options
-                     if current.get(a) == manual_picks.WORST and a not in best],
-            key=f"pickworst_{key}", label_visibility="collapsed",
-            placeholder="비우면 자동 선정을 씁니다",
-        )
+    def show(ident: str) -> str:
+        return labels.get(ident, ident)
+
+    # 실제로 쓰인 선정 기준을 헤더에 찍는다 — 표마다 다르다(`pick_metrics_for`).
+    # 이게 없으면 "왜 이게 우수야"를 표만 보고는 알 수 없다.
+    basis = " · ".join(METRIC_LABELS.get(column, column)
+                       for column, _ in pick_metrics_for(table))
+
+    with st.container(key=f"mp_{key}"):
+        st.markdown(
+            '<div class="mp-head">'
+            f'<span class="mp-t">{html.escape(title or f"우수·저조 수기 지정 ({os_name})")}</span>'
+            + ('<span class="mp-badge is-manual">'
+               f"수기 {len(current)}건 · 자동 선정 안 씀</span>"
+               if current else '<span class="mp-badge">자동 선정 사용 중</span>')
+            + (f'<span class="mp-basis">{html.escape(basis)} 기준</span>' if basis else "")
+            + "</div>", unsafe_allow_html=True)
+
+        lab, field = st.columns([1, 9], vertical_alignment="top")
+        lab.markdown('<div class="mp-lab is-best">우수<span>초록</span></div>',
+                     unsafe_allow_html=True)
+        with field.container(key=f"mpbest_{key}"):
+            best = st.multiselect(
+                "우수", options,
+                default=[a for a in options if current.get(a) == manual_picks.BEST],
+                key=f"pickbest_{key}", label_visibility="collapsed",
+                placeholder="비우면 자동 선정을 씁니다", format_func=show,
+            )
+        lab, field = st.columns([1, 9], vertical_alignment="top")
+        lab.markdown('<div class="mp-lab is-worst">저조<span>붉은색</span></div>',
+                     unsafe_allow_html=True)
+        with field.container(key=f"mpworst_{key}"):
+            worst = st.multiselect(
+                "저조", [a for a in options if a not in best],
+                default=[a for a in options
+                         if current.get(a) == manual_picks.WORST and a not in best],
+                key=f"pickworst_{key}", label_visibility="collapsed",
+                placeholder="비우면 자동 선정을 씁니다", format_func=show,
+            )
         if st.button("지정 저장", key=f"picksave_{key}"):
             wanted = {a: manual_picks.BEST for a in best}
             wanted.update({a: manual_picks.WORST for a in worst})
@@ -1780,6 +1834,11 @@ else:
             g_top, month=month, os_name=g_os, rank_metric=g_rank_metric)
 
         render_google_material_cards(g_top, g_best, g_worst)
+        if edit_mode:
+            manual_pick_editor(
+                g_top, month, manual_picks.google_os(g_os), g_rank_metric,
+                id_column="asset", label_fn=google_pick_label,
+                title=f"우수·저조 수기 지정 (구글 {g_os})")
         st.markdown(
             '<div class="tbl-note">영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.</div>',
             unsafe_allow_html=True,
