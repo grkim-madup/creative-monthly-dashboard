@@ -57,10 +57,19 @@ def _no_real_sheet(monkeypatch):
     monkeypatch.setattr(fs_store, "client", _forbidden_fs)
     monkeypatch.setattr(fs_store, "configured", lambda: False)
     monkeypatch.setattr(fs_store, "_creds", _forbidden_fs)
-    # 셸에 STORAGE_BACKEND=firestore가 켜져 있어도 테스트는 시트 기본값으로 돈다.
-    # `store.backend`를 덮지 않고 **입력(환경변수)을 지운다** — 덮으면 그 함수 자체를
-    # 검증하는 테스트가 무력해진다.
+    # 셸에 STORAGE_BACKEND=firestore가 켜져 있어도, 또 개발 PC의 `secrets.toml`에
+    # 그 값이 들어 있어도(2026-09-09부터 그렇다 — 로컬 화면이 정본과 같은 저장소를
+    # 봐야 해서), 테스트는 시트 기본값으로 돈다.
+    #
+    # `store.backend`를 덮지 않고 **입력을 지운다** — 덮으면 그 함수 자체를 검증하는
+    # 테스트가 무력해진다. 입력은 두 갈래(환경변수 + Streamlit secrets)이므로 둘 다
+    # 막아야 한다. 예전에는 환경변수만 지웠고, `secrets.toml`에 값이 생기자 이 가드가
+    # 통째로 걸려 1,100개가 전부 에러가 났다.
     monkeypatch.delenv("STORAGE_BACKEND", raising=False)
+    _real_secret = google_sheets_writer._secret
+    monkeypatch.setattr(
+        google_sheets_writer, "_secret",
+        lambda name: None if name == "STORAGE_BACKEND" else _real_secret(name))
     assert store.backend() == store.SHEETS
 
     # 모듈 전역 캐시는 테스트 사이에 그대로 남아, 앞 테스트의 상태가 뒤 테스트의 결과를

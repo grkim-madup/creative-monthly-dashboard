@@ -22,6 +22,7 @@ import streamlit as st
 
 import app_settings
 import auth
+import backup
 import blocks as report_blocks
 import drive_materials
 import youtube_thumbs
@@ -951,6 +952,24 @@ def google_pick_label(row) -> str:
     return " · ".join(parts)
 
 
+def ad_pick_label(row) -> str:
+    """소재명을 칩에 넣을 짧은 라벨로 — `10398 · GIF_Madup_Visual_1X1_TITLE2_new`.
+
+    왜 필요한가: 칩은 폭이 좁아 **앞에서** 잘린다. 그런데 소재명은 앞이
+    `코드_작품명_`으로 거의 같고 **구분 정보가 뒤에** 있다. 그래서 잘린 칩 두 개가
+    `10398_劍術名門的…`로 똑같이 보이는데 실제로는 GIF와 Carousel이었다
+    (2026-09-09 규리님 스크린샷에서 드러났다).
+
+    작품명(한자)을 빼고 코드 + 나머지를 남긴다. 형식이 다른 이름은 그대로 둔다 —
+    추측해서 자르면 엉뚱한 데가 사라진다.
+    """
+    name = str(row.get("ad") or "").strip()
+    parts = name.split("_")
+    if len(parts) < 3:
+        return name
+    return f"{parts[0]} · " + "_".join(parts[2:])
+
+
 def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
                        rank_metric: str, id_column: str = "ad",
                        label_fn=None, title: str | None = None) -> None:
@@ -984,55 +1003,75 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
     basis = " · ".join(METRIC_LABELS.get(column, column)
                        for column, _ in pick_metrics_for(table))
 
-    with st.container(key=f"mp_{key}"):
-        st.markdown(
-            '<div class="mp-head">'
-            f'<span class="mp-t">{html.escape(title or f"우수·저조 수기 지정 ({os_name})")}</span>'
-            + ('<span class="mp-badge is-manual">'
-               f"수기 {len(current)}건 · 자동 선정 안 씀</span>"
-               if current else '<span class="mp-badge">자동 선정 사용 중</span>')
-            + (f'<span class="mp-basis">{html.escape(basis)} 기준</span>' if basis else "")
-            + "</div>", unsafe_allow_html=True)
+    heading = title or f"우수·저조 수기 지정 ({os_name})"
 
-        lab, field = st.columns([1, 9], vertical_alignment="top")
-        lab.markdown('<div class="mp-lab is-best">우수<span>초록</span></div>',
-                     unsafe_allow_html=True)
-        with field.container(key=f"mpbest_{key}"):
-            best = st.multiselect(
-                "우수", options,
-                default=[a for a in options if current.get(a) == manual_picks.BEST],
-                key=f"pickbest_{key}", label_visibility="collapsed",
-                placeholder="비우면 자동 선정을 씁니다", format_func=show,
+    with st.container(key=f"mp_{key}"):
+        # ⚠ 지정된 소재를 접힌 줄 **위에 칩으로 미리 보여주지 않는다.**
+        #    2026-09-09에 그렇게 만들었다가 규리님이 걷어냈다 — 표 위쪽에 칩 줄이
+        #    떠서 표와 패널 사이를 끊었다. 건수는 접힌 헤더 문구로 알린다.
+
+        # ⚠ 평소에는 **접혀 있다.** 표가 6개면 패널도 6개라, 다 펼치면 화면이 그만큼
+        #    길어진다(오전에 이걸 계산하지 않고 "접지 않는다"로 만들었다).
+        label = (f"{heading} · 수기 {len(current)}건 · 자동 선정 안 씀"
+                 if current else f"{heading} · 자동 선정 사용 중")
+        with st.expander(label, expanded=False):
+            if basis:
+                st.markdown(f'<div class="mp-basis-in">{html.escape(basis)} 기준</div>',
+                            unsafe_allow_html=True)
+
+            # 표와 **같은 순서**로 소재를 늘어놓고 체크한다(1안, 규리님 승인
+            # 2026-09-09). 멀티셀렉트 칩은 폭이 좁아 앞에서 잘렸고, 좌우 2열로
+            # 나누면서 더 심해졌다 — `6405 · VID_Webtoo…` 두 개가 실제로는
+            # `VoTrailer_ALL_1-KR`과 `Trailer_ALL_8`인데 화면에서 같아 보였다.
+            #
+            # 이 방식은 폭을 다 쓰므로 소재명이 잘리지 않고, 위 표와 순서가 같아
+            # "표 3번째 줄"을 눈으로 찾아 체크할 수 있다.
+            picker = pd.DataFrame({
+                "소재": [show(ident) for ident in options],
+                "우수": [current.get(ident) == manual_picks.BEST for ident in options],
+                "저조": [current.get(ident) == manual_picks.WORST for ident in options],
+            })
+            edited = st.data_editor(
+                picker, key=f"pickedit_{key}", hide_index=True, width="stretch",
+                disabled=["소재"],
+                column_config={
+                    "소재": st.column_config.TextColumn("소재", width="large"),
+                    "우수": st.column_config.CheckboxColumn("우수", width="small"),
+                    "저조": st.column_config.CheckboxColumn("저조", width="small"),
+                },
             )
-        lab, field = st.columns([1, 9], vertical_alignment="top")
-        lab.markdown('<div class="mp-lab is-worst">저조<span>붉은색</span></div>',
-                     unsafe_allow_html=True)
-        with field.container(key=f"mpworst_{key}"):
-            worst = st.multiselect(
-                "저조", [a for a in options if a not in best],
-                default=[a for a in options
-                         if current.get(a) == manual_picks.WORST and a not in best],
-                key=f"pickworst_{key}", label_visibility="collapsed",
-                placeholder="비우면 자동 선정을 씁니다", format_func=show,
-            )
-        if st.button("지정 저장", key=f"picksave_{key}"):
-            wanted = {a: manual_picks.BEST for a in best}
-            wanted.update({a: manual_picks.WORST for a in worst})
-            failed = []
-            # 바뀐 것만 쓴다 — 표 10줄을 매번 다 쓰면 시트 쿼터를 그만큼 먹는다.
-            for ad in set(current) | set(wanted):
-                if current.get(ad) == wanted.get(ad):
-                    continue
-                ok, reason = manual_picks.save(month, os_name, rank_metric, ad,
-                                               wanted.get(ad))
-                if not ok:
-                    failed.append(reason or "알 수 없는 오류")
-            if failed:
-                st.error("저장 실패: "
-                         + google_sheets_writer.friendly_error(failed[0]))
-            else:
-                st.success("지정을 저장했습니다.")
-                rerun_local()
+            # 인덱스가 곧 `options` 순서다 — 라벨이 아니라 **식별자**로 되받는다.
+            best = [options[i] for i in range(len(options))
+                    if bool(edited["우수"].iloc[i])]
+            worst = [options[i] for i in range(len(options))
+                     if bool(edited["저조"].iloc[i]) and options[i] not in best]
+            both = [options[i] for i in range(len(options))
+                    if bool(edited["우수"].iloc[i]) and bool(edited["저조"].iloc[i])]
+            if both:
+                st.warning("한 소재를 우수·저조 양쪽에 체크했습니다 — "
+                           "저장하면 우수로만 들어갑니다.")
+
+            # 저장 버튼을 **오른쪽 아래**에 둔다 — 왼쪽에 덩그러니 있으면 무엇에
+            # 대한 저장인지 모호하다(2026-09-09 규리님 스크린샷).
+            _spacer, _save = st.columns([1, 0.45])
+            if _save.button("지정 저장", key=f"picksave_{key}", width="stretch"):
+                wanted = {a: manual_picks.BEST for a in best}
+                wanted.update({a: manual_picks.WORST for a in worst})
+                failed = []
+                # 바뀐 것만 쓴다 — 표 10줄을 매번 다 쓰면 시트 쿼터를 그만큼 먹는다.
+                for ad in set(current) | set(wanted):
+                    if current.get(ad) == wanted.get(ad):
+                        continue
+                    ok, reason = manual_picks.save(month, os_name, rank_metric, ad,
+                                                   wanted.get(ad))
+                    if not ok:
+                        failed.append(reason or "알 수 없는 오류")
+                if failed:
+                    st.error("저장 실패: "
+                             + google_sheets_writer.friendly_error(failed[0]))
+                else:
+                    st.success("지정을 저장했습니다.")
+                    rerun_local()
 
 
 def render_table_best_worst(
@@ -1095,6 +1134,81 @@ def render_table_best_worst(
 
 # --------------------------------------------------------------------------- 사이드바
 
+def _synced_ago(stamp: float | None) -> str:
+    """마지막 동기화 시각을 원본 줄에 넣을 짧은 문구로.
+
+    ⚠ 배포 컨테이너(python:3.12-slim)에는 시간대 설정이 없어 서버 시각이 **UTC**다.
+    그대로 찍으면 한국 사용자에게 9시간 전으로 보이고 날짜까지 하루 전으로 나온다 —
+    실제로 "다시 불러와도 날짜가 안 바뀐다"는 오해를 낳았다(2026-09-02). 한국은
+    서머타임이 없어 고정 +9 오프셋이 정확하다(slim 이미지에 tzdata가 없을 수 있어
+    zoneinfo 대신 이 방식을 쓴다).
+    """
+    if not stamp:
+        return "동기화 기록 없음"
+    synced = dt.datetime.fromtimestamp(stamp, dt.timezone.utc)
+    minutes = (dt.datetime.now(dt.timezone.utc) - synced).total_seconds() / 60
+    if minutes < 60:
+        ago = f"{int(minutes)}분 전"
+    elif minutes < 60 * 48:
+        ago = f"{int(minutes // 60)}시간 전"
+    else:
+        ago = f"{int(minutes // 1440)}일 전"
+    local = synced.astimezone(dt.timezone(dt.timedelta(hours=9)))
+    return f"{ago} · {local:%m-%d %H:%M} KST"
+
+
+def recon_chip(verdict: str, is_baseline: bool = False) -> str:
+    """적합성 점검 표의 판정 칩. 평문으로 두면 표에서 눈에 걸리지 않는다."""
+    if is_baseline:
+        return '<span class="rc-chip is-base">기준</span>'
+    if verdict == reconcile.VERDICT_CHECK:
+        return f'<span class="rc-chip is-check">{html.escape(verdict)}</span>'
+    if verdict == "일치":
+        return '<span class="rc-chip is-ok">일치</span>'
+    return f'<span class="rc-chip">{html.escape(verdict)}</span>'
+
+
+def source_row(key: str, title: str, meta: str, icon: str = "⟳",
+               tip: str | None = None):
+    """데이터 원본 한 줄 — `제목 / 메타`를 왼쪽에, 갱신 버튼을 오른쪽에.
+
+    갱신을 눌렀으면 True. 예전에는 원본마다 full-width 버튼이 한 줄씩 있어서
+    사이드바가 버튼 목록처럼 보였고, 자주 쓰는 것과 거의 안 쓰는 것이 같은 무게로
+    나열됐다(2026-09-09 개편, 시안 ①).
+
+    ⚠ 갱신 버튼은 **회색**이다. 브랜드 그린을 주면 표의 "우수 소재" 초록과 같은 색이
+    사이드바 조작 버튼에도 생겨 색의 뜻이 흐려진다.
+
+    ⚠ **권한을 스스로 확인한다.** 호출부에도 `if editor_allowed:`가 있지만, 여기서
+    한 번 더 막으면 나중에 새 원본을 추가하며 호출부 게이트를 빠뜨려도 광고주 화면에
+    갱신 버튼이 새지 않는다. 재로딩은 쿼터를 쓰고 전원의 캐시를 비운다.
+    """
+    if not auth.can_edit():
+        return False, None
+
+    with st.container(key=f"src_{key}"):
+        left, right = st.columns([1, 0.26], vertical_alignment="center")
+        # ⚠ 제목과 메타를 **한 덩어리로** 그린다. 예전에는 제목을 markdown으로 먼저
+        #    그리고 메타를 `st.empty()` 슬롯에 따로 채웠는데, 두 요소가 같은 자리에
+        #    겹쳐 글자가 서로 위에 찍혔다(2026-09-09 규리님 스크린샷). 한 슬롯에
+        #    통째로 다시 쓰면 겹침이 구조적으로 불가능하다.
+        slot = left.empty()
+
+        def write(meta_text: str = "") -> None:
+            slot.markdown(
+                '<div class="src-row">'
+                f'<div class="src-row-t">{html.escape(title)}</div>'
+                + (f'<div class="src-row-m">{html.escape(meta_text)}</div>'
+                   if meta_text else "")
+                + "</div>", unsafe_allow_html=True)
+
+        write(meta)
+        with right:
+            clicked = st.button(icon, key=f"refresh_{key}", width="stretch",
+                                help=tip or f"{title}을 다시 불러옵니다")
+    return clicked, write
+
+
 sidebar_brand("크리에이티브 리포트", "네이버웹툰 대만 · 월간")
 
 # 편집 권한은 **사이드바를 그리기 전에** 판정한다 — 모드 토글뿐 아니라 데이터 카드
@@ -1149,26 +1263,30 @@ def _snapshot_markup(month: int) -> float | None:
 
 data_card = st.sidebar.container(key="sb_data")
 with data_card:
-    st.markdown('<div class="sb-card-t">데이터</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sb-lab">데이터 원본</div>', unsafe_allow_html=True)
     # ⚠ `key`만으로는 **그 세션 동안만** 값이 남는다. 새로고침·재로그인·재배포마다
     #    코드 상수로 돌아가서, 규리님이 갈아끼운 링크가 조용히 사라졌다(2026-09-08).
     #    그래서 저장소에 남기고 그 값을 기본값으로 쓴다.
     _saved_sheet = app_settings.get("sheet_url", DEFAULT_SHEET)
     if editor_allowed:
-        sheet_url = st.text_input(
-            "구글시트 링크", key="sheet_url",
-            value=_saved_sheet,
-            help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. 읽기 전용으로만 접근합니다. "
-                 "바꾸면 저장돼서 다음에 열 때도 이 링크를 봅니다.",
-        )
-        # 값이 바뀌었으면 저장한다. **전원이 공유하는 상태**다 — 광고주가 보는 화면의
-        # 데이터 원본이 바뀌는 일이라 편집 권한 게이트 안에서만 일어난다.
-        if sheet_url.strip() and sheet_url.strip() != _saved_sheet.strip():
-            _ok, _why = app_settings.save("sheet_url", sheet_url.strip())
-            if _ok:
-                st.caption("링크를 저장했습니다.")
-            else:
-                st.warning(f"링크를 저장하지 못했습니다: {_why}")
+        # 거의 안 만지는데 자리를 크게 먹었다. 그리고 **잘못 바꾸면 전체 숫자가
+        # 바뀌는** 위험한 입력이라, 평소에는 접어 둔다(2026-09-09 개편).
+        with st.expander("구글시트 링크", expanded=False):
+            sheet_url = st.text_input(
+                "구글시트 링크", key="sheet_url",
+                value=_saved_sheet, label_visibility="collapsed",
+                help="매달 새 리포트 시트로 바뀌면 이 링크만 갈아끼우면 됩니다. "
+                     "읽기 전용으로만 접근합니다. 바꾸면 저장돼서 다음에 열 때도 "
+                     "이 링크를 봅니다.",
+            )
+            # 값이 바뀌었으면 저장한다. **전원이 공유하는 상태**다 — 광고주가 보는
+            # 화면의 데이터 원본이 바뀌는 일이라 편집 권한 게이트 안에서만 일어난다.
+            if sheet_url.strip() and sheet_url.strip() != _saved_sheet.strip():
+                _ok, _why = app_settings.save("sheet_url", sheet_url.strip())
+                if _ok:
+                    st.caption("링크를 저장했습니다.")
+                else:
+                    st.warning(f"링크를 저장하지 못했습니다: {_why}")
     else:
         # 광고주는 링크 자체를 보지 않는다. 값은 저장소에 있는 것을 그대로 쓴다.
         sheet_url = _saved_sheet
@@ -1185,33 +1303,21 @@ except ValueError as error:
 
 with data_card:
     # 재로딩은 쿼터를 쓰고 전원의 캐시를 비운다 — 편집 권한자만.
-    if editor_allowed and st.button("시트에서 다시 불러오기", width="stretch"):
-        # 시트만 다시 읽는다. 예전에는 st.cache_data.clear()로 드롭박스·Drive 목록·
-        # 썸네일까지 통째로 날려서, 시트만 갱신하고 싶어도 1분 넘게 기다려야 했다
-        # (2026-08-28 분리). 각 소스는 자기 버튼으로만 갱신한다.
-        _load.clear()
-        _google.clear()
-        load_media_raw(sheet_id, refresh=True)
-        st.rerun()
-
     stamp = cache_timestamp(sheet_id) if editor_allowed else None
-    if stamp:
-        # 배포 컨테이너(python:3.12-slim)에는 시간대 설정이 없어 서버 시각이 UTC다.
-        # 라벨 없이 그대로 찍으면 한국 사용자에게는 9시간 전으로 보이고, 날짜까지
-        # 하루 전으로 나온다 — 실제로 "다시 불러와도 날짜가 안 바뀐다"는 오해를 낳았다
-        # (2026-09-02). KST로 환산해 찍고, 시간대와 경과 시간을 함께 보여준다.
-        # 한국은 서머타임이 없어 고정 +9 오프셋이 정확하다(slim 이미지에 tzdata가
-        # 없을 수 있어 zoneinfo 대신 이 방식을 쓴다).
-        synced = dt.datetime.fromtimestamp(stamp, dt.timezone.utc)
-        minutes = (dt.datetime.now(dt.timezone.utc) - synced).total_seconds() / 60
-        if minutes < 60:
-            ago = f"{int(minutes)}분 전"
-        elif minutes < 60 * 48:
-            ago = f"{int(minutes // 60)}시간 전"
-        else:
-            ago = f"{int(minutes // 1440)}일 전"
-        local = synced.astimezone(dt.timezone(dt.timedelta(hours=9)))
-        st.caption(f"마지막 동기화: {local:%Y-%m-%d %H:%M} KST ({ago})")
+    if editor_allowed:
+        # 갱신 시각을 **줄 안에** 넣는다 — 예전에는 full-width 버튼 아래 caption으로
+        # 따로 있어서 두 줄을 먹었고, 다른 원본과 나란히 비교되지 않았다.
+        _sheet_hit, sheet_meta_slot = source_row(
+            "sheet", "메타·틱톡 시트", _synced_ago(stamp))
+        if _sheet_hit:
+            # 시트만 다시 읽는다. 예전에는 st.cache_data.clear()로 드롭박스·Drive
+            # 목록·썸네일까지 통째로 날려서, 시트만 갱신하고 싶어도 1분 넘게
+            # 기다려야 했다(2026-08-28 분리). 각 소스는 자기 버튼으로만 갱신한다.
+            _load.clear()
+            _google.clear()
+            load_media_raw(sheet_id, refresh=True)
+            st.rerun()
+
 
 
 try:
@@ -1263,9 +1369,10 @@ with month_slot:
 # 아래 `애셋 보고서 파일`은 `st.metric`(24px 굵게)이라 같은 성격의 사실이 두 가지
 # 무게로 찍혔다. 광고주 카드는 **고정 패널과 같은 행 모양**으로 아래에서 한 번에
 # 그린다(A안, 규리님 2026-09-08).
-if editor_allowed:
-    with sheet_summary_slot.container():
-        st.caption(describe_media_raw(raw, month))
+if editor_allowed and sheet_meta_slot is not None:
+    # 예전에는 이 요약이 라벨과 시트 줄 사이에 **떠 있는 캡션**이었다 — 줄 안으로
+    # 합쳐 원본 셋이 같은 모양으로 나란히 보이게 한다(2026-09-09).
+    sheet_meta_slot(f"{describe_media_raw(raw, month)} · {_synced_ago(stamp)}")
 
 # 로그인이 없으므로 브라우저 세션이 곧 편집자 신원이다
 # 편집 잠금의 소유자.
@@ -1338,19 +1445,21 @@ with data_card:
     # `데이터` 카드에 한 행으로 합쳐 그린다.
     google_files_slot = None
     if editor_allowed:
-        st.markdown('<div class="sb-sub">구글 (별도 소스)</div>',
-                    unsafe_allow_html=True)
-        google_files_slot = st.container()
-    if editor_allowed and dropbox_source.configured():
-        if st.button("Dropbox에서 다시 불러오기", key="google_refetch", width="stretch"):
-            st.session_state["_google_cache_bust"] = (
-                st.session_state.get("_google_cache_bust", 0) + 1
-            )
-            _google.clear()
-    if editor_allowed:
-        st.markdown('<div class="sb-sub">소재 영상 (광고주 Drive)</div>',
-                    unsafe_allow_html=True)
-        if st.button("소재 목록 새로고침", key="drive_refetch", width="stretch"):
+        # 원본은 **한 줄에 상태 + 오른쪽 작은 갱신 버튼**으로 그린다(시안 ①).
+        # 예전에는 갱신 버튼 3개가 각각 full-width 한 줄을 먹어서, 자주 쓰는 것과
+        # 거의 안 쓰는 것이 구분되지 않았다(2026-09-09 개편).
+        # ⚠ `데이터 원본` 라벨은 **시트 줄 앞에서 이미 그렸다** — 여기서 또 그리면
+        #    같은 라벨이 두 번 나온다(실제로 그렇게 나갔다).
+
+        if dropbox_source.configured():
+            _g_hit, google_files_slot = source_row("google", "구글 애셋", "")
+            if _g_hit:
+                st.session_state["_google_cache_bust"] = (
+                    st.session_state.get("_google_cache_bust", 0) + 1
+                )
+                _google.clear()
+        _d_hit, _ = source_row("drive", "소재 영상", "광고주 Drive")
+        if _d_hit:
             drive_materials.clear_file_list_cache()
             _drive_material_index.clear()
             st.rerun()
@@ -1366,14 +1475,19 @@ with data_card:
     # **고정할 때 쓴 마크업**이 기본값으로 들어오므로 안 만지면 숫자가 안 흔들린다.
     _frozen_markup = _snapshot_markup(month) if _snapshot_exists(month) else None
     if editor_allowed:
+        # 접어 뒀다가 규리님 요청으로 다시 펼쳤다 — 값을 바로 보고 조정해야 한다.
+        # 원본 목록이 아니라 **계산 설정**이므로 선으로 갈라 놓는다.
+        st.markdown('<div class="sb-lab is-split">구글 비용 마크업</div>',
+                    unsafe_allow_html=True)
         cost_markup = st.number_input(
             "구글 비용 마크업 배율", key=f"google_cost_markup_{int(month)}",
-            min_value=1.0, max_value=2.0,
+            min_value=1.0, max_value=2.0, label_visibility="collapsed",
             value=float(_frozen_markup or DEFAULT_COST_MARKUP),
             step=0.001, format="%.4f",
-            help="보고서의 '비용'은 원가입니다. 리포트 시트의 'cost (마크업 포함)' 기준에 "
-                 "맞추려면 이 배율을 곱합니다. **월별로 다릅니다**(2026-07 1.0830 / "
-                 "2026-08 1.0800). 값을 바꾸고 '고정하기'를 누르면 그 마크업으로 고정됩니다.",
+            help="보고서의 '비용'은 원가입니다. 리포트 시트의 "
+                 "'cost (마크업 포함)' 기준에 맞추려면 이 배율을 곱합니다. "
+                 "**월별로 다릅니다**(2026-07 1.0830 / 2026-08 1.0800). 값을 "
+                 "바꾸고 '고정하기'를 누르면 그 마크업으로 고정됩니다.",
         )
     else:
         # 광고주에게 위젯을 주면 배율을 바꿔 자기 화면의 구글 소진액을 흔들 수 있다.
@@ -1398,6 +1512,66 @@ with data_card:
             '<div class="freeze-cta-bar" aria-hidden="true"><i></i></div>',
             unsafe_allow_html=True,
         )
+
+# --------------------------------------------------------------------------- 백업
+# 규리님이 코멘트를 쓴 날 직접 누른다(2026-09-09 요청 — 그전에는 개발자가 터미널을
+# 열어야 했다). **파일로 저장하지 않고 브라우저로 내려받는다**: madup.app 컨테이너에는
+# 영속 볼륨이 없어서 서버에 쓴 파일은 재배포 때 같이 사라진다 — 백업이 백업 구실을
+# 못 한다. 내려받으면 규리님 PC에 남는다.
+#
+# ⚠ 편집 권한자에게만 보인다. 광고주와 화면을 공유하는 리포트다.
+# ⚠ 읽기는 **버튼을 누른 리런에만** 일어난다. 매 리런마다 모으면 무료 한도를 태운다
+#    (2026-09-08에 그렇게 라이브가 멈췄다). 그래서 결과를 세션에 담아 두고, 다운로드
+#    버튼은 담긴 것을 그대로 내보낸다.
+if editor_allowed:
+    with st.sidebar.container(key="sb_backup"):
+        # 데이터 원본과 **같은 줄 문법**으로(2026-09-09). full-width 버튼은 원본
+        # 목록과 문법이 달라 겉돌았고, 만든 뒤에는 버튼이 셋으로 쌓였다.
+        st.markdown('<div class="sb-lab is-split">백업</div>', unsafe_allow_html=True)
+        _made_before = st.session_state.get("_backup")
+        # 마지막 백업 시각은 **저장소에** 남긴다 — 세션 상태로 두면 새로고침 한 번에
+        # 사라져서 "내가 이번 달에 백업했나"를 알 수 없다(규리님 요청 2026-09-09).
+        _last_backup = app_settings.get("last_backup_at", "")
+        _backup_meta = (_made_before["summary"] if _made_before
+                        else (f"마지막 백업 {_last_backup}" if _last_backup
+                              else "백업 기록이 없습니다"))
+        _hit, _write_backup = source_row(
+            "backup", "코멘트·강조·분류", _backup_meta,
+            icon="⬇", tip="코멘트를 쓴 날에 눌러 주세요. 서버에 남기지 않고 "
+                          "브라우저로 내려받습니다.")
+        if _hit:
+            with st.spinner("모으는 중…"):
+                _data, _failed = backup.collect()
+            _stamp = backup.stamp()
+            st.session_state["_backup"] = {
+                "stamp": _stamp,
+                # JSON + md를 **한 파일로** 묶는다 — 규리님이 "뭘 눌러야 하나"를
+                # 물어야 했던 것이 설계 실패였다(2026-09-09).
+                "zip": backup.to_zip(_data, _stamp),
+                "summary": backup.summary(_data),
+                "failed": _failed,
+            }
+            # 못 읽은 것이 있으면 시각을 남기지 않는다 — 반쪽 백업을 "했다"로
+            # 기록하면 정작 복구할 때 없다.
+            if not _failed:
+                app_settings.save("last_backup_at", backup.now_text())
+
+        _made = st.session_state.get("_backup")
+        if _made:
+            # 못 읽은 것을 조용히 빼고 "완료"라고 하면 정작 복구할 때 없다.
+            if _made["failed"]:
+                st.error("일부를 읽지 못했습니다 — 다시 눌러 주세요: "
+                         + ", ".join(_made["failed"][:3]))
+            elif _write_backup is not None:
+                _write_backup(_made["summary"])
+            # 다운로드는 **만든 뒤에만** 나타난다. 버튼은 하나다 — 안에 복원용
+            # JSON과 읽을 수 있는 md가 함께 들어 있다.
+            st.download_button(
+                "백업 파일 내려받기 (zip)", _made["zip"],
+                file_name=f"comments_{_made['stamp']}.zip",
+                mime="application/zip", key="backup_dl", width="stretch",
+                help="복원용 JSON과 사람이 읽는 .md가 함께 들어 있습니다")
+
 
 google_folder = _synced_google_folder(st.session_state.get("_google_cache_bust", 0))
 
@@ -1484,29 +1658,37 @@ section(
 )
 
 controls = st.columns([2, 1])
-rank_metric = controls[0].selectbox(
+picked_rank = controls[0].selectbox(
     "정렬 기준", list(RANK_METRICS), format_func=lambda m: RANK_METRICS[m]
 )
 top_n = controls[1].number_input("표시 개수", min_value=5, max_value=50, value=10, step=5)
+#: `?ranks=all` 이면 정렬 기준을 **전부** 이어서 그린다(규리님 선택 2026-09-09).
+#: PDF는 정적이라 셀렉트박스를 누를 수 없어서, 기준별 표를 한 문서에 담으려면
+#: 화면이 한 번에 다 그려 줘야 한다. 문서 전체를 기준마다 다시 찍으면 코멘트·구글
+#: 섹션까지 네 벌이 되므로 **정렬에 영향받는 표만** 반복한다. 기준별로 묶는다
+#: (인스톨 AOS·iOS → D0 Coin AOS·iOS …) — 기존 리포트가 그 순서다.
+all_ranks = str(st.query_params.get("ranks") or "").strip().lower() == "all"
+rank_metrics = list(RANK_METRICS) if all_ranks else [picked_rank]
 
-for os_name in os_values(meta_tiktok):
-    os_scope = meta_tiktok[meta_tiktok["os"] == os_name]
-    top = top_creatives(os_scope, rank_metric, limit=int(top_n), min_cost=min_cost)
-    if top.empty:
-        status_row("warn", f"{os_name}", "조건에 맞는 소재가 없습니다.")
-        continue
+for rank_metric in rank_metrics:
+    for os_name in os_values(meta_tiktok):
+        os_scope = meta_tiktok[meta_tiktok["os"] == os_name]
+        top = top_creatives(os_scope, rank_metric, limit=int(top_n), min_cost=min_cost)
+        if top.empty:
+            status_row("warn", f"{os_name}", "조건에 맞는 소재가 없습니다.")
+            continue
 
-    table_title(f"{os_name} — {RANK_METRICS[rank_metric]} 기준 TOP {int(top_n)}")
-    render_table_best_worst(
-        top,
-        metrics=[("CPI", False), ("D0 coin CVR", True)],
-        link_materials=True,
-        rank_metric=rank_metric,
-        os_name=os_name,
-        month=month,
-    )
-    if edit_mode:
-        manual_pick_editor(top, month, os_name, rank_metric)
+        table_title(f"{os_name} — {RANK_METRICS[rank_metric]} 기준 TOP {int(top_n)}")
+        render_table_best_worst(
+            top,
+            metrics=[("CPI", False), ("D0 coin CVR", True)],
+            link_materials=True,
+            rank_metric=rank_metric,
+            os_name=os_name,
+            month=month,
+        )
+        if edit_mode:
+            manual_pick_editor(top, month, os_name, rank_metric, label_fn=ad_pick_label)
 
 # OS(AOS/iOS)마다 똑같이 반복되던 우수/저조 기준 설명을 섹션 하단에 한 번만 남긴다.
 # st.caption 기본 크기가 리포트 톤(정보 위계 절제)에 비해 도드라져 보인다는 피드백을 받아,
@@ -1608,26 +1790,18 @@ def _viewer_data_rows() -> None:
 if not editor_allowed:
     _viewer_data_rows()
 else:
-    with google_files_slot:
-        if google_error:
-            st.metric("애셋 보고서 파일", "읽기 실패",
-                      help=f"출처: {google_source_label}")
-            st.caption(google_error[:120])
-        elif google_all.empty:
-            st.metric("애셋 보고서 파일", "0개", help=f"출처: {google_source_label}")
-            st.caption(f"{month}월분 보고서가 폴더에 없습니다.")
-        else:
-            used_files = sorted(google_all["source_file"].dropna().unique())
-            source_detail = "" if has_snapshot else " (하위 폴더까지 모두 읽습니다)"
-            st.metric(
-                "애셋 보고서 파일", f"{len(used_files)}개",
-                help=f"출처: {google_source_label}{source_detail}",
-            )
-            if not has_snapshot:
-                st.caption(f"{month}월 데이터로 사용 중 (실시간 연동)")
-            with st.expander("읽은 파일 보기"):
-                st.markdown("\n".join(f"- `{name}`" for name in used_files))
-
+    # 파일 수·상태를 **그 줄 안에** 채운다. 예전에는 여기서 `st.metric` + `읽은 파일
+    # 보기` expander를 그려서 원본 줄들 사이에 끼었다("정신사납다", 2026-09-09).
+    if google_error:
+        _google_meta_text = "읽기 실패"
+    elif google_all.empty:
+        _google_meta_text = f"{month}월분 보고서 없음"
+    else:
+        _used_files = sorted(google_all["source_file"].dropna().unique())
+        _google_meta_text = (f"{len(_used_files)}개 파일 · "
+                             + ("고정본" if has_snapshot else "실시간 연동"))
+    if google_files_slot is not None:
+        google_files_slot(_google_meta_text)
 # 다음 달로 넘어가기 전에 미리 확정해 두고 싶을 때를 위한 수동 고정 — 최신 달에도 쓸 수
 # 있다. 항상 "지금 라이브 상태"를 기준으로 얼리므로, 이미 고정된 달이라도 다시 누르면
 # 그 시점 값으로 재고정된다. 고정 전에는 놓치면 안 되는 일이라 눈에 띄게, 고정 후에는
@@ -1688,26 +1862,35 @@ def _freeze_rows(month: int) -> list[tuple[str, str, bool]]:
 
     frozen_meta = _media_meta().get(month) or {}
     media_rows = frozen_meta.get("row_count")
+    # 고정 안 한 달은 **라이브 실제 값**을 찍는다(2026-09-09). 예전에는 "라이브"라는
+    # 말만 있어서, 고정 버튼을 누르기 전에 무엇을 고정하게 되는지 알 수 없었다.
+    live_rows = int((raw["month"] == month).sum())
     rows.append(("메타·틱톡",
-                 f"{media_rows:,}행" if media_rows else "라이브",
+                 f"{media_rows:,}행" if media_rows else f"{live_rows:,}행",
                  bool(media_rows)))
 
-    rows.append(("구글 애셋",
-                 f"{google['source_file'].nunique()}개 파일"
-                 if has_snapshot and not google.empty else
-                 ("고정됨" if has_snapshot else "라이브"),
-                 bool(has_snapshot)))
+    if has_snapshot and not google.empty:
+        google_value = f"{google['source_file'].nunique()}개 파일"
+    elif has_snapshot:
+        google_value = "고정됨"
+    elif not google_all.empty:
+        google_value = f"{google_all['source_file'].nunique()}개 파일"
+    else:
+        google_value = "없음"
+    rows.append(("구글 애셋", google_value, bool(has_snapshot)))
 
     frozen = dict(frozen_meta.get("settings") or {})
     markup = _frozen_markup or frozen.get("cost_markup")
-    rows.append(("마크업", f"×{float(markup):.4f}" if markup else "-", bool(markup)))
+    # 미고정이면 지금 사이드바 배율이 곧 고정될 값이다.
+    shown = markup or cost_markup
+    rows.append(("마크업", f"×{float(shown):.4f}" if shown else "-", bool(markup)))
 
     # 시트 id 꼬리 6자(`…_ZFQko`)는 사람이 확인할 수 없는 문자열이었다. 정작 알고
     # 싶은 것은 **지금 보고 있는 시트가 고정 당시와 같은가**다(다르면 아래 캡션이
     # 어느 기준의 숫자인지 짚어 준다).
     frozen_sheet = str(frozen.get("sheet_id") or "")
     rows.append(("시트",
-                 "-" if not frozen_sheet
+                 "지금 보는 시트" if not frozen_sheet
                  else ("지금과 같음" if frozen_sheet == sheet_id else "지금과 다름"),
                  bool(frozen_sheet)))
     return rows
@@ -1733,8 +1916,8 @@ with freeze_slot.container():
             st.markdown(
                 '<div class="freeze-head">'
                 f'<b>{month}월 고정됨</b>'
-                + ('<span class="freeze-chip">방금 완료</span>' if _just_froze
-                   else '<span class="freeze-chip">완료</span>')
+                + ('<span class="freeze-chip is-done">방금 완료</span>' if _just_froze
+                   else '<span class="freeze-chip is-done">완료</span>')
                 + '</div>'
                 '<div class="freeze-rows">'
                 + "".join(
@@ -1760,17 +1943,30 @@ with freeze_slot.container():
                                              width="stretch"):
                 _freeze_now(month)
     else:
+        # 고정된 달과 **같은 표**를 쓰고 배지만 다르다(1안, 규리님 승인 2026-09-09).
+        # 예전에는 이 상태만 연초록 CTA 박스 + 설명 2줄 + full-width 초록 버튼이라
+        # 고정된 달보다 훨씬 커졌다 — 규리님: *"9월로 넘어가니까 왤케 홀쭉해졌어?"*
+        # 같은 자리에서 달마다 모양이 달라지는 것이 원인이었다.
         with st.container(key="google_freeze_pending", border=True):
             st.markdown(
-                '<div class="freeze-cta-title">아직 고정 안 됨</div>'
-                '<div class="freeze-cta-body">시트가 갱신되거나 드롭박스 폴더가 '
-                '다음 달 파일로 바뀌면 지금 이 숫자는 달라집니다.</div>',
+                '<div class="freeze-head">'
+                f'<b>{month}월 라이브</b>'
+                '<span class="freeze-chip is-live-now">미고정</span>'
+                '</div>'
+                '<div class="freeze-rows">'
+                + "".join(
+                    f'<div class="freeze-row{"" if ok else " is-live"}">'
+                    f'<span>{html.escape(label)}</span>'
+                    f'<b>{html.escape(value)}</b></div>'
+                    for label, value, ok in _freeze_rows(month))
+                + '</div>'
+                '<div class="freeze-cta-foot">갱신되면 이 숫자는 달라집니다</div>',
                 unsafe_allow_html=True,
             )
             if not live_source_available:
                 st.caption("구글 라이브 폴더에 이 달 파일이 없어 메타·틱톡만 고정됩니다.")
             if auth.can_edit() and st.button("지금 고정하기", key="google_freeze",
-                                             type="primary", width="stretch"):
+                                             width="stretch"):
                 _freeze_now(month)
 
 # "이 데이터를 어디서 읽었는지"는 매달 볼 필요는 없는 진단 정보라 헤더의 "?" 아이콘으로
@@ -1803,46 +1999,49 @@ else:
         status_row("warn", f"읽지 못한 파일 {len(failures)}개", " / ".join(failures[:3]))
 
     g_controls = st.columns([2, 1])
-    g_rank_metric = g_controls[0].selectbox(
+    g_picked_rank = g_controls[0].selectbox(
         "정렬 기준", list(GOOGLE_RANK_METRICS),
         format_func=lambda m: GOOGLE_RANK_METRICS[m], key="google_rank",
     )
     g_top_n = g_controls[1].number_input(
         "표시 개수", min_value=5, max_value=50, value=10, step=5, key="google_top_n"
     )
+    # `?ranks=all` — 위 2번 섹션과 같은 규칙이다(PDF에 기준별 표를 다 담는다).
+    g_rank_metrics = list(GOOGLE_RANK_METRICS) if all_ranks else [g_picked_rank]
 
-    for g_os in [o for o in ("AOS", "iOS") if o in set(google["os"].dropna())]:
-        g_os_scope = google[google["os"] == g_os]
-        g_top = aggregate_google(
-            g_os_scope,
-            # 등급·방향을 키에서 빼도 TOP10 구성과 소진 합계는 동일하다(실측
-            # 2026-09-08). 키에 남기면 같은 애셋이 등급별로 쪼개져 두 줄로 보인다.
-            ["asset", "asset_type", "title_kr", "objective"],
-        )
-        g_top = g_top[g_top["cost"].fillna(0) >= min_cost]
-        if g_top.empty:
-            status_row("warn", g_os, "조건에 맞는 소재가 없습니다.")
-            continue
+    for g_rank_metric in g_rank_metrics:
+        for g_os in [o for o in ("AOS", "iOS") if o in set(google["os"].dropna())]:
+            g_os_scope = google[google["os"] == g_os]
+            g_top = aggregate_google(
+                g_os_scope,
+                # 등급·방향을 키에서 빼도 TOP10 구성과 소진 합계는 동일하다(실측
+                # 2026-09-08). 키에 남기면 같은 애셋이 등급별로 쪼개져 두 줄로 보인다.
+                ["asset", "asset_type", "title_kr", "objective"],
+            )
+            g_top = g_top[g_top["cost"].fillna(0) >= min_cost]
+            if g_top.empty:
+                status_row("warn", g_os, "조건에 맞는 소재가 없습니다.")
+                continue
 
-        # **고르는 기준과 보여주는 순서를 나눈다**(2026-09-07 규리님 요청).
-        # 인스톨·인앱 액션으로 TOP N을 고르되, 표는 **소진액 내림차순**으로 읽는다 —
-        # 리포트에서 줄을 훑을 때는 "돈을 얼마 썼나"가 먼저 눈에 들어와야 한다.
-        g_top = g_top.sort_values(g_rank_metric, ascending=False).head(int(g_top_n))
-        g_top = g_top.sort_values("cost", ascending=False).reset_index(drop=True)
-        table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
-        g_best, g_worst = render_google_table(
-            g_top, month=month, os_name=g_os, rank_metric=g_rank_metric)
+            # **고르는 기준과 보여주는 순서를 나눈다**(2026-09-07 규리님 요청).
+            # 인스톨·인앱 액션으로 TOP N을 고르되, 표는 **소진액 내림차순**으로 읽는다 —
+            # 리포트에서 줄을 훑을 때는 "돈을 얼마 썼나"가 먼저 눈에 들어와야 한다.
+            g_top = g_top.sort_values(g_rank_metric, ascending=False).head(int(g_top_n))
+            g_top = g_top.sort_values("cost", ascending=False).reset_index(drop=True)
+            table_title(f"{g_os} — {GOOGLE_RANK_METRICS[g_rank_metric]} 기준 TOP {int(g_top_n)}")
+            g_best, g_worst = render_google_table(
+                g_top, month=month, os_name=g_os, rank_metric=g_rank_metric)
 
-        render_google_material_cards(g_top, g_best, g_worst)
-        if edit_mode:
-            manual_pick_editor(
-                g_top, month, manual_picks.google_os(g_os), g_rank_metric,
-                id_column="asset", label_fn=google_pick_label,
-                title=f"우수·저조 수기 지정 (구글 {g_os})")
-        st.markdown(
-            '<div class="tbl-note">영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.</div>',
-            unsafe_allow_html=True,
-        )
+            render_google_material_cards(g_top, g_best, g_worst)
+            if edit_mode:
+                manual_pick_editor(
+                    g_top, month, manual_picks.google_os(g_os), g_rank_metric,
+                    id_column="asset", label_fn=google_pick_label,
+                    title=f"우수·저조 수기 지정 (구글 {g_os})")
+            st.markdown(
+                '<div class="tbl-note">영상·이미지 소재만 포함하며, 텍스트 애셋은 제외했습니다.</div>',
+                unsafe_allow_html=True,
+            )
 
 # --------------------------------------------------------------------------- 4. 소재 속성별
 
@@ -4273,11 +4472,23 @@ if editor_allowed and edit_mode:
             _gap = reconcile.install_gap(_fingerprint, scope, month)
             _orphans = reconcile.cohort_orphans(_fingerprint, raw, month)
             _issues = reconcile.has_issues(_steps, _gap, _orphans)
-            with st.expander(
-                f"데이터 적합성 점검 — {month}월"
-                + ("  ⚠ 확인이 필요한 항목이 있습니다" if _issues else "  이상 없음"),
-                expanded=False,
-            ):
+            # 접힌 줄에서 **결론을 바로 답한다**(시안 ①, 규리님 승인 2026-09-09).
+            # 예전에는 "확인이 필요한 항목이 있습니다"라고만 해서 몇 건인지 알 수
+            # 없었고, 이모지(⚠)를 썼다 — 이 프로젝트 규칙 위반이다.
+            _n = reconcile.issue_count(_steps, _orphans)
+            _label = (f"데이터 적합성 점검 · {month}월 — "
+                      + ("소진액 차이 0원" if reconcile.cost_matches(_steps)
+                         else "소진액 차이 확인 필요")
+                      + (f" · 확인 필요 {_n}건" if _n else ""))
+            with st.expander(_label, expanded=False):
+                # 결론이 표보다 **먼저** 온다. 사유를 여기 녹였으므로 표에서
+                # `사유` 컬럼을 뺀다 — 긴 문장이 들어가 표가 밀렸다.
+                st.markdown(
+                    f'<div class="recon-head">{html.escape(reconcile.headline(_steps, _gap, _orphans))}</div>',
+                    unsafe_allow_html=True)
+
+                st.markdown('<div class="recon-cap">단계별 — 원본에서 화면까지</div>',
+                            unsafe_allow_html=True)
                 report_table(
                     [[s["label"], f"{s['rows']:,}", f"₩{s['cost']:,.0f}",
                       f"{s['install']:,.0f}",
@@ -4285,45 +4496,33 @@ if editor_allowed and edit_mode:
                       # "뭔가 줄었다"로 읽힌다(실제로 ⑤에서 그렇게 나왔다).
                       "" if i == 0 else f"{round(s['d_cost'], 2) + 0:+,.0f}",
                       "" if i == 0 else f"{round(s['d_install'], 2) + 0:+,.0f}",
-                      s["verdict"], s["reason"]]
+                      recon_chip(s["verdict"], i == 0)]
                      for i, s in enumerate(_steps)],
-                    ["단계", "행", "소진액", "설치", "소진 변화", "설치 변화",
-                     "판정", "사유"],
-                    left_columns={"단계", "판정", "사유"},
-                    # `is-bad`는 저조 행에 쓰던 붉은 톤이다 — 새 CSS를 만들지 않고
-                    # "이 줄에 문제가 있다"는 같은 뜻으로 쓴다.
-                    row_classes=["is-bad" if s["verdict"] == reconcile.VERDICT_CHECK
-                                 else "" for s in _steps],
+                    ["단계", "행", "소진액", "설치", "소진 변화", "설치 변화", "판정"],
+                    left_columns={"단계", "판정"},
+                    html_columns={"판정"},
                     full_height=True,
                 )
-                st.caption(reconcile.summary_line(_steps))
 
-                if _gap["unnamed_install"]:
-                    st.warning(
-                        f"소재명(`최종 AD`)이 빈 행 {_gap['unnamed_rows']:,}개가 "
-                        f"설치 {_gap['unnamed_install']:,.0f}건 · "
-                        f"소진 ₩{_gap['unnamed_cost']:,.0f}을 들고 버려집니다 — "
-                        "소재 단위로 집계할 수 없어 화면에 못 들어옵니다."
-                    )
+                st.markdown('<div class="recon-cap">OS 대조 — 시트 원본과 화면</div>',
+                            unsafe_allow_html=True)
                 report_table(
                     [[r["os"], f"{r['sheet']:,.0f}", f"{r['screen']:,.0f}",
                       f"{r['delta']:+,.0f}",
-                      "iOS 코호트 대체" if (r["delta"] and r["os"] == "iOS")
-                      else ("확인 필요" if r["delta"] else "일치")]
+                      recon_chip("iOS 코호트 대체" if (r["delta"] and r["os"] == "iOS")
+                                 else (reconcile.VERDICT_CHECK if r["delta"]
+                                       else "일치"))]
                      for r in _gap["by_os"]],
                     ["OS", "시트 원본 설치", "화면 설치", "차이", "설명"],
                     left_columns={"OS", "설명"},
-                    row_classes=["is-bad" if (r["delta"] and r["os"] != "iOS") else ""
-                                 for r in _gap["by_os"]],
+                    html_columns={"설명"},
                     full_height=True,
                 )
 
                 if _orphans:
-                    st.warning(
-                        f"코호트에는 설치가 잡혔는데 Media_RAW에 그 소재의 iOS 행이 없는 건 "
-                        f"{len(_orphans)}개 (설치 {sum(o['install'] for o in _orphans):,.0f}건) "
-                        "— 이 설치는 어디에도 들어가지 않습니다."
-                    )
+                    st.markdown('<div class="recon-cap">코호트에만 있는 소재 '
+                                '— 이 설치는 어디에도 들어가지 않습니다</div>',
+                                unsafe_allow_html=True)
                     report_table(
                         [[o["media"], o["ad"], f"{o['install']:,.0f}"]
                          for o in sorted(_orphans, key=lambda x: -x["install"])[:10]],
@@ -4331,11 +4530,12 @@ if editor_allowed and edit_mode:
                         left_columns={"매체", "소재명"}, full_height=True,
                     )
 
-                st.caption(
-                    "지문(시트 원본 집계) 기준 시각 "
-                    f"{_fingerprint['fetched_at']} · 원본 {_fingerprint['sheet_rows']:,}행. "
-                    "시트 데이터가 바뀌었으면 다시 만들어 주세요."
-                )
+                # 지문은 시트 원본 집계다 — 시트가 갱신되면 다시 만들어야 한다.
+                st.markdown(
+                    '<div class="recon-cap">'
+                    f"지문 기준 시각 {html.escape(str(_fingerprint['fetched_at']))} · "
+                    f"원본 {_fingerprint['sheet_rows']:,}행"
+                    "</div>", unsafe_allow_html=True)
                 if st.button("원본 지문 다시 만들기", key="recon_refresh"):
                     with st.spinner("Media_RAW 원본을 읽는 중…"):
                         reconcile.fetch_fingerprint(sheet_id, refresh=True)

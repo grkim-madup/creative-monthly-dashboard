@@ -23,9 +23,6 @@ TREE = ast.parse(ENTRY.read_text(encoding="utf-8"))
 #: 편집 권한자만 볼 수 있어야 하는 위젯의 첫 인자(라벨).
 EDITOR_ONLY_WIDGETS = [
     "구글시트 링크",
-    "시트에서 다시 불러오기",
-    "Dropbox에서 다시 불러오기",
-    "소재 목록 새로고침",
     "구글 비용 마크업 배율",
 ]
 
@@ -62,21 +59,42 @@ def _widget_calls() -> list[tuple[str, ast.Call]]:
     return found
 
 
-def _is_gated(call: ast.Call) -> bool:
-    """이 호출이 `editor_allowed`로 막혀 있는가.
+def _guards_permission(node: ast.AST) -> bool:
+    """이 노드 안에서 편집 권한을 확인하는가 — `editor_allowed` 또는 `auth.can_edit()`."""
+    if _mentions_editor_allowed(node):
+        return True
+    for inner in ast.walk(node):
+        if (isinstance(inner, ast.Attribute) and inner.attr == "can_edit"
+                and isinstance(inner.value, ast.Name) and inner.value.id == "auth"):
+            return True
+    return False
 
-    `if editor_allowed:` 로 감싼 경우와 `if editor_allowed and st.button(...)`처럼
-    같은 식 안에서 단축 평가로 막은 경우를 모두 인정한다.
+
+def _is_gated(call: ast.Call) -> bool:
+    """이 호출이 편집 권한으로 막혀 있는가.
+
+    인정하는 형태 셋:
+      · `if editor_allowed:` 로 감싼 것
+      · `if editor_allowed and st.button(...)` 처럼 같은 식 안 단축 평가
+      · **권한을 스스로 확인하는 헬퍼 함수 안**에 있는 것(2026-09-09 추가)
+
+    셋째가 왜 필요한가: 갱신 버튼을 `source_row()` 헬퍼로 묶으면서 위젯이 함수 안으로
+    들어갔다. 호출부는 `if editor_allowed:`로 막혀 있지만 위젯의 **어휘적 조상**에는
+    그 조건이 없다. 헬퍼가 자기 안에서 권한을 확인하면 호출부가 게이트를 빠뜨려도
+    광고주에게 새지 않으므로, 그쪽이 오히려 더 안전하다.
     """
     node: ast.AST | None = call
     while node is not None:
         parent = PARENTS.get(id(node))
         if isinstance(parent, ast.If) and node in parent.body:
-            if _mentions_editor_allowed(parent.test):
+            if _guards_permission(parent.test):
                 return True
         if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.And):
-            if any(_mentions_editor_allowed(value) for value in parent.values
+            if any(_guards_permission(value) for value in parent.values
                    if value is not node):
+                return True
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(_guards_permission(stmt) for stmt in parent.body):
                 return True
         node = parent
     return False
@@ -89,6 +107,35 @@ def test_widget_is_gated_on_edit_permission(label: str):
     for call in calls:
         assert _is_gated(call), (
             f"{label} 위젯이 편집 권한 게이트 밖에 있습니다 — 광고주 화면에 보입니다")
+
+
+def test_원본_줄_버튼은_권한_확인_안에_있다():
+    """갱신·백업 버튼은 `source_row()` 헬퍼 안에 있다(2026-09-09 개편).
+
+    라벨이 변수(`icon`)라 라벨 목록으로는 잡히지 않으므로 **키**로 찾는다.
+    헬퍼가 자기 안에서 `auth.can_edit()`을 확인하는지까지 본다 — 호출부가 게이트를
+    빠뜨려도 광고주에게 새지 않아야 한다.
+    """
+    calls = [call for _label, call in _widget_calls_any()
+             if any(kw.arg == "key" and isinstance(kw.value, ast.JoinedStr)
+                    and "refresh_" in ast.unparse(kw.value) for kw in call.keywords)]
+    assert calls, "원본 줄의 갱신 버튼을 찾지 못했습니다"
+    for call in calls:
+        assert _is_gated(call), "갱신 버튼이 편집 권한 확인 밖에 있습니다"
+
+
+def _widget_calls_any() -> list[tuple[str, ast.Call]]:
+    """`_widget_calls`와 같지만 **첫 인자가 상수가 아니어도** 모은다."""
+    found = []
+    for node in ast.walk(TREE):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in WIDGET_FUNCS:
+            label = (str(node.args[0].value)
+                     if node.args and isinstance(node.args[0], ast.Constant) else "")
+            found.append((label, node))
+    return found
 
 
 def test_the_check_actually_catches_an_ungated_widget():

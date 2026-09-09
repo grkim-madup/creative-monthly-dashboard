@@ -788,13 +788,106 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 [class*="st-key-pv_"] { padding: 0 !important; border: none !important; }
 
+/* ── 데이터 적합성 점검 (시안 ①, 2026-09-09 승인) ───────────────────────
+   예전 문제: `⚠` 이모지(프로젝트 규칙 위반) · "확인이 필요한 항목이 있습니다"라는
+   건수 없는 문구 · `st.warning` 노란 박스 2개(Streamlit 기본 룩이라 리포트 톤과
+   이질적) · 제목 없는 표 3개 연속 · 표의 `사유` 컬럼에 긴 문장. */
+.recon-head {
+  font-size: 12px; line-height: 1.75; color: var(--ink);
+  padding: 2px 0 12px; max-width: 68ch;
+}
+.recon-cap {
+  font-size: 10px; font-weight: 700; color: var(--faint);
+  letter-spacing: .1em; margin: 16px 0 5px;
+}
+.rc-chip {
+  display: inline-block; font-size: 10px; border-radius: 2px; padding: 1px 6px;
+  background: var(--line-soft); color: var(--ink-2); white-space: nowrap;
+}
+.rc-chip.is-base { background: transparent; color: var(--faint); padding-left: 0; }
+.rc-chip.is-ok { background: #d6fbe6; color: #08331d; }
+.rc-chip.is-check { background: #fdf1f1; color: #9b2c2c; }
+
+/* ── 사이드바 개편 (시안 ①, 2026-09-09 승인) ──────────────────────────── */
+
+/* 숫자는 자리를 맞춘다 — 행수·배율이 세로로 어긋나면 비교가 안 된다. */
+section[data-testid="stSidebar"] { font-variant-numeric: tabular-nums; }
+
+/* `보기 / 편집` 활성 쪽을 **브랜드 그린**으로. 검정보다 "지금 이 모드"가 명확하고,
+   편집으로 넘어가면 초록이 옮겨가 상태 변화가 보인다. 성과 강조가 아닌 자리라
+   액센트 1개 원칙과 부딪히지 않는다. */
+[class*="st-key-mode_toggle"] button[aria-checked="true"],
+[class*="st-key-mode_toggle"] button[aria-pressed="true"],
+[class*="st-key-mode_toggle"] label[data-checked="true"] {
+  background: var(--brand) !important; border-color: var(--brand) !important;
+  color: #08331d !important; font-weight: 700 !important;
+}
+
+/* 데이터 원본 한 줄 — 제목 + 메타를 왼쪽에, 갱신은 오른쪽 **작은 아이콘 버튼**으로.
+   예전에는 `시트에서 다시 불러오기`·`Dropbox에서 다시 불러오기`·`소재 목록 새로고침`이
+   각각 full-width 버튼 한 줄씩을 먹어서, 자주 쓰는 것과 안 쓰는 것이 구분되지 않았다. */
+/* 제목과 메타는 **한 슬롯 안 두 블록**이다. 각각 별도 요소로 그렸다가 같은 자리에
+   겹쳐 글자가 서로 위에 찍힌 적이 있다(2026-09-09) — 그래서 여기서 줄 높이를
+   명시하고, 두 줄이 확실히 아래위로 쌓이게 한다. */
+.src-row { display: block; padding: 9px 0; }
+.src-row-t { font-size: 10.5px; line-height: 1.5; color: var(--ink-2); }
+.src-row-m {
+  font-size: 9.5px; line-height: 1.55; color: var(--faint);
+  margin-top: 3px; word-break: keep-all;
+}
+/* 줄 사이가 빽빽하다는 지적을 받아 간격을 넓혔다(2026-09-09). Streamlit 기본 gap이
+   0에 가까워 세 줄이 붙어 보였다. */
+[class*="st-key-src_"] { margin-bottom: 6px; }
+[class*="st-key-src_"] [data-testid="stVerticalBlock"] { gap: 0 !important; }
+/* 갱신 버튼: 작게 줄이고 조용한 회색으로. 색을 주면 표의 성과색과 섞인다. */
+[class*="st-key-refresh_"] button {
+  min-height: 26px !important; height: 26px !important; padding: 0 !important;
+  border-color: var(--line) !important; color: var(--muted) !important;
+  font-size: 13px !important; line-height: 1 !important;
+}
+[class*="st-key-refresh_"] button:hover {
+  border-color: var(--faint) !important; color: var(--ink-2) !important;
+}
+/* 원본 줄의 두 칸(내용 / 버튼) 사이 여백을 좁힌다 — 기본 gap이면 버튼이 멀어진다. */
+[class*="st-key-src_"] [data-testid="stHorizontalBlock"] { gap: 6px !important; }
+
+/* 고정 완료 칩은 **브랜드 톤**으로 — 표의 "우수 소재" 초록과 같은 색이면 성과로
+   읽힌다. 고정 완료는 성과가 아니라 상태다. */
+.freeze-chip.is-done { background: #d6fbe6 !important; color: #08331d !important; }
+/* 미고정은 **주의 톤**이다 — "아직 안 했다"가 보여야 한다. 다만 예전 연초록 CTA
+   박스처럼 크게 칠하지 않는다(2026-09-09: 사이드바에서 가장 큰 초록 덩어리였다). */
+.freeze-chip.is-live-now {
+  background: #fdf8ec !important; color: #8a5d05 !important;
+  border: 1px solid #d9a021 !important;
+}
+/* `지금 고정하기` — 브랜드 그린으로 채운다. 아웃라인으로 뒀더니 연초록 배경 위에서
+   묻혀 "잘 안 보인다"는 지적을 받았다(2026-09-09). 고정은 되돌리기 어려운 행동이라
+   버튼이 명확해야 한다.
+   ⚠ **미고정 패널 안의 버튼만** 칠한다. 두 버튼은 키가 같아서(`google_freeze`)
+     버튼 키로 잡으면 고정된 달의 `다시 고정`까지 초록이 된다 — 규리님: *"다시
+     고정하기 버튼은 눈에 별로 안 띄어도 돼."* 이미 끝난 일이라 강조가 과하다.
+     그래서 **부모를 `google_freeze_pending`으로 한정**한다.
+   ⚠ 글자는 진한 초록이다. #00DC64는 밝아서 흰 글자를 올리면 대비가 부족하다.
+   ⚠ 셀렉터 형태를 단순화하지 말 것. `[class~="…"] button`(0,1,1)로 썼다가
+     기본 버튼 규칙에 통째로 밀려 회색으로 남았다(실측: 배경 #f0f2f4). 이 파일
+     위쪽 주석이 이미 경고한 그 함정이고, 검증된 형태는 아래와 같다:
+         .stApp [class*="st-key-<부모>"] .stButton button[kind]   → (0,4,1) */
+.stApp [class*="st-key-google_freeze_pending"] .stButton button[kind] {
+  background: var(--brand) !important; border-color: var(--brand) !important;
+  color: #08331d !important; font-weight: 700 !important;
+}
+.stApp [class*="st-key-google_freeze_pending"] .stButton button[kind]:hover {
+  background: var(--brand-deep) !important; border-color: var(--brand-deep) !important;
+  color: #fff !important;
+}
+.stApp [class*="st-key-google_freeze_pending"] .stButton button[kind] p {
+  color: inherit !important; font-weight: 700 !important;
+}
+
 /* 우수·저조 수기 지정(시안 A, 2026-09-09 승인) — 카드가 아니라 섹션과 같은 문법으로.
    `st.expander`를 쓰지 않는 이유: 편집 모드에서만 뜨는 패널이므로, 그때는
    "자동으로 무엇이 뽑혔고 기준이 무엇인지"가 클릭 없이 바로 보여야 한다. */
-[class*="st-key-mp_"] {
-  border-top: 1.5px solid var(--ink) !important;
-  padding: 10px 0 2px !important; margin: 14px 0 6px;
-}
+[class*="st-key-mp_"] { padding: 2px 0 !important; margin: 10px 0 4px; }
 .mp-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
 .mp-t { font-size: 13px; font-weight: 700; color: var(--ink); }
 .mp-badge {
@@ -809,13 +902,28 @@ header[data-testid="stHeader"] { background: transparent; }
 .mp-lab.is-best { color: #04703a; }
 .mp-lab.is-worst { color: #9b2c2c; }
 .mp-lab span { display: block; font-weight: 400; color: var(--faint); font-size: 10px; letter-spacing: 0; }
-/* 칩 색은 표에서 실제로 칠하는 색과 같아야 한다 — 다르면 "이 지정이 그 색인가"를 다시 확인해야 한다. */
-[class*="st-key-mpbest_"] [data-baseweb="tag"] {
-  background: #eefaf3 !important; border-color: #00b855 !important; color: #04703a !important;
+/* 접힌 헤더는 표 아래 보조 정보다 — 제목처럼 굵게 두면 표와 경쟁한다. */
+[class*="st-key-mp_"] [data-testid="stExpander"] summary p {
+  font-size: 11px !important; color: var(--muted) !important; font-weight: 400 !important;
 }
-[class*="st-key-mpworst_"] [data-baseweb="tag"] {
-  background: #fdf1f1 !important; border-color: #d95757 !important; color: #9b2c2c !important;
+/* 회색 박스 테두리를 없앤다(규리님 요청 2026-09-09) — 표 아래 보조 도구인데
+   본문과 같은 급의 박스로 보이면 무게가 과하다. 접힘 표시는 화살표만으로 충분하다. */
+[class*="st-key-mp_"] [data-testid="stExpander"] details {
+  border: none !important; background: transparent !important;
 }
+[class*="st-key-mp_"] [data-testid="stExpander"] summary {
+  padding-left: 0 !important; padding-right: 0 !important;
+}
+[class*="st-key-mp_"] [data-testid="stExpander"] details > div {
+  padding-left: 0 !important; padding-right: 0 !important;
+}
+/* 펼쳤을 때 맨 위에 실제 쓰인 선정 기준. 표마다 다르므로 여기 찍어야 한다. */
+.mp-basis-in { font-size: 10px; color: var(--faint); margin: 0 0 8px; }
+/* 좌우 2열이라 열 사이 여백만 준다 — 열마다 테두리를 주면 또 박스가 된다. */
+[class*="st-key-mp_"] [data-testid="stHorizontalBlock"] { gap: 14px !important; }
+
+/* ⚠ 멀티셀렉트 칩 색 규칙은 걷어냈다(2026-09-09) — `st.data_editor`로 바뀌면서
+   칩이 없어졌다. 표 강조색과의 대응은 컬럼 이름(`우수`/`저조`)이 담당한다. */
 
 /* 필터가 실제로 무엇을 걸고 있는지 한 줄로 — 값 없는 칩은 아무 일도 하지 않는다. */
 .pv-state { font-size: 11.5px; color: var(--muted); margin: 3px 0 2px 2px; }
@@ -1043,44 +1151,49 @@ section[data-testid="stSidebar"] h2 {
   opacity: 1;
 }
 
+/* 브랜드 블록 — 사이드바에 브랜드 흔적이 전혀 없다는 지적을 받아 상단 3px 바를
+   넣었다(2026-09-09). 액센트를 쓰는 자리는 **정체성**이라 성과 강조색과 부딪히지
+   않는다. 밑줄 구분선은 없앴다 — 아래 항목마다 선을 그으면 선이 열 개가 된다. */
 .sb-brand {
   display: flex; align-items: center; gap: 9px;
-  padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+  border-top: 3px solid var(--brand);
+  padding: 13px 0 16px; margin-bottom: 2px;
 }
-.sb-brand img { width: 26px; height: 26px; object-fit: contain; }
-.sb-brand-t { font-size: 13px; font-weight: 800; color: var(--ink); letter-spacing: -.02em; }
-.sb-brand-s { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.sb-brand img { width: 24px; height: 24px; object-fit: contain; }
+.sb-brand-t { font-size: 12.5px; font-weight: 700; color: var(--ink); letter-spacing: -.02em; }
+.sb-brand-s { font-size: 10.5px; color: var(--faint); margin-top: 2px; }
 
 /* 사이드바 metric(구글 파일 수) 크기는 아래 데이터 카드 규칙에서 한 번에 정한다 —
    여기서 또 지정하면 셀렉터가 더 구체적이라 카드 규칙을 눌러버린다(실제로 그랬다). */
 
-/* 사이드바 카드 — 성격이 다른 것들(매번 만지는 컨트롤 / 출처 정보)을 카드로 갈라 놓는다.
-   한 줄로 이어 놓으면 헤더·metric·caption이 뒤섞여 금방 산만해진다(실제 피드백). */
-.st-key-sb_controls, .st-key-sb_data {
-  background: #f7f9fa; border: 1px solid var(--line-soft) !important;
-  border-radius: 6px; padding: 12px 12px 4px 12px !important; margin-bottom: 10px;
-}
-/* 카드 맨 아래 요소(모드 토글 / 고정 CTA 블록)가 테두리에 붙어 답답해 보였다 */
-.st-key-sb_controls { padding-bottom: 14px !important; }
-.st-key-sb_data { padding-bottom: 14px !important; }
+/* 사이드바 구획 — **카드를 쓰지 않는다**(2026-09-09 개편).
+   예전에는 회색 카드 두 개로 갈랐는데, `데이터` 카드 하나에 시트·구글·Drive·마크업·
+   고정 패널 다섯 종이 들어가고 그 안에 또 소제목 3개, 또 그 안에 고정 패널 박스가
+   있었다 — **박스 안 박스 안 박스**. 카드는 위계를 나타낼 때만 쓰고, 여기서는
+   여백과 얇은 선으로 묶는다. */
+.st-key-sb_controls, .st-key-sb_data { margin-bottom: 4px; }
+.st-key-sb_controls { padding-bottom: 6px !important; }
 .st-key-sb_controls [data-testid="stVerticalBlock"],
 .st-key-sb_data [data-testid="stVerticalBlock"] { gap: 4px !important; }
-/* 카드 안의 입력은 흰색으로 띄워 배경과 구분한다 */
-.st-key-sb_data [data-baseweb="input"], .st-key-sb_data [data-baseweb="base-input"] {
-  background: #fff !important;
-}
-/* 라벨 표기를 한 가지로 통일한다 — 예전엔 header/metric/caption이 제각각이었다 */
+/* 카드 배경이 없어졌으므로 입력을 따로 띄울 필요가 없다(2026-09-09 개편). */
+/* 라벨은 **한 가지뿐이다.** 예전에는 `.sb-lab`·`.sb-card-t`·`.sb-sub`·`h2` 네 가지가
+   모두 10.5~11px / 굵기 700~800 / letter-spacing 0.04~0.12em로 **거의 같은데 미묘하게
+   달라서** 위계가 아니라 노이즈였다(2026-09-09 개편). 구획은 색·굵기가 아니라
+   여백으로 나눈다. */
 .sb-lab {
-  font-size: 10.5px; font-weight: 700; color: var(--muted);
-  letter-spacing: .06em; margin: 6px 0 4px 0;
+  font-size: 9.5px; font-weight: 700; color: var(--faint);
+  letter-spacing: .1em; margin: 14px 0 4px 0;
 }
-.sb-card-t {
-  font-size: 11px; font-weight: 700; color: var(--ink-2);
-  letter-spacing: .04em; margin-bottom: 8px;
+.sb-lab:first-child { margin-top: 2px; }
+/* `구글 비용 마크업`은 원본 목록이 아니라 **계산 설정**이다. 원본 줄 바로 밑에
+   붙어 같은 블록으로 보인다는 지적을 받아, 선과 여백으로 확실히 갈랐다(2026-09-09). */
+.sb-lab.is-split {
+  margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line);
 }
-.sb-sub {
-  font-size: 10.5px; font-weight: 700; color: var(--muted); letter-spacing: .06em;
-  margin: 14px 0 4px 0; padding-top: 10px; border-top: 1px solid var(--line);
+/* 예전 이름들은 같은 모양으로 남겨 둔다 — 남아 있는 호출부가 갑자기 커지지 않게. */
+.sb-card-t, .sb-sub {
+  font-size: 9.5px; font-weight: 700; color: var(--faint);
+  letter-spacing: .1em; margin: 14px 0 4px 0;
 }
 /* 카드 안 위젯 라벨·캡션·metric을 sb-lab과 같은 급으로 낮춘다 — 크기가 제각각이면
    카드로 묶어도 여전히 산만해 보인다 */
@@ -1120,10 +1233,14 @@ section[data-testid="stSidebar"] h2 {
 /* 구글 데이터 고정 CTA — 박스(옅은 민트 배경 + 브랜드 테두리)는 사용자가 승인한
    원래 톤 그대로 유지한다. 문제는 버튼 쪽이었다: 글자가 좁은 사이드바 폭에서
    두 줄로 어색하게 접혔다 — 라벨을 짧게 줄이고 nowrap을 강제해 고친다. */
+/* ⚠ 2026-09-09: 연초록 배경을 **흰색으로 바꿨다.** 이 상태만 배경이 달라서, 같은
+   자리인데 달마다 모양이 달라 보였다(규리님: *"9월로 넘어가니까 왤케 홀쭉해졌어?"*).
+   고정된 달(`google_freeze_done`)과 같은 흰 배경·같은 테두리를 쓰고, "아직 안 했다"는
+   우측 `미고정` 칩이 말한다. 상단 2px 브랜드 선은 남긴다 — 눈에 걸려야 하는 상태다. */
 .st-key-google_freeze_pending {
-  border: 1px solid #b8ecd2 !important;
+  border: 1px solid var(--line) !important;
   border-top: 2px solid var(--brand) !important;
-  background: #e7f9f0 !important;
+  background: #fff !important;
   border-radius: 0 0 4px 4px !important;
   padding: 12px 12px 14px !important;
 }

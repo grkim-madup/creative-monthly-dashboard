@@ -26,8 +26,9 @@ def entrypoints():
 def test_두_섹션_모두_편집기를_붙인다():
     checked = 0
     for name, source in entrypoints():
-        # 메타·틱톡: 소재명 기준
-        assert "manual_pick_editor(top, month, os_name, rank_metric)" in source, name
+        # 메타·틱톡: 소재명 기준 + 축약 라벨(칩에서 앞이 잘려 구분이 안 됐다)
+        assert ("manual_pick_editor(top, month, os_name, rank_metric, "
+                "label_fn=ad_pick_label)") in source, name
         # 구글: 애셋 URL 기준 + 읽을 수 있는 라벨
         assert 'id_column="asset", label_fn=google_pick_label' in source, name
         assert "manual_picks.google_os(g_os)" in source, name
@@ -35,7 +36,7 @@ def test_두_섹션_모두_편집기를_붙인다():
     assert checked
 
 
-@pytest.mark.parametrize("call", ["manual_pick_editor(top, month, os_name, rank_metric)",
+@pytest.mark.parametrize("call", ["manual_pick_editor(top, month, os_name, rank_metric,",
                                   "manual_pick_editor("])
 def test_편집기는_편집_모드에서만_보인다(call):
     """광고주에게 그대로 공유하는 화면이다 — 보기 모드에 편집 도구가 있으면 안 된다."""
@@ -97,24 +98,48 @@ def test_저장_키는_라벨이_아니라_식별자다():
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
         body = ast.unparse(fn)
-        # 멀티셀렉트의 값은 `options`(식별자)이고 라벨은 `format_func`로만 쓴다.
-        assert "format_func=show" in body, name
-        # `ast.unparse`는 따옴표를 정규화한다 — 홑따옴표로 확인한다.
-        assert "st.multiselect('우수', options" in body, name
-        assert "st.multiselect('저조', [a for a in options" in body, name
+        # 2026-09-09: 멀티셀렉트 → `st.data_editor`(표와 같은 순서로 체크). 칩이
+        # 폭에 걸려 앞에서 잘렸고, 좌우 2열로 나누면서 더 심해졌다.
+        #
+        # 계약은 그대로다 — **보여주는 것은 라벨, 되받는 것은 식별자.** 라벨로
+        # 저장하면 소진액이 바뀌는 다음 달에 지정이 통째로 끊긴다.
+        assert "[show(ident) for ident in options]" in body, name
+        assert "options[i]" in body, f"{name}: 식별자로 되받지 않는다"
+        assert "st.data_editor" in body, name
 
 
-def test_수기_지정_패널은_접히지_않는다():
-    """시안 A(2026-09-09 승인) — 편집 모드에서만 뜨는 패널이므로 클릭 없이 보여야 한다.
+def test_수기_지정_패널은_평소_접혀_있다():
+    """규리님 결정(2026-09-09 오후): *"항상 펼쳐두지는 말고, 평소엔 접어뒀다가 내가
+    필요할 때만 펼쳐서"*.
 
-    `st.expander`로 되돌리면 "지금 자동으로 뭐가 뽑혔는지"가 한 번 숨는다.
+    ⚠ 내가 오전에 이 계약을 **반대로** 못 박아 뒀다("접히지 않는다"). 근거로
+    "편집 모드에서만 뜨니 클릭 없이 보여야 한다"를 들었는데, **표가 6개면 패널도
+    6개가 다 펼쳐진다**는 것을 계산하지 않았다. 화면 길이를 실제로 보고서야 드러났다.
+
+    대신 지정된 소재는 **접힌 상태에서도 칩으로 보인다**(아래 테스트) — 원래 근거였던
+    "무엇이 사람 판단인지 보여야 한다"는 그쪽으로 지킨다.
     """
     for name, source in entrypoints():
         fn = next(n for n in ast.walk(ast.parse(source))
                   if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
         body = ast.unparse(fn)
-        assert "st.expander" not in body, name
-        assert "st.container(key=f'mp_{key}')" in body, name
+        assert "st.expander" in body, name
+        assert "expanded=False" in body, f"{name}: 기본이 펼침이면 예전으로 돌아간다"
+
+
+def test_지정_칩을_접힌_줄_위에_그리지_않는다():
+    """규리님이 걷어낸 것(2026-09-09) — *"선택된 소재를 드롭박스 위에 미리 보이게
+    하지 말라는 의미였어."*
+
+    내가 3안으로 만들었던 칩 미리보기다. 표 위쪽에 칩 줄이 떠서 표와 패널 사이를
+    끊었다. 건수는 접힌 헤더 문구(`수기 N건`)로 알린다.
+    """
+    for name, source in entrypoints():
+        fn = next(n for n in ast.walk(ast.parse(source))
+                  if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
+        body = ast.unparse(fn)
+        assert "mp-chips" not in body, name
+        assert "수기 {len(current)}건" in body or "수기 " in body, name
 
 
 def test_선정_기준을_헤더에_찍는다():
@@ -125,17 +150,24 @@ def test_선정_기준을_헤더에_찍는다():
         body = ast.unparse(fn)
         assert "pick_metrics_for(table)" in body, name
         assert "mp-basis" in body, name
-        # 수기 지정이 살아 있으면 자동 선정이 버려진다는 사실을 배지로 알린다.
-        assert "is-manual" in body, name
+        # 수기 지정이 살아 있으면 자동 선정이 버려진다는 사실을 알려야 한다.
+        # 3안에서 이 문구는 **접힌 헤더**로 옮겼다 — 펼치지 않아도 보여야 한다.
+        assert "자동 선정 안 씀" in body, name
+        assert "자동 선정 사용 중" in body, name
 
 
-def test_칩_색은_표_강조색과_같은_키로_묶인다():
-    """칩과 표가 다른 색이면 "이 지정이 그 색인가"를 다시 확인해야 한다."""
-    css = pathlib.Path("ui.py").read_text(encoding="utf-8")
+def test_우수_저조_두_컬럼으로_고른다():
+    """표와 같은 순서로 늘어놓고 **체크박스 두 컬럼**으로 고른다(1안, 2026-09-09).
+
+    ⚠ 예전에는 칩 색을 표 강조색과 맞추는 것이 계약이었다(멀티셀렉트 시절).
+      `st.data_editor`는 행 배경을 칠할 수 없어 그 계약이 성립하지 않는다 —
+      대신 컬럼 이름(`우수`/`저조`)이 표의 색 의미와 1:1로 대응한다.
+    """
     for name, source in entrypoints():
         fn = next(n for n in ast.walk(ast.parse(source))
                   if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
         body = ast.unparse(fn)
-        assert "mpbest_{key}" in body and "mpworst_{key}" in body, name
-    for key, fill in (("mpbest_", "#eefaf3"), ("mpworst_", "#fdf1f1")):
-        assert f'st-key-{key}' in css and fill in css
+        assert "CheckboxColumn('우수'" in body, name
+        assert "CheckboxColumn('저조'" in body, name
+        # 한 소재를 양쪽에 체크한 경우를 조용히 넘기지 않는다.
+        assert "우수·저조 양쪽에 체크" in body, name

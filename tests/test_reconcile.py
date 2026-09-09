@@ -343,7 +343,9 @@ def test_설명되지_않는_차이가_있으면_경고한다():
     fp, parsed, _ = full_case()
     scope = parsed.iloc[:1]
     line = reconcile.summary_line(reconcile.waterfall(fp, parsed, scope, 8))
-    assert line.startswith("⚠")
+    # 이모지를 쓰지 않는다 — 이 프로젝트 규칙이다(2026-09-09에 내가 어겨서 고쳤다).
+    assert "⚠" not in line
+    assert "확인이 필요" in line
 
 
 @pytest.mark.parametrize("orphans, unnamed, expected", [

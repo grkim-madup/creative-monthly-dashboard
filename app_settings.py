@@ -37,7 +37,10 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "notes" / "app_settings.json"
 
 #: 저장할 수 있는 키. 모르는 키는 버린다 — 저장소가 잡동사니가 되면 무엇이 쓰이는지
 #: 알 수 없어진다.
-KEYS = ("sheet_url", "google_folder")
+#: `last_backup_at` — 마지막 백업 시각. **전원 공유**가 맞다: 팀원이 백업했는지
+#: 서로 알아야 중복으로 돌리거나 아무도 안 돌리는 일이 없다. 세션 상태로 두면
+#: 새로고침 한 번에 사라진다.
+KEYS = ("sheet_url", "google_folder", "last_backup_at")
 
 
 def _clean(data) -> dict[str, str]:

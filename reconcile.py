@@ -414,6 +414,55 @@ def has_issues(steps: list[dict], gap: dict, orphans: list[dict]) -> bool:
             or bool(orphans))
 
 
+def cost_matches(steps: list[dict]) -> bool:
+    """소진액이 원본과 맞는가 — **이 점검의 결론**이다.
+
+    평소 확인할 것은 이 하나뿐이다. 접힌 줄에서 바로 답해야 표를 펼치지 않아도 된다
+    (2026-09-09 개편, 시안 ①).
+    """
+    if not steps:
+        return False
+    intended = sum(s["d_cost"] for s in steps[1:] if s["verdict"] == VERDICT_INTENDED)
+    return round(steps[-1]["cost"] - steps[0]["cost"] - intended, 2) == 0
+
+
+def issue_count(steps: list[dict], orphans: list[dict]) -> int:
+    """`확인 필요` 건수. 예전에는 "확인이 필요한 항목이 있습니다"라고만 해서
+    **몇 건인지 알 수 없었다** — 펼쳐서 표를 읽어야 했다."""
+    return sum(1 for s in steps if s["verdict"] == VERDICT_CHECK) + (1 if orphans else 0)
+
+
+def headline(steps: list[dict], gap: dict, orphans: list[dict]) -> str:
+    """펼쳤을 때 **맨 위에 오는 결론 문장.**
+
+    왜 필요한가: 예전에는 7×8 표를 먼저 보여주고 사유를 표의 마지막 컬럼에 넣었다.
+    긴 문장이 들어가 표가 밀렸고, 정작 "그래서 숫자가 맞느냐"는 맨 아래 캡션에
+    있었다. 결론을 앞으로 올리고 사유는 이 문장에 녹인다 — 표에서 `사유` 컬럼이
+    사라진다.
+    """
+    if not steps:
+        return "점검할 데이터가 없습니다."
+    parts: list[str] = []
+    if cost_matches(steps):
+        parts.append("소진액은 원본과 차이 0원입니다.")
+    else:
+        parts.append(summary_line(steps) + ".")
+    detail: list[str] = []
+    if gap.get("unnamed_install"):
+        detail.append(
+            f"소재명이 빈 행 {int(gap['unnamed_rows']):,}개가 "
+            f"설치 {gap['unnamed_install']:,.0f}건을 들고 제외되고")
+    if any(r["delta"] and r["os"] == "iOS" for r in gap.get("by_os", [])):
+        detail.append("iOS는 코호트 값으로 대체됩니다")
+    if detail:
+        parts.append("설치만 의도적으로 조정됩니다 — " + ", ".join(detail) + ".")
+    if orphans:
+        parts.append(
+            f"확인 필요: 코호트에 설치가 있는데 Media_RAW에 iOS 행이 없는 소재 "
+            f"{len(orphans)}개(설치 {sum(o['install'] for o in orphans):,.0f}건).")
+    return " ".join(parts)
+
+
 def summary_line(steps: list[dict]) -> str:
     """맨 아래 한 줄. 소진이 원본과 맞는지가 이 점검의 결론이다."""
     if not steps:
@@ -425,4 +474,5 @@ def summary_line(steps: list[dict]) -> str:
     if leftover == 0:
         return (f"소진 ₩{screen:,.0f} — 시트 원본에서 의도된 제외분만큼만 줄었습니다"
                 f" (설명되지 않는 차이 ₩0)")
-    return f"⚠ 설명되지 않는 소진 차이 ₩{leftover:,.0f} — 확인이 필요합니다"
+    # ⚠ 이모지를 쓰지 않는다 — 이 프로젝트 규칙이다(2026-09-09에 내가 어겼다).
+    return f"설명되지 않는 소진 차이 ₩{leftover:,.0f} — 확인이 필요합니다"
