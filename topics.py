@@ -55,6 +55,15 @@ SURGE_RATIO = 1.5
 #: 대시보드의 `MIN_COST`와 같은 값이지만 뜻이 다르다(저쪽은 TOP N 후보 컷).
 MIN_TOPIC_COST = 100_000
 
+#: 후보로 볼 최소 **소재 수**. 규리님 요청(2026-09-16): *"소재가 한 개밖에 없는 애들은
+#: 신규 소재군으로 넣지 마. 2개 이상부터만 추가해."*
+#:
+#: 소재 하나짜리는 **소재군이 아니다.** 8월 후보 목록에 `RETURN2`·`SOCIAL1`·`RETURN5`·
+#: `THUMBNAILMOVING`·`恐怖usp`가 전부 소재 1개로 떠서 목록의 절반을 차지했다. 표를
+#: 세워도 한 줄이라 "이 유형이 어떤가"를 말할 수 없고, 대조군 판정도 표본 게이트
+#: (설치 30건)에 걸려 `판단 불가`가 된다.
+MIN_TOPIC_ADS = 2
+
 
 #: 버전·배리에이션 표기는 분석 주제가 아니다. 실데이터의 태그 어휘에는 `1`·`2`·`a`·`ab`·
 #: `12th`·`12anniversaryw2`처럼 USP 버전 번호나 소재 배리에이션 표기가 섞여 들어와 있다
@@ -109,11 +118,14 @@ def _display_label(field: str, value: str) -> str:
 
 
 def candidates(all_months: pd.DataFrame, month: int, *, lookback: int = 3,
-               min_cost: float = MIN_TOPIC_COST) -> list[dict]:
+               min_cost: float = MIN_TOPIC_COST,
+               min_ads: int = MIN_TOPIC_ADS) -> list[dict]:
     """이번 달 분석 주제 후보.
 
     · `new`   — 이번 달 소진이 문턱 이상이고, 직전 `lookback`개월 소진이 **0**
     · `surge` — 이번 달 소진이 문턱 이상이고, 직전 달 대비 `SURGE_RATIO`배 이상
+
+    둘 다 **소재 `min_ads`개 이상**이어야 한다 — 소재 하나짜리는 소재군이 아니다.
 
     신규를 급증보다 위에 두고, 그 안에서는 소진액 내림차순이다. 신규가 "이번 달에 새로
     시도한 것"이라 리포트에서 먼저 다뤄지기 때문이다(6·7·8월 모두 그렇다).
@@ -144,6 +156,10 @@ def candidates(all_months: pd.DataFrame, month: int, *, lookback: int = 3,
 
         for value, spend in this_month.items():
             if spend < min_cost or _is_noise(field, value):
+                continue
+            # ⚠ 소진 문턱만으로는 안 걸러진다 — 소재 하나에 ₩2.8M을 쓴 `RETURN2`가
+            #   실제로 후보 1위로 올라왔다. 규모와 개수는 다른 조건이다.
+            if int(ad_counts.get(value, 0)) < min_ads:
                 continue
             before = float(prior[value]) if prior_cols else 0.0
             previous = float(last_month[value]) if last_month is not None else 0.0
@@ -182,6 +198,66 @@ def candidates(all_months: pd.DataFrame, month: int, *, lookback: int = 3,
 
 def preset_title(label: str) -> str:
     return f"{label} 소재 성과 분석"
+
+
+# --------------------------------------------------------------------------- 장르
+
+#: 장르는 위 주제 후보와 **성격이 다르다.** 태그·유형은 매달 새로 생기고 사라져서
+#: "이번 달 신규/급증"이 뜻을 갖지만, 장르는 10종이 고정이고 매달 같다. 그래서
+#: 후보 목록에 얹지 않고 **프리셋 버튼 하나**로 만든다(규리님 선택 2026-09-16:
+#: *"대시보드에선 모든 수작업은 최소한으로"*).
+GENRE_FIELD = "genre_group"
+
+#: 장르 표에 쓸 지표. `DEFAULT_PIVOT_VALUES`와 달리 **작품 단위에서 성립하는 것만** 쓴다.
+GENRE_VALUES = ["cost", "impression", "click", "CTR", "total install", "CPI",
+                "D0 read CVR", "D0 coin CVR"]
+
+def genre_preset_views() -> list[dict]:
+    """장르 블록의 표 세 개. **구글을 포함한 작품 단위**로 미리 켜 둔다.
+
+    ⚠ `title_level=True`는 행·필터가 전부 작품 단위 축일 때만 유효하다
+    (`creative_data.title_level_allowed`). 여기 세 표는 전부 그 조건을 만족한다 —
+    하나라도 소재 축을 넣으면 화면이 조용히 소재 단위로 되돌린다.
+
+    ⚠ `id`를 반드시 박는다(`preset_views`와 같은 이유). 비우면 리런마다 새 uuid가
+      발급돼 위젯 상태·셀 강조가 앵커를 잃는다.
+    """
+    def base(label: str, rows: list[str], rank_by: str = "") -> dict:
+        return {
+            "rank_by": rank_by,
+            "id": uuid4().hex[:6],
+            "label": label,
+            "kind": "pivot",
+            "rows": [{"field": f} for f in rows],
+            "values": list(GENRE_VALUES),
+            "filters": {},
+            # 작품 단위 = 구글 포함. 3번 섹션 애셋 표와 달리 배분 왜곡을 타지 않는다.
+            "title_level": True,
+            # 대조군·썸네일은 소재 단위 프레임을 전제한다 — 작품 단위에서는 성립하지 않고
+            # `view_with_defaults`가 어차피 끈다. 여기서도 명시해 둔다.
+            "contrast": False, "contrast_field": "", "thumbs": False,
+            "include_ads": [],
+        }
+
+    return [
+        # ⭐ **이 표가 질문에 답한다** — 규리님(2026-09-16): *"각 매체별로 어떤 장르가
+        #    효율이 좋은가를 보는 게 목적."* 매체·OS로 묶고 그 안에서 장르를 CPI 순으로
+        #    세운다. 장르를 **마지막 행**에 두는 것이 핵심이다(`rank_within_groups`가
+        #    마지막 축을 그룹 안에서 줄세운다).
+        base("매체·OS별 장르 효율", ["media", "os", GENRE_FIELD], rank_by="CPI"),
+        # 매체를 합쳐 OS만 본 것 — 전체 그림용.
+        base("OS별 장르 효율", ["os", GENRE_FIELD], rank_by="CPI"),
+    ]
+    # ⚠ `장르별 작품 성과`는 **자동으로 만들지 않는다**(규리님 2026-09-16).
+    #    장르 표의 질문은 "매체별로 어떤 장르가 좋은가"이고, 작품 단위는 그 질문에
+    #    답하지 않는다. 필요하면 표를 하나 더해 행을 `장르`·`작품`으로 고르면 된다.
+
+
+#: 블록 제목. **요약을 붙이지 않는다**(규리님 2026-09-16: *"그냥 장르별 성과로만"*).
+#: 예전에는 `장르별 성과 · AOS FANTASY ACTION / iOS ADULT`처럼 계산한 요약을 붙였는데,
+#: 그 판단은 표와 인사이트 초안이 이미 말한다 — 제목에까지 넣으면 중복이고, 매달
+#: 제목이 달라져 목차에서 같은 주제로 안 읽힌다.
+GENRE_TITLE = "장르별 성과"
 
 
 def preset_views(label: str, field: str, value: str) -> list[dict]:

@@ -37,6 +37,7 @@ import manual_picks
 import overrides as manual_overrides
 import prefetch
 import reconcile
+import title_genre
 import topics
 from view_state import (
     empty_periods,
@@ -81,7 +82,11 @@ from creative_data import (
     DEFAULT_PIVOT_ROWS,
     DEFAULT_PIVOT_VALUES,
     spend_pool,
+    drop_unattributable,
+    sort_within_groups,
+    title_level_allowed,
     top_creatives,
+    UNRANKED_VALUES,
 )
 from google_ads_report import (
     DEFAULT_COST_MARKUP,
@@ -96,7 +101,13 @@ from google_ads_report import (
     GOOGLE_DEFAULT_VALUES,
     load_google_ads_folder,
 )
-from sheet_loader import cache_timestamp, extract_sheet_id, load_media_raw
+from sheet_loader import (
+    DEFAULT_GENRE_SHEET,
+    cache_timestamp,
+    extract_sheet_id,
+    load_media_raw,
+    load_title_genres,
+)
 from streamlit_quill import st_quill
 
 from next_step import (
@@ -274,6 +285,7 @@ COLUMN_LABELS = {
     "D0 coin": "D0 Coin",
     "D0 read CVR": "D0 Read CVR",
     "D0 coin CVR": "D0 Coin CVR",
+    "genre_group": "장르",
 }
 
 # 퍼센트가 아닌 값은 전부 소수점 없이. 퍼센트만 소수 2자리.
@@ -309,6 +321,7 @@ PIVOT_FIELDS = {
     "producer_group": "제작 주체",
     "usp": "USP",
     "title_kr": "작품",
+    "genre_group": "장르",
     "media": "매체",
     "os": "OS",
 }
@@ -840,15 +853,44 @@ def _media_frozen_stamps() -> tuple[tuple[int, str], ...]:
                  for month, data in sorted(_media_meta().items()))
 
 
-@st.cache_data(show_spinner="고정된 월 데이터 불러오는 중…")
-def _media_frozen(sid: str, stamps: tuple) -> tuple[pd.DataFrame, tuple[int, ...]]:
-    """라이브 시트에 고정 스냅샷을 덮어씌운 프레임.
+#: 장르표는 하루에도 몇 번 안 바뀐다 — 길게 캐시해도 "고쳤는데 화면이 그대로"가
+#: 되지 않는다(쓰기가 **우리 쪽에 없는** 읽기 전용 참조 데이터다).
+@st.cache_data(ttl=600, show_spinner=False)
+def _genre_table(genre_sheet: str) -> dict:
+    """광고주 PM 시트의 작품 장르 대응표. 못 읽어도 예외를 올리지 않는다."""
+    return load_title_genres(genre_sheet)
 
-    `sid`·`stamps`는 캐시 키로만 쓴다 — 시트를 갈아끼우거나 다시 고정하면 다시 읽는다.
+
+def _frozen_genre_tables() -> dict[int, dict]:
+    """고정할 때 함께 얼려 둔 달별 장르표. 없는 달은 라이브로 떨어진다.
+
+    ⚠ **읽기를 늘리지 않는다** — 이미 읽은 고정 메타(`_media_meta`) 안에 실려 온다.
+    """
+    out: dict[int, dict] = {}
+    for month, data in _media_meta().items():
+        table = (data.get("settings") or {}).get("genre_table")
+        if table:
+            out[int(month)] = table
+    return out
+
+
+@st.cache_data(show_spinner="고정된 월 데이터 불러오는 중…")
+def _media_frozen(sid: str, stamps: tuple, genre_sheet: str) -> tuple[pd.DataFrame, tuple[int, ...]]:
+    """라이브 시트에 고정 스냅샷을 덮어씌우고 **장르를 붙인** 프레임.
+
+    `sid`·`stamps`·`genre_sheet`는 캐시 키로만 쓴다 — 시트를 갈아끼우거나 다시
+    고정하면 다시 읽는다.
     """
     live = _load(sid)
     # 이미 읽어 둔 메타를 넘겨, 달마다 존재 확인을 다시 묻지 않게 한다.
     merged, swapped = media_snapshot.apply(live, known=_media_meta())
+    # ⚠ **장르는 스냅샷을 적용한 뒤에 붙인다.** 파싱 단계에 넣으면 이미 고정된 달에
+    #    그 컬럼이 없어 `media_snapshot.apply`가 pd.NA로 채우고, 화면에서 7·8월 전체가
+    #    `미분류` 한 줄로 뭉친다(다시 고정하기 전까지 복구 불가). 조인키인
+    #    `title_code`·`title_kr`은 고정본에도 그대로 있으므로 뒤에 붙이면 과거 달도
+    #    정상으로 나온다. 덤으로 `PARSER_VERSION`을 올릴 필요가 없다.
+    merged = title_genre.attach_genre_by_month(
+        merged, _genre_table(genre_sheet), _frozen_genre_tables())
     return merged, tuple(swapped)
 
 
@@ -1296,9 +1338,25 @@ with data_card:
                     st.caption("링크를 저장했습니다.")
                 else:
                     st.warning(f"링크를 저장하지 못했습니다: {_why}")
+        # 장르(작품 CLUSTER) 원본 — **광고주 소유 시트라 읽기만 한다.**
+        _saved_genre = app_settings.get("genre_sheet_url", DEFAULT_GENRE_SHEET)
+        with st.expander("장르 시트 링크", expanded=False):
+            genre_url = st.text_input(
+                "장르 시트 링크", key="genre_sheet_url",
+                value=_saved_genre, label_visibility="collapsed",
+                help="작품 장르(CLUSTER)를 읽어 오는 광고주 PM 시트입니다. "
+                     "읽기 전용으로만 접근하며 한 글자도 쓰지 않습니다.",
+            )
+            if genre_url.strip() and genre_url.strip() != _saved_genre.strip():
+                _ok, _why = app_settings.save("genre_sheet_url", genre_url.strip())
+                if _ok:
+                    st.caption("링크를 저장했습니다.")
+                else:
+                    st.warning(f"링크를 저장하지 못했습니다: {_why}")
     else:
         # 광고주는 링크 자체를 보지 않는다. 값은 저장소에 있는 것을 그대로 쓴다.
         sheet_url = _saved_sheet
+        genre_url = app_settings.get("genre_sheet_url", DEFAULT_GENRE_SHEET)
     # 링크가 맞게 들어갔는지는 **URL을 눈으로 대조해서 알 수 없다.** 실제로 읽힌
     # 데이터가 어느 달 몇 행인지를 찍어 준다(규리님 2026-09-08: "일일히 링크 복붙해서
     # 확인하기 힘들어"). 내용은 시트를 읽은 뒤 아래에서 채운다.
@@ -1309,6 +1367,12 @@ try:
 except ValueError as error:
     st.sidebar.error(str(error))
     st.stop()
+
+# 장르 시트는 못 읽어도 리포트를 막지 않는다 — 장르 축만 `미분류`가 된다.
+try:
+    genre_sheet_id = extract_sheet_id(genre_url)
+except ValueError:
+    genre_sheet_id = DEFAULT_GENRE_SHEET
 
 with data_card:
     # 재로딩은 쿼터를 쓰고 전원의 캐시를 비운다 — 편집 권한자만.
@@ -1333,7 +1397,8 @@ try:
     # 고정한 달은 스냅샷 행으로 갈아끼운다 — 시트가 나중에 갱신돼도 이미 광고주에게
     # 보낸 달의 숫자가 움직이지 않는다(규리님 2026-09-08: "매달 보여야 하는 데이터의
     # 기준이 달라"). 고정 안 한 달은 라이브 시트를 그대로 본다.
-    raw, frozen_media_months = _media_frozen(sheet_id, _media_frozen_stamps())
+    raw, frozen_media_months = _media_frozen(
+        sheet_id, _media_frozen_stamps(), genre_sheet_id)
 except Exception as error:  # 시트 권한/탭 이름 문제를 화면에 그대로 노출
     st.error(f"시트를 읽지 못했습니다: {error}")
     st.stop()
@@ -1844,6 +1909,13 @@ def freeze_month(month: int) -> list[str]:
     settings = {"sheet_id": sheet_id, "sheet_url": sheet_url,
                 "google_folder": str(google_folder),
                 "cost_markup": float(cost_markup)}
+    # ⚠ **장르표를 그때 값으로 함께 얼린다.** 장르는 스냅샷을 적용한 뒤에 붙으므로,
+    #    이걸 안 저장하면 광고주가 작품을 재분류했을 때 **이미 보낸 달의 표가 조용히
+    #    달라진다**(마크업 고정이 반쪽이라 같은 사고를 냈던 자리다 — 2026-09-08).
+    #    실측 233KB로 Firestore 문서 상한 1 MiB의 22%다(`tools/audit_genre.py` G5).
+    _genre = _genre_table(genre_sheet_id)
+    if _genre.get("by_code") or _genre.get("by_name"):
+        settings["genre_table"] = _genre
     done: list[str] = []
 
     # 메타·틱톡이 먼저다. 구글은 폴더가 없을 수 있지만 이쪽은 항상 가능하다.
@@ -2528,10 +2600,52 @@ def add_topic_block(slot: str, position: int, label: str, field: str,
         rerun_local()
 
 
+def add_genre_block(slot: str, position: int) -> None:
+    """장르 블록 하나 = 표 세 개. **버튼 한 번으로 끝난다.**
+
+    규리님(2026-09-16): *"대시보드에선 모든 수작업은 최소한으로 들어가야 해."*
+    장르는 매달 같은 질문이고 표 구성도 매달 같다 — 사람이 매번 행·값·필터·구글
+    토글을 다시 고를 이유가 없다.
+
+    제목도 계산으로 채운다(`topics.genre_headline`). 지금은 제목만 손으로 쓰는데,
+    그 판단(어느 OS에 어느 장르가 맞나)이 바로 표가 답하는 것이다.
+
+    `add_topic_block`과 같이 **한 번의 커밋**이다 — 표가 없는 빈 블록이 저장되는
+    순간이 아예 없다.
+    """
+    created: dict[str, str] = {}
+
+    def _fn(data):
+        block_id = report_blocks.add_block(
+            data, slot, "creative_query", topics.GENRE_TITLE, position=position
+        )
+        created["id"] = block_id
+        report_blocks.update_block(
+            data, slot, block_id, views=topics.genre_preset_views()
+        )
+
+    if commit_blocks(month, _fn):
+        st.session_state.pop(f"views_{created.get('id', '')}", None)
+        rerun_local()
+
+
 def topic_picker(slot: str, position: int) -> None:
     """이번 달 주제 후보 목록 + 직접 고르기. 누르면 표 두 개가 든 블록이 생긴다."""
     found = topic_candidates()
     with st.popover("＋ 주제 추가", width="stretch"):
+        # 장르는 **매달 같은 질문**이라 후보 목록(신규/급증)에 얹을 수 없다 — 10종이
+        # 고정이라 "이번 달 새로 등장"이 성립하지 않는다. 그렇다고 버튼을 따로 두면
+        # 버튼 줄이 두 줄이 된다(규리님 2026-09-16) — 그래서 이 팝오버 맨 위에 둔다.
+        st.markdown(
+            '<div class="pv-lab">장르별 성과'
+            "<span>OS · 매체 · 작품 표 세 개가 한 번에 만들어집니다 (구글 포함)</span></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("장르별 성과 만들기", key=f"genre_{slot}_{position}",
+                     width="stretch"):
+            add_genre_block(slot, position)
+
+        st.divider()
         st.markdown(
             '<div class="pv-lab">이번 달 새로 등장하거나 크게 늘어난 소재군'
             "<span>고르면 매체별 표와 소재단 표가 함께 만들어집니다</span></div>",
@@ -2559,7 +2673,9 @@ def topic_picker(slot: str, position: int) -> None:
         st.markdown('<div class="pv-lab">직접 고르기<span>후보에 없는 소재군</span></div>',
                     unsafe_allow_html=True)
         key = f"pick_{slot}_{position}"
-        field = st.selectbox("구분", list(topics.CANDIDATE_FIELDS) + ["size", "format"],
+        field = st.selectbox("구분",
+                             list(topics.CANDIDATE_FIELDS)
+                             + [topics.GENRE_FIELD, "size", "format"],
                              format_func=field_label, key=f"{key}_field",
                              label_visibility="collapsed")
         options = field_value_options(field)
@@ -2720,6 +2836,8 @@ FIELD_LABELS = {
     "extra_info_tag": "Extra Info",
     # 소재명 규칙이 안 지켜진 MIX 소재군 — `creative_data.mix_group` 참고.
     "mix_group": "MIX 소재",
+    # 작품 장르 — 소재명이 아니라 광고주 PM 시트에서 온다(`title_genre`).
+    "genre_group": "장르",
 }
 
 
@@ -3061,6 +3179,145 @@ def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
                     f"(나머지 {hidden:,}개 생략).</div>", unsafe_allow_html=True)
 
 
+#: 순위표에서 **1등/꼴찌만** 칠한다. 히트맵처럼 전 줄을 칠하면 "어디가 좋은가"가
+#: 아니라 "숫자가 큰가"를 읽게 된다 — 실제로 `미분류 ₩25,458`이 가장 진한 초록이었다.
+RANK_BEST_STYLE = "background-color:#e7f9f0;color:#0F6E56;font-weight:700"
+RANK_WORST_STYLE = "background-color:#fdf1f1;color:#8a1f1f"
+
+
+def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> None:
+    """묶음별 순위표 — **대조군 표와 같은 레이아웃**(규리님 2026-09-16).
+
+    `render_table`(st.dataframe)로 그리면 묶음 칸이 줄마다 반복되고 CPI 히트맵이
+    **표 전체에 걸쳐** 돌아서, 스케일이 3~7배 다른 AOS·iOS가 한 척도로 칠해진다.
+    그래서 `ui.report_table`로 직접 그린다:
+
+      · 묶음 칸(매체·OS)을 **세로 병합** — 빈 칸이 아니라 한 덩어리로 읽힌다
+      · 묶음이 바뀌는 줄에 구분선(`ct-grp`)
+      · 색은 **묶음 안에서만** — 1등 초록 / 꼴찌 빨강. 묶음끼리 비교하는 표가 아니다
+
+    ⚠ 셀 클릭 강조는 이 경로에 없다(`report_table`의 한계). 순위표는 "어느 칸을
+      강조할까"보다 "순서가 보이는가"가 요점이라 그 교환을 받아들인다.
+    """
+    group_fields = fields[:-1]
+    labels = [field_label(f) for f in fields]
+    metric_label = COLUMN_LABELS.get(metric, metric)
+    headers = [field_label(f) for f in fields] + [
+        COLUMN_LABELS.get(c, c) for c in table.columns if c not in fields]
+    value_columns = [c for c in table.columns if c not in fields]
+
+    rows: list[list[str]] = []
+    row_classes: list[str] = []
+    styles: list[dict[str, str]] = []
+    spans: list[dict[str, int]] = []
+
+    # 묶음 = 마지막 축을 뺀 나머지의 조합. 순서는 이미 `sort_within_groups`가 잡았다.
+    # ⚠ 인덱스를 위치로 쓴다 — `sort_within_groups`가 `reset_index(drop=True)`로
+    #   돌려주므로 위치와 인덱스가 같다. 그렇지 않은 표가 들어오면 여기서 어긋난다.
+    table = table.reset_index(drop=True)
+    if group_fields:
+        keys = [tuple(str(row[f]) for f in group_fields)
+                for _, row in table.iterrows()]
+    else:
+        keys = [() for _ in range(len(table))]
+    group_key = pd.Series(keys, index=table.index)
+
+    start_of: dict[int, bool] = {}
+    previous = None
+    for index, key in enumerate(keys):
+        start_of[index] = key != previous
+        previous = key
+
+    # 각 묶음의 1등·꼴찌를 미리 찾는다. `미분류`·값 없음은 순위에서 뺀다 —
+    # 그것들은 이미 `sort_within_groups`가 뒤로 보냈다.
+    best_at: set[int] = set()
+    worst_at: set[int] = set()
+    if metric in table.columns:
+        chunks = (table.groupby(group_key, sort=False) if group_fields
+                  else [((), table)])
+        for _, chunk in chunks:
+            # ⚠ **소진이나 설치가 0인 줄은 색칠에서 뺀다.** 실제로 `Meta AOS
+            #   THRILLER & HORROR`가 소진 ₩0 · 설치 6건이라 CPI ₩0으로 찍혀
+            #   1등 초록이 됐다 — 집행하지 않은 것이 "가장 효율이 좋다"로 읽힌다.
+            ranked = chunk[chunk[metric].notna()
+                           & ~chunk[fields[-1]].astype(str).isin(UNRANKED_VALUES)]
+            for guard in ("cost", "total install"):
+                if guard in ranked.columns:
+                    ranked = ranked[ranked[guard].fillna(0) > 0]
+            if len(ranked) < 2:
+                continue
+            ascending = metric in LOWER_IS_BETTER
+            ordered = ranked.sort_values(metric, ascending=ascending)
+            best_at.add(ordered.index[0])
+            worst_at.add(ordered.index[-1])
+
+    for index, (position, row) in enumerate(table.iterrows()):
+        line = [str(row[f]) for f in fields]
+        for column in value_columns:
+            line.append(fmt_metric(column, row[column]))
+        rows.append(line)
+        row_classes.append("ct-grp" if (start_of[index] and index) else "")
+        style: dict[str, str] = {}
+        if position in best_at:
+            style[metric_label] = RANK_BEST_STYLE
+        elif position in worst_at:
+            style[metric_label] = RANK_WORST_STYLE
+        styles.append(style)
+
+        # 묶음 칸 세로 병합 — 축마다 따로 센다(매체가 OS 두 덩이를 덮는다).
+        span: dict[str, int] = {}
+        for depth, field in enumerate(group_fields):
+            prefix = tuple(str(row[f]) for f in group_fields[:depth + 1])
+            same = [i for i, k in enumerate(keys) if k[:depth + 1] == prefix]
+            span[labels[depth]] = len(same) if same and same[0] == index else 0
+        spans.append(span)
+
+    report_table(
+        rows, headers,
+        left_columns=set(labels),
+        row_classes=row_classes,
+        cell_styles=styles,
+        row_spans=spans,
+        # 잘리면 맨 뒤 묶음(구글)이 통째로 안 보인다.
+        full_height=True,
+    )
+
+
+def render_genre_gap(table: pd.DataFrame, view: dict, fields: list[str]) -> None:
+    """장르가 아직 안 붙은 작품을 **편집자에게만** 알린다.
+
+    광고주는 작품을 런칭 전에 먼저 등재하고 CLUSTER는 나중에 채운다(실측 2026-09-16:
+    10월 런칭 44건 중 CLUSTER 0건). 그래서 신규 작품은 한동안 `미분류`로 뜬다 —
+    발송 전에 규리님이 "광고주에게 등재를 요청할지"를 판단할 수 있어야 한다.
+
+    ⚠ **`auth.can_edit()`로 가린다.** `editor_allowed`는 권한이지 모드가 아니다 —
+      규리님은 편집 권한이 있어 **보기 모드에서도 보이고, 그 화면을 광고주에게
+      공유한다**(`test_editor_only_panels.py`가 잡는 사고 유형이다).
+    """
+    if not auth.can_edit() or title_genre.GENRE_COLUMN not in fields:
+        return
+    label = field_label(title_genre.GENRE_COLUMN)
+    if label not in table.columns or "cost" not in table.columns:
+        return
+
+    rows = table[table[label] == title_genre.UNKNOWN_GENRE]
+    if rows.empty:
+        return
+    missing = float(rows["cost"].sum())
+    total = float(table["cost"].sum())
+    share = missing / total if total else 0.0
+    # 매달 같은 경고는 곧 안 읽힌다 — 일본 라이선스 작품처럼 영구 미등록인 것들이
+    # 계속 뜨기 때문이다. 비중이 작으면 조용히 넘어간다.
+    if share < 0.005:
+        return
+    st.markdown(
+        f'<div class="tbl-note">장르 미등록 소진 ₩{missing:,.0f} '
+        f"({share:.1%}) — 광고주 PM 시트 <code>title_info</code>의 CLUSTER가 "
+        "아직 안 채워진 작품입니다. 표에는 <b>미분류</b>로 묶입니다.</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_view(view: dict, month: int, key_prefix: str,
                 editing: bool = False) -> None:
     """뷰 하나(테이블명 + 편집기 + 표)를 그린다.
@@ -3110,7 +3367,18 @@ def render_view(view: dict, month: int, key_prefix: str,
     #    조용히 뒤집는 것은 이 프로젝트에서 가장 위험한 실패다.
     #    노이즈를 줄이려면 필터를 쓰거나(예: 소진액 하위 제외는 그래프의 저볼륨 흐리기로),
     #    표는 필터가 말한 것을 그대로 보여준다.
-    table = pivot_frame(named_overview, view["rows"], view["values"],
+    # 작품 단위 표는 `overview`를 쓴다 = **구글이 들어온다.** 소재 단위 표는 그대로
+    # `named_overview`다(`ad == "-"`인 구글 행이 빠진 프레임).
+    # ⚠ `view_with_defaults`가 이미 축을 보고 판정해 뒀다 — 여기서 다시 묻지 않는다.
+    #   판정이 두 곳이면 갈린다(라벨 딕셔너리와 같은 문제).
+    source = overview if view["title_level"] else named_overview
+    # ⚠ 작품 단위로 **귀속이 안 되는** 행은 뺀다(구글 iOS). 그대로 두면 설치만 있는
+    #   `미분류` 줄이 CPI ₩0으로 찍히고, 실제 장르의 iOS는 소진만 남아 CPI가 빈다 —
+    #   양방향으로 틀린 숫자가 광고주에게 간다. 매체별로 표를 나눠도 안 없어진다.
+    dropped: list = []
+    if view["title_level"]:
+        source, dropped = drop_unattributable(source)
+    table = pivot_frame(source, view["rows"], view["values"],
                         filters=view["filters"],
                         include_ads=view["include_ads"])
     if table.empty:
@@ -3118,12 +3386,42 @@ def render_view(view: dict, month: int, key_prefix: str,
                    "필터를 완화하거나 행 값을 늘려 보세요.")
         return
 
+    # 그룹 안에서 줄세우기 — `aggregate_by`는 늘 소진액 내림차순이라 매체·OS가 뒤섞인다.
+    # 그러면 "이 매체 안에서 어느 장르가 좋나"를 눈으로 모아 읽어야 한다(규리님 지적).
+    if view["rank_by"]:
+        table = sort_within_groups(table, view["rows"])
+
     fields = [r["field"] for r in view["rows"]]
 
-    render_table(
-        table.rename(columns={f: field_label(f) for f in fields}),
-        color_columns=["CPI"], highlight_key=highlight_key, month=month,
-    )
+    if view["rank_by"]:
+        # 순위표는 **대조군 표와 같은 레이아웃**으로 그린다 — 묶음 칸 세로 병합 +
+        # 묶음 안에서만 색칠. `render_table`의 CPI 히트맵은 표 전체에 걸쳐 도는데,
+        # 스케일이 3~7배 다른 AOS·iOS를 한 척도로 칠하면 `미분류 ₩25,458`이 가장
+        # 진한 초록이 된다(실제로 그렇게 나왔다).
+        render_ranked_table(table, fields, view["rank_by"])
+    else:
+        render_table(
+            table.rename(columns={f: field_label(f) for f in fields}),
+            color_columns=["CPI"], highlight_key=highlight_key, month=month,
+        )
+    if view["title_level"]:
+        # ⚠ **이 각주는 광고주도 봐야 한다** — 편집 모드 안에 감싸면 안 된다.
+        #    2·4번 섹션은 소재명이 붙은 집행만 담으므로 분모가 다르다. 그 이유가
+        #    안 보이면 광고주가 표를 대조하며 어긋난 숫자를 본다.
+        st.markdown(
+            '<div class="sec-legend">구글 포함 · <b>작품 단위</b> 집계입니다. '
+            '구글은 소재 단위 태깅이 없어 소재별 표에는 나오지 않으며, 이 표의 구글 '
+            '수치는 3번 섹션의 애셋 단위 배분값이 아니라 <b>실제 집행액</b>입니다.</div>',
+            unsafe_allow_html=True,
+        )
+        for label, cost, why in dropped:
+            # **말없이 빼지 않는다** — 광고주가 1번 총괄과 대조하며 어긋난 금액을 본다.
+            st.markdown(
+                f'<div class="sec-legend">{html.escape(label)} 제외 '
+                f"(소진 ₩{cost:,.0f}) — {html.escape(why)}.</div>",
+                unsafe_allow_html=True,
+            )
+    render_genre_gap(table, view, fields)
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.
         st.markdown(
@@ -3515,16 +3813,20 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         on = bool(st.session_state.get(f"pvct_{view_key}", view["contrast"]))
         needs_pick = on and len(creative_filters) > 1
 
+        # ⚠ `구글 포함`도 **다른 토글과 같은 간격**으로 둔다. 예전에는 꼬리 여백
+        #   칸에 그려서 혼자 오른쪽으로 떨어져 있었다(규리님 2026-09-16).
+        #   칸은 켤 수 없을 때도 자리를 잡아 둔다 — 안 그러면 축을 바꿀 때마다
+        #   옆 토글들이 좌우로 흔들린다.
         if needs_pick:
-            lab, c_ct, c_lb, c_sel, c_th, _tail = st.columns(
-                [1.05, 1.7, 1.15, 2.0, 1.2, 1.9], vertical_alignment="center")
+            lab, c_ct, c_lb, c_sel, c_th, c_tl, _tail = st.columns(
+                [1.05, 1.7, 1.15, 2.0, 1.2, 1.5, 0.4], vertical_alignment="center")
         elif on:
-            lab, c_ct, c_lb, c_th, _tail = st.columns(
-                [1.05, 1.7, 3.15, 1.2, 1.9], vertical_alignment="center")
+            lab, c_ct, c_lb, c_th, c_tl, _tail = st.columns(
+                [1.05, 1.7, 3.15, 1.2, 1.5, 0.4], vertical_alignment="center")
             c_sel = None
         else:
-            lab, c_ct, c_th, _tail = st.columns(
-                [1.05, 1.7, 1.2, 5.05], vertical_alignment="center")
+            lab, c_ct, c_th, c_tl, _tail = st.columns(
+                [1.05, 1.7, 1.2, 1.5, 3.55], vertical_alignment="center")
             c_lb = c_sel = None
 
         with lab:
@@ -3563,9 +3865,28 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         thumbs = c_th.toggle("썸네일", value=bool(view["thumbs"]),
                              key=f"pvth_{view_key}")
 
+        # ── 작품 단위 집계(= 구글 포함) ─────────────────────────────────────
+        # 구글은 `Media_RAW`에 `ad == "-"`로 들어와 소재 단위 프레임(`named_overview`)
+        # 에서 빠져 있다. 장르·작품처럼 **작품 속성** 축만 쓰는 표에서는 소재명이
+        # 없어도 정상 집계되므로, 그때만 켤 수 있게 한다.
+        # ⚠ **소재 단위 축이 섞이면 토글을 아예 그리지 않는다.** 켤 수 없는 토글을
+        #   비활성으로 남기면 "왜 안 되나"를 만든다(구글 편집기와 같은 판단).
+        #   그려도 `view_with_defaults`가 다시 판정하므로 화면은 어느 쪽이든 안전하다.
+        title_level = bool(view["title_level"])
+        if title_level_allowed([{"field": f} for f in row_fields], filters):
+            title_level = c_tl.toggle(
+                "구글 포함", value=title_level, key=f"pvtl_{view_key}",
+                help="구글을 **작품 단위**로 함께 집계합니다. 구글은 소재 단위 태깅이 "
+                     "없어 평소 이 표에서 빠져 있습니다. 켜면 3번 섹션 애셋 표와 달리 "
+                     "**배분되지 않은 진짜 집행액**이 들어옵니다.",
+            )
+        else:
+            title_level = False
+
     out = {**view, "values": list(metrics), "filters": filters,
            "include_ads": list(include),
            "contrast": bool(contrast), "thumbs": bool(thumbs),
+           "title_level": bool(title_level),
            "contrast_field": str(contrast_field or "")}
     if kind == "compare":
         out["periods"] = periods
@@ -3649,12 +3970,17 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
     # 초안은 메타·틱톡 표에서만 쓴다 — 구글 표는 애셋 단위 배분값이라 같은 문장에
     # 섞으면 매체 간 비교처럼 읽힌다.
     live = [view_with_defaults(v) for v in views if v["kind"] == "pivot"]
+    # 장르 표는 축이 작품이라 소재 단위 서사(대조군·swing)가 성립하지 않는다 —
+    # 따로 갈라서 **장르 전용 초안**을 쓴다(규리님 2026-09-16).
+    genre_views = [v for v in live if v["title_level"]
+                   and any(r["field"] == topics.GENRE_FIELD for r in v["rows"])]
+    live = [v for v in live if v not in genre_views]
     contrast_views = [v for v in live if v["contrast"] and contrast_ready(v)]
     ad_views = [v for v in live if not v["contrast"]
                 and "ad" in [r["field"] for r in v["rows"]]]
     plain_views = [v for v in live if not v["contrast"]]
 
-    if not contrast_views and not plain_views:
+    if not contrast_views and not plain_views and not genre_views:
         st.markdown('<div class="draft-off">표를 먼저 만들면 초안을 쓸 수 있어요</div>',
                     unsafe_allow_html=True)
         return
@@ -3686,7 +4012,13 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
                          "scope": filtered_scope(named_overview, view["filters"],
                                                  view["include_ads"]),
                          "links": links})
-    if not contrast_views:
+    for view in genre_views:
+        # 표와 **같은 프레임**을 쓴다 — 귀속 불가 행(구글 iOS)을 빼야 CPI가 뜻을 갖는다.
+        genre_scope, _ = drop_unattributable(
+            filtered_scope(overview, view["filters"], view["include_ads"]))
+        sections.append({"kind": "genre", "title": title_of(view),
+                         "scope": genre_scope})
+    if not contrast_views and plain_views:
         scope = pd.concat(
             [filtered_scope(named_overview, v["filters"], v["include_ads"])
              for v in plain_views]).drop_duplicates()

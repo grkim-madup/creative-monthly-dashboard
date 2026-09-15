@@ -1061,6 +1061,12 @@ DIMENSION_COLUMNS = [
     # MIX 소재는 소재명 규칙이 지켜지지 않아 구분자로 못 잡는다 — 세 조건을 합쳐
     # 만든 파생 차원이다(`mix_group`).
     "mix_group",
+    # 작품 장르(CLUSTER 10종). **소재명 파싱이 아니라 광고주 PM 시트에서 온다**
+    # (`title_genre.attach_genre`). 작품이 67종이라 매체3×OS2로 갈리면 칸마다 한두
+    # 소재뿐인데, 장르로 묶으면 10칸이 되어 패턴이 보인다(광고주 요청 2026-09-16).
+    # ⚠ Media_RAW의 `유형`을 파싱한 `genre` 컬럼과 **다른 것**이다 — 그쪽은 8월 소진의
+    # 100%가 빈값인 죽은 컬럼이라 이름만 피해 간다.
+    "genre_group",
 ]
 
 #: **지표** 컬럼 — 집계 결과를 보여줄 뿐 집계 키에 영향을 주지 않는다.
@@ -1572,11 +1578,142 @@ CREATIVE_FIELDS = frozenset(set(DIMENSION_COLUMNS) - SCOPE_FIELDS)
 #: 여러 필터 중 무엇을 **대조 기준**으로 삼을지 고를 때의 기본 우선순위.
 #: 앞쪽일수록 "이번에 시험해 본 것"에 가깝고, 뒤쪽일수록 "보는 범위"에 가깝다.
 #: 예: `format=IMG` + `태그=comic` 이면 comic이 대상, IMG는 범위다.
+#: ⚠ 자동 파생이 아니다 — 새 차원을 추가하면 **여기에도 손으로 넣어야 한다.**
+#: 장르는 "이번에 시험해 본 것"이 아니라 작품이 원래 갖고 있는 성질이라, 작품 축
+#: 바로 뒤(=범위 쪽)에 둔다.
 CONTRAST_FIELD_PRIORITY = [
     "extra_info_tag", "mix_group", "usp", "creative_type",
-    "producer_group", "title_kr", "title_code", "size", "orientation",
-    "format", "ad",
+    "producer_group", "title_kr", "title_code", "genre_group",
+    "size", "orientation", "format", "ad",
 ]
+
+
+#: 매체를 줄세울 때의 순서 (규리님 지정 2026-09-16). 소진액 순이 아니라 **고정 순서**다 —
+#: 매달 순서가 바뀌면 지난달 리포트와 나란히 놓고 읽을 수가 없다.
+MEDIA_ORDER = ("TikTok", "Meta", "Google")
+OS_ORDER = ("AOS", "iOS")
+
+_GROUP_ORDER = {"media": MEDIA_ORDER, "os": OS_ORDER}
+
+#: 순위에서 **맨 뒤로 보낼** 값. 분류가 안 된 것이지 하나의 분류가 아니다.
+UNRANKED_VALUES = frozenset({"미분류", "확인불가", "없음", "일반", ""})
+
+
+def sort_within_groups(table: pd.DataFrame, rows: list) -> pd.DataFrame:
+    """**마지막 행 축을 그룹 안에서 소진액 순으로** 줄세운다.
+
+    규리님(2026-09-16): *"장르별 성과 테이블은 각 매체별로 어떤 장르가 효율이 좋은가를
+    보는 게 목적이야. 지금 있는 테이블들은 그 질문에 답을 해주지 못해."*
+
+    `aggregate_by`는 **항상 소진액 내림차순**이라 매체·OS가 뒤섞여 나열된다. 그러면
+    "TikTok 안에서 어느 장르가 좋나"를 읽을 수 없다 — 눈으로 같은 매체 줄을 찾아
+    모아야 한다. 여기서 `[매체, OS, 장르]`를 받아 **매체·OS로 묶고 그 안에서만**
+    장르를 지표 순으로 세운다.
+
+    · 그룹 순서는 `MEDIA_ORDER`·`OS_ORDER` 고정. 목록에 없는 값은 뒤에 이름순으로.
+    · 그룹 **안**에서는 **소진액 내림차순**(규리님 2026-09-16). 효율 순으로 세워 봤더니
+      소진 ₩188,722짜리가 ₩5,642,184짜리보다 위에 와서, 규모가 안 읽혔다.
+      **효율은 색이 말한다** — 색칠은 화면(`render_ranked_table`)이 따로 한다.
+    · `미분류`는 그룹 맨 뒤로. 분류가 안 된 것이지 하나의 분류가 아니다.
+    """
+    fields = [r.get("field") if isinstance(r, dict) else r for r in (rows or [])]
+    fields = [f for f in fields if f]
+    if table is None or table.empty or len(fields) < 2:
+        return table
+    if "cost" not in table.columns:
+        return table
+    groups = [f for f in fields[:-1] if f in table.columns]
+    if not groups:
+        return table
+
+    out = table.copy()
+    for index, field in enumerate(groups):
+        order = _GROUP_ORDER.get(field)
+        if order:
+            rank = {value: position for position, value in enumerate(order)}
+            out[f"_g{index}"] = out[field].map(lambda v: rank.get(v, len(order)))
+            out[f"_g{index}b"] = out[field].astype(str)
+        else:
+            out[f"_g{index}"] = 0
+            out[f"_g{index}b"] = out[field].astype(str)
+
+    # ⚠ `미분류`는 장르가 아니다 — 순위 1위로 올라오면(실제로 8월 Google AOS에서
+    #   ₩2,649로 1위였다) "이 매체엔 미분류가 제일 좋다"로 읽힌다. 숨기지는 않는다
+    #   (소진이 맞아떨어져야 한다) — 그룹 맨 뒤로만 보낸다.
+    out["_sent"] = out[fields[-1]].astype(str).isin(UNRANKED_VALUES).astype(int)
+
+    keys = [k for index in range(len(groups))
+            for k in (f"_g{index}", f"_g{index}b")] + ["_sent"]
+    out = out.sort_values(
+        keys + ["cost"],
+        ascending=[True] * len(keys) + [False],
+        na_position="last",
+        kind="mergesort",          # 안정 정렬 — 같은 값의 원래 순서를 지킨다
+    )
+    return out.drop(columns=keys).reset_index(drop=True)
+
+
+#: **작품 단위**로 성립하는 축. 소재명이 없어도 값이 있는 것들이다.
+#: 구글은 `Media_RAW`에 `ad == "-"`로 들어오므로 이 축들만으로는 정상 집계되지만,
+#: 소재 단위 축(유형·USP·포맷…)에서는 전부 빈 값이 된다.
+TITLE_LEVEL_FIELDS = frozenset({
+    "genre_group", "title_kr", "title_code", "media", "os",
+})
+
+
+#: 작품 단위 표에서 **빼야 하는** (매체, OS). 값은 뺀 이유다(각주에 그대로 쓴다).
+#:
+#: ⚠ 구글 iOS는 `Media_RAW`에 **작품별 소진 행**과 **캠페인 단위 설치 행**이 따로
+#:   들어오고 둘이 조인되지 않는다(실측 2026-09-16, 8월 UA):
+#:     · 소진 ₩40,952,170은 작품에 붙어 있는데 설치는 0
+#:     · 설치 9,965건은 전부 `title_kr = 확인불가` · **소진 ₩0**인 별도 행 62개에
+#:   그대로 두면 표가 **양방향으로** 틀린다 — `미분류 iOS`가 CPI ₩0(설치만 있음),
+#:   실제 장르의 iOS는 CPI가 비거나 부풀려진다(설치 없이 소진만 있음).
+#:   ⚠ 매체별로 표를 나눠도 해결되지 않는다 — 구글만 뽑아도 같은 줄이 남는다.
+#:   구글 AOS는 같은 행에 소진·설치가 함께 있어 정상이므로 **빼지 않는다.**
+UNATTRIBUTABLE = {
+    ("Google", "iOS"): "구글 iOS는 설치가 캠페인 단위로만 집계돼 작품별 귀속이 안 됩니다",
+}
+
+
+def drop_unattributable(frame):
+    """작품 단위 집계에서 귀속이 불가능한 행을 뺀다. `(뺀 프레임, 사유 목록)`.
+
+    사유는 각주에 그대로 찍는다 — **말없이 빼면 광고주가 1번 총괄과 대조하며
+    어긋난 숫자를 본다.**
+    """
+    if frame is None or getattr(frame, "empty", True):
+        return frame, []
+    if "media" not in frame.columns or "os" not in frame.columns:
+        return frame, []
+
+    out, notes = frame, []
+    for (media, os_name), why in UNATTRIBUTABLE.items():
+        hit = (out["media"] == media) & (out["os"] == os_name)
+        if not hit.any():
+            continue
+        cost = float(out.loc[hit, "cost"].sum()) if "cost" in out.columns else 0.0
+        notes.append((f"{media} {os_name}", cost, why))
+        out = out[~hit]
+    return out, notes
+
+
+def title_level_allowed(rows, filters: dict | None = None) -> bool:
+    """이 표를 **작품 단위**(구글 포함)로 집계해도 되는가.
+
+    ⚠ **이 게이트가 없으면 `883600f`와 같은 사고가 난다.** 구글 행은 소재명이 `-`라
+    소재 단위 축에서 전부 `미분류` 한 줄로 뭉친다 — 표에 **가짜 버킷**이 생기고
+    광고주는 그걸 실제 소재군으로 읽는다.
+
+    그래서 행·필터가 전부 작품 단위 축일 때만 허용한다. 하나라도 소재 축이 섞이면
+    화면은 `named_overview`(메타·틱톡)로 돌아간다.
+    """
+    fields = {r.get("field") if isinstance(r, dict) else r for r in (rows or [])}
+    fields |= {f for f, v in (filters or {}).items() if v}
+    fields.discard(None)
+    if not fields:
+        return False
+    return fields <= TITLE_LEVEL_FIELDS
 
 
 def default_contrast_field(filters: dict | None) -> str | None:

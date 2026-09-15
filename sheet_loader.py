@@ -20,6 +20,7 @@ from google_sheets_readonly import (
 )
 from googleapiclient.discovery import build
 from ios_cohort import IOS_COHORT_SHEET_NAME, apply_ios_cohort, parse_ios_cohort
+from title_genre import TITLE_INFO_SHEET_NAME, parse_title_genres
 
 CACHE_DIR = Path(__file__).resolve().parent / ".cache"
 
@@ -72,6 +73,31 @@ def load_media_raw(sheet_id: str, refresh: bool = False) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(cache, index=False)
     return df
+
+
+#: 장르 원본 — 광고주 시트 `(TW) PM KPI Dashboard`.
+#: ⚠ **광고주 소유 시트라 읽기만 한다.** `google_sheets_readonly`로만 접근하고,
+#: 서비스 계정(`google_sheets_writer`)은 쓰지 않는다 — 그 모듈에는 "스냅샷 시트 하나만
+#: 건드린다"는 계약이 있고 여기에 재사용하면 그 계약이 깨진다.
+#: ⚠ 이건 **기본값일 뿐**이다. 실제 값은 `app_settings`의 `genre_sheet_url`에서 온다 —
+#: 점검 도구에 시트를 하드코딩했다가 화면과 다른 값을 재고 "맞다"고 보고한 전례가 있다
+#: (`tools/audit_reconcile.py`, 2026-09-08).
+DEFAULT_GENRE_SHEET = "1O_9QC1qdBu76GeLGpIhblc_7RVwecxzZWpecQBrk-Yc"
+
+
+def load_title_genres(sheet_id: str) -> dict:
+    """광고주 PM 시트의 `title_info` 탭 → 작품 장르 대응표.
+
+    실패해도 예외를 올리지 않는다 — 장르를 못 읽었다고 그 달 리포트가 통째로 안 뜨면
+    안 된다(`ios_cohort`와 같은 판단). 사유는 `error` 키에 남겨 화면이 알린다.
+    """
+    try:
+        values = fetch_sheet_values(
+            sheet_id, TITLE_INFO_SHEET_NAME, get_credentials()
+        )
+    except Exception as error:  # noqa: BLE001 - 사유를 화면에 그대로 보여준다
+        return {"by_code": {}, "by_name": {}, "titles": 0, "error": str(error)}
+    return parse_title_genres(values)
 
 
 def cache_timestamp(sheet_id: str) -> float | None:

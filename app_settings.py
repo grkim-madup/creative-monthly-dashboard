@@ -40,7 +40,9 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "notes" / "app_settings.json"
 #: `last_backup_at` — 마지막 백업 시각. **전원 공유**가 맞다: 팀원이 백업했는지
 #: 서로 알아야 중복으로 돌리거나 아무도 안 돌리는 일이 없다. 세션 상태로 두면
 #: 새로고침 한 번에 사라진다.
-KEYS = ("sheet_url", "google_folder", "last_backup_at")
+#: `genre_sheet_url` — 작품 장르(CLUSTER) 원본인 **광고주 PM 시트**. 읽기 전용이다.
+#: 전원 공유가 맞다 — 광고주가 보는 표의 장르가 어디서 왔는지가 갈리면 안 된다.
+KEYS = ("sheet_url", "google_folder", "last_backup_at", "genre_sheet_url")
 
 
 def _clean(data) -> dict[str, str]:

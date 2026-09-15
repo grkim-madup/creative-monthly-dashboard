@@ -512,6 +512,15 @@ def block_lines(sections: list[dict], month: int, pool: float = 0.0) -> list[str
     for section in sections:
         title = section.get("title") or section.get("label") or ""
         try:
+            if section["kind"] == "genre":
+                # 장르 섹션은 소재 단위 서사(대조군·swing)와 섞이지 않는다 —
+                # 축이 작품이라 "이 소재군이 기존 대비" 라는 문장이 성립하지 않는다.
+                got = genre_lines(section["scope"], month)
+                if got:
+                    lines += got
+                else:
+                    failed.append(title or "장르별 성과")
+                continue
             if section["kind"] == "contrast":
                 subject, rest = section["subject"], section["rest"]
                 cards = contrast_by_media(subject, rest, section.get("values"),
@@ -828,4 +837,113 @@ def next_step_lines(entries: list[tuple[str, dict]],
     for line in proposals:
         lines.append(line)
         lines.append("- ex)")
+    return lines
+
+
+# --------------------------------------------------------------------------- 장르
+
+#: 장르 초안에서 **언급할 자격**이 있는 최소 소진 비중. 소액 집행에 "이 OS는 이 장르"를
+#: 붙이면 과대해석이다(인사이트 규칙 4번). `topics.HEADLINE_MIN_SHARE`와 같은 뜻이지만
+#: 쓰는 곳이 달라 따로 둔다 — 한쪽을 바꿔도 다른 쪽이 안 흔들려야 한다.
+GENRE_MIN_SHARE = 0.08
+
+#: 두 OS의 CPI가 이 배수 이상 벌어지면 "OS가 갈린다"고 쓴다. 1.5배는 표기 오차가
+#: 아니라 운영 판단이 달라지는 폭이다.
+GENRE_OS_GAP = 1.5
+
+
+def genre_table(scope: pd.DataFrame, field: str = "genre_group") -> pd.DataFrame:
+    """장르 × OS 집계. 비율은 **합계에서 재계산**한다(행별 평균이 아니다)."""
+    if scope is None or scope.empty or field not in scope.columns:
+        return pd.DataFrame()
+    if "os" not in scope.columns:
+        return pd.DataFrame()
+    table = aggregate_by(scope, [field, "os"])
+    return table[table[field].astype(str).ne("미분류")]
+
+
+def _best(table: pd.DataFrame, os_name: str, field: str) -> dict | None:
+    """그 OS에서 **CPI가 가장 낮은** 장르. 돈 지표 우선(인사이트 규칙 5번).
+
+    소액 집행과 설치 0은 후보에서 뺀다 — 둘 다 CPI를 뜻 없게 만든다.
+    """
+    rows = table[table["os"] == os_name]
+    if rows.empty:
+        return None
+    total = float(rows["cost"].fillna(0).sum())
+    if total <= 0:
+        return None
+    ok = rows[(rows["cost"] / total >= GENRE_MIN_SHARE)
+              & (rows["total install"].fillna(0) > 0)
+              & rows["CPI"].notna()]
+    if ok.empty:
+        return None
+    row = ok.loc[ok["CPI"].idxmin()]
+    return {"genre": str(row[field]), "cost": float(row["cost"]),
+            "share": float(row["cost"]) / total, "cpi": float(row["CPI"]),
+            "installs": float(row["total install"]),
+            "coin": (float(row["D0 coin CVR"])
+                     if "D0 coin CVR" in row and pd.notna(row["D0 coin CVR"]) else None)}
+
+
+def genre_lines(scope: pd.DataFrame, month: int,
+                field: str = "genre_group") -> list[str]:
+    """장르 표의 초안. **표에 있는 것만 말한다.**
+
+    ⚠ 왜 그 장르가 잘 됐는지는 숫자에 없다 — 작품 라인업·시즌·경쟁 상황이 섞여 있다.
+      그 자리는 `(확인 필요)`로 비워 사람에게 넘긴다.
+    """
+    table = genre_table(scope, field)
+    if table.empty:
+        return []
+
+    lines = [f"- {month}월 장르별 성과 (UA 기준 · 구글 포함 · 작품 단위 집계)"]
+    picks: dict[str, dict] = {}
+    for os_name in ("AOS", "iOS"):
+        pick = _best(table, os_name, field)
+        if not pick:
+            rows = table[table["os"] == os_name]
+            if not rows.empty and float(rows["total install"].fillna(0).sum()) == 0:
+                lines.append(f"ㄴ {os_name}는 설치가 집계되지 않아 효율 판단 불가")
+            continue
+        picks[os_name] = pick
+        # ⚠ 장르 이름 뒤에 **주격 조사를 붙이지 않는다.** `ACTION가`·`ADULT이` 처럼
+        #   영문 이름에서 조사가 틀어진다(`subject_particle`은 모음 끝만 `가`로 보는데
+        #   `ADULT`는 "어덜트"라 `가`가 맞다). 개조식으로 쓰면 그 문제가 사라지고
+        #   실제 리포트 문체(명사형·음슴체)와도 맞는다.
+        text = (f"ㄴ {os_name} 최저 CPI — {pick['genre']} ₩{pick['cpi']:,.0f}"
+                f" (소진 ₩{pick['cost']:,.0f} · {os_name} 내 {pick['share']:.0%}"
+                f" · 설치 {pick['installs']:,.0f}건)")
+        if pick["coin"] is not None:
+            text += f", D0 Coin CVR {pick['coin']:.2%}"
+        lines.append(text)
+
+    # 같은 장르가 두 OS에서 얼마나 갈리는지 — "OS별 성향"이라는 질문의 핵심이다.
+    both = table.pivot_table(index=field, columns="os", values="CPI", aggfunc="first")
+    if {"AOS", "iOS"} <= set(both.columns):
+        pair = both.dropna()
+        pair = pair[(pair["AOS"] > 0) & (pair["iOS"] > 0)]
+        if not pair.empty:
+            ratio = (pair["iOS"] / pair["AOS"]).sort_values(ascending=False)
+            worst = ratio.index[0]
+            if ratio.iloc[0] >= GENRE_OS_GAP:
+                lines.append(
+                    f"ㄴ {worst}{topic_particle(str(worst))} iOS CPI가 AOS의 "
+                    f"{ratio.iloc[0]:.1f}배로 벌어짐 "
+                    f"(AOS ₩{pair.loc[worst, 'AOS']:,.0f} → iOS ₩{pair.loc[worst, 'iOS']:,.0f})")
+
+    if len(picks) == 2 and picks["AOS"]["genre"] != picks["iOS"]["genre"]:
+        # `…ADULT로` / `…ACTION으로` 처럼 조사가 갈리는 자리를 아예 만들지 않는다.
+        lines.append(
+            f"▶ OS별로 효율이 갈림 — AOS {picks['AOS']['genre']} / "
+            f"iOS {picks['iOS']['genre']}. OS별 장르 배분을 다르게 가져갈 근거가 됨")
+        lines.append("")
+        lines.append("추후 제작 인사이트")
+        lines.append(
+            f">> OS별 장르 비중 조정 검토 — AOS {picks['AOS']['genre']} · "
+            f"iOS {picks['iOS']['genre']} 우선 배분 제안")
+        # ⚠ `ex)` 자리는 비운다 — 예시를 지어 넣으면 광고주에게 없는 사실이 간다.
+        lines.append("ex) (확인 필요)")
+    elif picks:
+        lines.append("▶ 효율이 갈리는 정도가 뚜렷하지 않음 — 판단 유보 (확인 필요)")
     return lines

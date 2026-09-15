@@ -15,7 +15,12 @@ from __future__ import annotations
 import copy
 from uuid import uuid4
 
-from creative_data import DEFAULT_PIVOT_ROWS, METRIC_COLUMNS, normalize_rows
+from creative_data import (
+    DEFAULT_PIVOT_ROWS,
+    METRIC_COLUMNS,
+    normalize_rows,
+    title_level_allowed,
+)
 
 #: 빈 뷰를 만들 때의 기본값. 저장된 뷰에 없는 키는 여기서 채운다 — 나중에 필드를
 #: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
@@ -57,6 +62,19 @@ VIEW_DEFAULTS = {
     #: 영상·이미지만 볼지. 텍스트 애셋(광고 제목·설명·앱 딥 링크)은 `asset_name`이
     #: 전부 `--`라 소재로 볼 수 없다.
     "g_creative_only": True,
+    #: ── 작품 단위 집계(`kind == "pivot"` 전용) ────────────────────────────
+    #: 켜면 `named_overview`(메타·틱톡) 대신 `overview`를 쓴다 = **구글이 들어온다.**
+    #: 구글은 `Media_RAW`에 `ad == "-"`로 들어와서 소재 단위 프레임에서 빠져 있는데,
+    #: 장르는 소재가 아니라 작품 속성이라 소재명이 없어도 집계된다(광고주 요청
+    #: 2026-09-16 — 구글이 소진의 1/3이라 빼면 답이 반쪽이다).
+    #: ⚠ 기본값 False. 기존에 저장된 표는 한 줄도 안 바뀐다.
+    #: ⚠ 행·필터에 소재 단위 축이 섞이면 `view_with_defaults`가 **강제로 끈다** —
+    #:   `title_level_allowed` 참고.
+    "title_level": False,
+    #: 마지막 행 축을 **그룹 안에서** 이 지표 순으로 줄세운다(`rank_within_groups`).
+    #: 비우면 예전 그대로 소진액 내림차순이다 — 기존 표는 한 줄도 안 바뀐다.
+    #: 장르 표가 이걸 쓴다: `[매체, OS, 장르]`를 매체·OS로 묶고 그 안에서 CPI 순.
+    "rank_by": "",
 }
 
 #: 예전 형식의 필드 — 지우지 않는다. 되돌리려면 코드만 되돌리면 되게 남겨 둔다.
@@ -119,7 +137,17 @@ def view_with_defaults(view: dict) -> dict:
         # 구글 표에는 대조군·썸네일·소재 추가·그래프가 없다. 저장된 값이 남아 있어도
         # 화면이 그걸 보고 메타 경로로 새지 않게 여기서 못 박는다.
         merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
-                       "include_ads": [], "chart_kind": ""})
+                       "include_ads": [], "chart_kind": "", "title_level": False})
+    # ⚠ **작품 단위 집계는 조건을 코드로 건다.** 소재 단위 축이 하나라도 섞이면 구글
+    #   행이 전부 `미분류` 한 줄이 되어 표에 가짜 버킷이 생긴다(`883600f`와 같은 사고).
+    #   화면에서 토글을 감추는 것만으로는 부족하다 — 축을 나중에 바꾸면 저장된 True가
+    #   그대로 남기 때문에, 읽는 쪽에서 매번 다시 판정한다.
+    if merged["title_level"] and not title_level_allowed(merged["rows"], merged["filters"]):
+        merged["title_level"] = False
+    # 대조군은 "같은 범위에서 이 소재군을 뺀 나머지"라 소재 단위 프레임을 전제한다.
+    if merged["title_level"]:
+        merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
+                       "include_ads": []})
     if not merged.get("id"):
         merged["id"] = uuid4().hex[:6]
     return merged
@@ -156,6 +184,8 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
     merged["contrast_field"] = str(
         take(f"pvctf_{view_key}", merged["contrast_field"]) or "")
     merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
+    merged["title_level"] = bool(take(f"pvtl_{view_key}", merged["title_level"]))
+    merged["rank_by"] = str(take(f"pvrank_{view_key}", merged["rank_by"]) or "")
 
     # 기간 비교의 기간 두 개. 위젯은 라벨·월을 따로 쓴다.
     periods = []
@@ -199,4 +229,10 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
         for f in g_filter_fields
         if take(f"gvfval_{view_key}_{f}", (merged.get("g_filters") or {}).get(f) or [])
     }
+
+    # 저장되는 값도 정직해야 한다 — 토글을 켠 뒤 소재 단위 축을 추가하면 화면은
+    # `view_with_defaults`가 다시 판정해 끄지만, 저장본에 True가 남아 있으면 나중에
+    # 축을 되돌렸을 때 켠 적 없는 토글이 켜져 있다.
+    if merged["title_level"] and not title_level_allowed(merged["rows"], merged["filters"]):
+        merged["title_level"] = False
     return merged

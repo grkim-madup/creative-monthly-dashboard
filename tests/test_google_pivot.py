@@ -47,6 +47,13 @@ def test_소재명_파싱_축을_넣지_않는다():
         assert field not in G.GOOGLE_DIMENSIONS, field
 
 
+def test_장르_축을_넣지_않는다():
+    """장르는 `Media_RAW` 프레임에 붙는다(`title_genre.attach_genre`). 구글 애셋
+    프레임은 Drive 보고서에서 별도로 오므로 그 컬럼이 **아예 없다** — 넣으면
+    `google_pivot`이 조용히 빈 표를 낸다(`rows`에 없는 컬럼은 걸러진다)."""
+    assert "genre_group" not in G.GOOGLE_DIMENSIONS
+
+
 def test_기본_축은_작품이다():
     """2026-09-09에 작품명 보정이 들어가 쓸 수 있게 됐다."""
     assert G.GOOGLE_DEFAULT_ROWS == ["title_kr"]

@@ -12,6 +12,10 @@ import pytest
 import topics
 
 
+#: ⚠ 아래 대부분의 테스트는 `min_ads=1`로 부른다. 픽스처가 소재 하나짜리라서인데,
+#: 그 테스트들의 관심사는 신규/급증·노이즈·라벨·정렬이지 **소재 수가 아니다.**
+#: 소재 수 규칙(`MIN_TOPIC_ADS`)은 맨 아래에서 기본값 그대로 따로 검증한다 —
+#: 문턱을 여기저기 꺼 두면 정작 기본 동작을 아무도 안 지키게 된다.
 def frame(rows: list[dict]) -> pd.DataFrame:
     """(month, cost) 중심의 최소 프레임. 안 준 컬럼은 빈 값으로 채운다."""
     base = {"ad": "", "extra_info": None, "creative_type": "", "mix_group": "일반",
@@ -33,7 +37,7 @@ def test_직전_기간_소진이_0이면_신규():
     df = frame([
         {"month": 8, "extra_info": "epn", "cost": 500_000, "ad": "a"},
     ])
-    found = topics.candidates(df, 8)
+    found = topics.candidates(df, 8, min_ads=1)
     assert by_label(found, "EPN")["kind"] == topics.KIND_NEW
 
 
@@ -43,7 +47,7 @@ def test_직전_기간에_집행이_있으면_신규가_아니다():
         {"month": 8, "extra_info": "epn", "cost": 500_000, "ad": "a"},
     ])
     # 1.25배라 급증도 아니다 → 후보가 아니다
-    assert labels(topics.candidates(df, 8)) == []
+    assert labels(topics.candidates(df, 8, min_ads=1)) == []
 
 
 def test_직전_달_대비_문턱_이상이면_급증():
@@ -51,7 +55,7 @@ def test_직전_달_대비_문턱_이상이면_급증():
         {"month": 7, "extra_info": "mix", "cost": 1_000_000, "ad": "a"},
         {"month": 8, "extra_info": "mix", "cost": 1_500_000, "ad": "a"},
     ])
-    found = topics.candidates(df, 8)
+    found = topics.candidates(df, 8, min_ads=1)
     assert by_label(found, "MIX")["kind"] == topics.KIND_SURGE
     assert by_label(found, "MIX")["prev_cost"] == 1_000_000
 
@@ -61,7 +65,7 @@ def test_급증_문턱을_못_넘으면_제외된다():
         {"month": 7, "extra_info": "mix", "cost": 1_000_000, "ad": "a"},
         {"month": 8, "extra_info": "mix", "cost": 1_400_000, "ad": "a"},
     ])
-    assert labels(topics.candidates(df, 8)) == []
+    assert labels(topics.candidates(df, 8, min_ads=1)) == []
 
 
 def test_급증_문턱은_1_5배다():
@@ -74,7 +78,7 @@ def test_lookback_밖의_집행은_신규_판정을_막지_않는다():
         {"month": 2, "extra_info": "epn", "cost": 900_000, "ad": "a"},
         {"month": 8, "extra_info": "epn", "cost": 500_000, "ad": "a"},
     ])
-    found = topics.candidates(df, 8, lookback=3)
+    found = topics.candidates(df, 8, lookback=3, min_ads=1)
     assert by_label(found, "EPN")["kind"] == topics.KIND_NEW
 
 
@@ -82,25 +86,25 @@ def test_lookback_밖의_집행은_신규_판정을_막지_않는다():
 
 def test_소진이_문턱_미만이면_제외():
     df = frame([{"month": 8, "extra_info": "epn", "cost": 50_000, "ad": "a"}])
-    assert topics.candidates(df, 8) == []
+    assert topics.candidates(df, 8, min_ads=1) == []
 
 
 @pytest.mark.parametrize("tag", ["1", "2", "8", "12th", "12anniversaryw2", "a", "ab"])
 def test_버전_배리에이션_표기는_주제가_아니다(tag):
     df = frame([{"month": 8, "extra_info": tag, "cost": 5_000_000, "ad": "a"}])
-    assert topics.candidates(df, 8) == []
+    assert topics.candidates(df, 8, min_ads=1) == []
 
 
 @pytest.mark.parametrize("tag", ["epn", "comic", "text", "vari", "men"])
 def test_진짜_태그는_남는다(tag):
     df = frame([{"month": 8, "extra_info": tag, "cost": 5_000_000, "ad": "a"}])
-    assert labels(topics.candidates(df, 8)) == [tag.upper()]
+    assert labels(topics.candidates(df, 8, min_ads=1)) == [tag.upper()]
 
 
 def test_노이즈_규칙은_태그_축에만_적용된다():
     """유형은 통제된 어휘라 `AI` 같은 두 글자 이름이 정당하다."""
     df = frame([{"month": 8, "creative_type": "AI", "cost": 5_000_000, "ad": "a"}])
-    assert labels(topics.candidates(df, 8)) == ["AI"]
+    assert labels(topics.candidates(df, 8, min_ads=1)) == ["AI"]
 
 
 def test_센티널_값은_주제가_아니다():
@@ -109,14 +113,14 @@ def test_센티널_값은_주제가_아니다():
         {"month": 8, "extra_info": None, "cost": 90_000_000, "ad": "a",
          "mix_group": "일반"},
     ])
-    assert topics.candidates(df, 8) == []
+    assert topics.candidates(df, 8, min_ads=1) == []
 
 
 # ----------------------------------------------------------------- 태그 펼치기 / 중복
 
 def test_한_소재의_태그가_여러_개면_각각_집계된다():
     df = frame([{"month": 8, "extra_info": "text-thumb", "cost": 3_000_000, "ad": "a"}])
-    found = topics.candidates(df, 8)
+    found = topics.candidates(df, 8, min_ads=1)
     assert sorted(labels(found)) == ["TEXT", "THUMB"]
     # 펼침이라 둘 다 소재 전액을 갖는다 — 합계가 전체를 넘는다(구성비가 아니다)
     assert by_label(found, "TEXT")["cost"] == 3_000_000
@@ -129,7 +133,7 @@ def test_같은_이름이_여러_축에_걸리면_소진이_큰_축만_남는다
         {"month": 8, "extra_info": None, "cost": 10_000_000, "ad": "b",
          "creative_type": "Highlight", "mix_group": "MIX"},
     ])
-    found = [c for c in topics.candidates(df, 8) if c["label"] == "MIX"]
+    found = [c for c in topics.candidates(df, 8, min_ads=1) if c["label"] == "MIX"]
     assert len(found) == 1
     assert found[0]["field"] == "mix_group"
     assert found[0]["cost"] == 10_600_000
@@ -141,7 +145,7 @@ def test_소재_개수는_고유_소재명_기준():
         {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "a"},
         {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "b"},
     ])
-    assert by_label(topics.candidates(df, 8), "EPN")["ads"] == 2
+    assert by_label(topics.candidates(df, 8, min_ads=1), "EPN")["ads"] == 2
 
 
 # ----------------------------------------------------------------------------- 정렬
@@ -153,7 +157,7 @@ def test_신규가_급증보다_먼저_그_안에서는_소진_내림차순():
         {"month": 8, "extra_info": "epn", "cost": 500_000, "ad": "e"},
         {"month": 8, "extra_info": "comic", "cost": 800_000, "ad": "c"},
     ])
-    assert labels(topics.candidates(df, 8)) == ["COMIC", "EPN", "TEXT"]
+    assert labels(topics.candidates(df, 8, min_ads=1)) == ["COMIC", "EPN", "TEXT"]
 
 
 def test_빈_프레임은_빈_목록():
@@ -163,7 +167,7 @@ def test_빈_프레임은_빈_목록():
 
 def test_그_달_데이터가_없으면_빈_목록():
     df = frame([{"month": 7, "extra_info": "epn", "cost": 5_000_000, "ad": "a"}])
-    assert topics.candidates(df, 8) == []
+    assert topics.candidates(df, 8, min_ads=1) == []
 
 
 # ------------------------------------------------------------------------- 표 프리셋
@@ -233,7 +237,7 @@ def test_블록_제목():
 def test_한글_라벨은_대문자로_바꾸지_않는다():
     df = frame([{"month": 8, "creative_type": "회차모음집", "cost": 5_000_000,
                  "ad": "a"}])
-    assert labels(topics.candidates(df, 8)) == ["회차모음집"]
+    assert labels(topics.candidates(df, 8, min_ads=1)) == ["회차모음집"]
 
 
 # ------------------------------------------------- 블록 생성 (한 번의 커밋으로 표까지)
@@ -288,3 +292,58 @@ def test_update_block이_views를_버리지_않는다(tmp_path, monkeypatch):
                         views=topics.preset_views("MIX", "mix_group", "MIX"))
     block = blocks.find_block(data, blocks.SLOT_ANALYSIS, block_id)
     assert len(block["views"]) == 2
+
+
+# --------------------------------------------------------------- 최소 소재 수
+
+def test_소재가_하나뿐이면_후보가_아니다():
+    """규리님 요청(2026-09-16): *"소재가 한 개밖에 없는 애들은 신규 소재군으로 넣지 마.
+    2개 이상부터만 추가해."*
+
+    8월 후보 목록에 `RETURN2`·`SOCIAL1`·`RETURN5`·`THUMBNAILMOVING`·`恐怖usp`가 전부
+    소재 1개로 떠서 목록의 절반을 차지했다. 소재 하나는 소재군이 아니다 — 표를 세워도
+    한 줄이라 "이 유형이 어떤가"를 말할 수 없다.
+    """
+    df = frame([{"month": 8, "extra_info": "return2", "cost": 2_818_422, "ad": "a"}])
+    assert topics.candidates(df, 8) == []
+
+
+def test_소재가_둘이면_후보다():
+    df = frame([
+        {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "a"},
+        {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "b"},
+    ])
+    assert labels(topics.candidates(df, 8)) == ["EPN"]
+
+
+def test_소진이_커도_소재_하나면_뺀다():
+    """⚠ 소진 문턱만으로는 안 걸러진다 — 소재 하나에 ₩2.8M을 쓴 `RETURN2`가 실제로
+    후보 1위로 올라왔다. 규모와 개수는 다른 조건이다."""
+    df = frame([
+        {"month": 8, "extra_info": "return2", "cost": 9_000_000, "ad": "a"},
+        {"month": 8, "extra_info": "epn", "cost": 200_000, "ad": "x"},
+        {"month": 8, "extra_info": "epn", "cost": 200_000, "ad": "y"},
+    ])
+    assert labels(topics.candidates(df, 8)) == ["EPN"]
+
+
+def test_급증에도_같은_문턱이_걸린다():
+    """신규만 걸러도 `[급증]`으로 소재 하나짜리가 다시 올라온다."""
+    df = frame([
+        {"month": 7, "extra_info": "teaser", "cost": 1_000_000, "ad": "a"},
+        {"month": 8, "extra_info": "teaser", "cost": 3_000_000, "ad": "a"},
+    ])
+    assert topics.candidates(df, 8) == []
+
+
+def test_같은_소재가_여러_행이어도_하나로_센다():
+    """일별 행이 여러 개인 것과 소재가 여러 개인 것은 다르다."""
+    df = frame([
+        {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "a"},
+        {"month": 8, "extra_info": "epn", "cost": 300_000, "ad": "a"},
+    ])
+    assert topics.candidates(df, 8) == []
+
+
+def test_문턱은_2다():
+    assert topics.MIN_TOPIC_ADS == 2

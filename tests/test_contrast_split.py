@@ -96,6 +96,24 @@ def test_모든_차원이_두_집합_중_한_곳에_들어간다():
     assert not unclassified, f"두 집합 어디에도 없는 차원: {sorted(unclassified)}"
 
 
+def test_장르_필터로_대조군이_만들어진다():
+    """`genre_group`도 소재를 고르는 차원이므로 뒤집혀야 한다.
+
+    ⚠ `CONTRAST_FIELD_PRIORITY`는 **자동 파생이 아니다** — 새 차원을 거기 안 넣으면
+    대조 기준 선택에서 조용히 빠진다.
+    """
+    from creative_data import CONTRAST_FIELD_PRIORITY
+
+    assert "genre_group" in CONTRAST_FIELD_PRIORITY
+    scope = pd.DataFrame([
+        {"ad": "A", "media": "Meta", "genre_group": "[A-4] ADULT", "cost": 100.0},
+        {"ad": "B", "media": "Meta", "genre_group": "[E] ETC", "cost": 200.0},
+    ])
+    subject, rest = contrast_split(scope, {"genre_group": ["[A-4] ADULT"]}, [])
+    assert list(subject["ad"]) == ["A"]
+    assert list(rest["ad"]) == ["B"]
+
+
 def test_MIX_필터로_대조군이_만들어진다():
     """`mix_group`은 소재를 고르는 차원이므로 뒤집혀야 한다."""
     scope = pd.DataFrame([
