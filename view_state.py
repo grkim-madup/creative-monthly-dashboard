@@ -21,9 +21,9 @@ from creative_data import DEFAULT_PIVOT_ROWS, METRIC_COLUMNS, normalize_rows
 #: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
 VIEW_DEFAULTS = {
     "label": "",
-    #: 표 종류는 `pivot`(행/값/필터) 또는 `compare`(기간 비교) 둘뿐이다.
-    #: 예전의 `aggregate`/`list` 구분은 사라졌다 — 행에 소재명을 넣으면 목록,
-    #: 빼면 집계표다.
+    #: 표 종류는 셋이다 — `pivot`(행/값/필터) · `compare`(기간 비교) ·
+    #: `google`(구글 애셋, 2026-09-16 추가). 예전의 `aggregate`/`list` 구분은
+    #: 사라졌다 — 행에 소재명을 넣으면 목록, 빼면 집계표다.
     "kind": "pivot",
     #: 행 = 묶는 기준. 기간 비교에서는 이 자리를 `periods`가 쓴다.
     "rows": [],
@@ -47,6 +47,16 @@ VIEW_DEFAULTS = {
     #: 그래프는 걷어냈다(7·8월 실사용 0%, 규리님 확정 2026-09-09). 읽는 곳이 없지만
     #: **저장된 값은 지우지 않는다** — 되돌리려면 위젯만 다시 그리면 된다.
     "chart_kind": "", "metric": "CPI", "top_n": 0,
+    #: ── 구글 애셋 표(`kind == "google"`) 전용 ──────────────────────────────
+    #: ⚠ **`rows`/`values`/`filters`를 재사용하지 않는다.** 그 키들은
+    #:   `render_block_kpis`·`insight_button`·`filtered_scope`가 **`named_overview`
+    #:   (메타·틱톡 프레임) 기준으로** 읽는다. 같은 키에 구글 축을 담으면 구글
+    #:   필터가 메타 프레임에 걸린다. 키를 `g_*`로 분리하면 "구글 축이 메타 프레임에
+    #:   닿지 않는다"가 **구조적으로 참**이 된다.
+    "g_rows": [], "g_values": [], "g_filters": {},
+    #: 영상·이미지만 볼지. 텍스트 애셋(광고 제목·설명·앱 딥 링크)은 `asset_name`이
+    #: 전부 `--`라 소재로 볼 수 없다.
+    "g_creative_only": True,
 }
 
 #: 예전 형식의 필드 — 지우지 않는다. 되돌리려면 코드만 되돌리면 되게 남겨 둔다.
@@ -105,6 +115,11 @@ def view_with_defaults(view: dict) -> dict:
     merged.update({k: v for k, v in source.items()
                    if v is not None and k not in LEGACY_VIEW_FIELDS})
     merged["rows"] = normalize_rows(merged["rows"])
+    if merged["kind"] == "google":
+        # 구글 표에는 대조군·썸네일·소재 추가·그래프가 없다. 저장된 값이 남아 있어도
+        # 화면이 그걸 보고 메타 경로로 새지 않게 여기서 못 박는다.
+        merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
+                       "include_ads": [], "chart_kind": ""})
     if not merged.get("id"):
         merged["id"] = uuid4().hex[:6]
     return merged
@@ -164,5 +179,24 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
         f: list(take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or []))
         for f in filter_fields
         if take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or [])
+    }
+
+    # ── 구글 애셋 표(2026-09-16) ─────────────────────────────────────────────
+    # 위젯 키를 `gv*`로 따로 쓴다 — 피벗 키를 재사용하면 한 블록에서 표 종류를 바꿀 때
+    # 메타 축이 구글 표에 그대로 남는다. 저장 키도 `g_*`로 분리해 구글 축이
+    # `named_overview`(메타·틱톡 프레임)를 읽는 코드에 닿지 않게 한다.
+    g_rows = take(f"gvrows_{view_key}",
+                  [r["field"] if isinstance(r, dict) else r
+                   for r in (merged.get("g_rows") or [])])
+    merged["g_rows"] = [{"field": f} for f in g_rows]
+    merged["g_values"] = list(take(f"gvvals_{view_key}", merged.get("g_values") or []))
+    merged["g_creative_only"] = bool(
+        take(f"gvonly_{view_key}", merged.get("g_creative_only", True)))
+
+    g_filter_fields = take(f"gvfilters_{view_key}", list(merged.get("g_filters") or {}))
+    merged["g_filters"] = {
+        f: list(take(f"gvfval_{view_key}_{f}", (merged.get("g_filters") or {}).get(f) or []))
+        for f in g_filter_fields
+        if take(f"gvfval_{view_key}_{f}", (merged.get("g_filters") or {}).get(f) or [])
     }
     return merged

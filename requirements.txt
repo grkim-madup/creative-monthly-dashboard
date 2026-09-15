@@ -41,3 +41,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — 수기 지정 편집기(시안 A) (2026-09-09)
 # 재시작 마커 — backup.py 신규 모듈 / 사이드바 개편 (2026-09-09)
 # 재시작 마커 — view_state.py 신규 모듈 / 편집기 E3a (2026-09-16)
+# 재시작 마커 — google_pivot / GOOGLE_* 어휘 / view_state g_* (2026-09-16)

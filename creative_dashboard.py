@@ -88,6 +88,12 @@ from google_ads_report import (
     aggregate_google,
     creative_assets,
     fill_titles,
+    GOOGLE_ALLOCATION_NOTE,
+    GOOGLE_DEFAULT_ROWS,
+    GOOGLE_DIMENSIONS,
+    GOOGLE_METRIC_COLUMNS,
+    google_pivot,
+    GOOGLE_DEFAULT_VALUES,
     load_google_ads_folder,
 )
 from sheet_loader import cache_timestamp, extract_sheet_id, load_media_raw
@@ -2726,6 +2732,50 @@ def media_color(media: str) -> str:
 
 
 
+def render_google_view(view: dict, month: int, editing: bool = False) -> None:
+    """구글 애셋 표 — 같은 블록 안 **별도 표**(A안, 규리님 승인 2026-09-10).
+
+    ⚠ **메타/틱톡과 같은 표에 합치지 않는다.** 구글은 캠페인 비용이 애셋 유형별로
+    나뉘어 배분되고 소진·설치가 **다른 비율**로 배분돼서, 애셋 단위 CPI가 실제보다
+    33% 낮다(실측 2026-08: ₩2,429 vs ₩3,624). 한 표에 넣으면 광고주 발송물에서
+    구글이 부당하게 좋아 보인다.
+
+    ⚠ `named_overview`(메타·틱톡 프레임)를 **건드리지 않는다.** 구글 축을 그 프레임에
+    걸면 소재명 파싱 축이 전부 빈 값이 되어 가짜 `미분류` 버킷이 생긴다(`883600f`).
+    """
+    if google_error:
+        status_row("bad", "구글 데이터를 읽지 못했습니다", google_error[:120])
+        return
+    if google_all.empty:
+        status_row("warn", f"{month}월 구글 소재 데이터가 없습니다",
+                   "폴더에 해당 월 '애셋 세부정보 보고서'가 있어야 합니다.")
+        return
+
+    table = google_pivot(google_all, rows=view["g_rows"], values=view["g_values"],
+                         filters=view["g_filters"],
+                         creative_only=view["g_creative_only"])
+    if table.empty:
+        status_row("warn", "조건에 맞는 소재가 없습니다",
+                   "필터를 완화하거나 행 값을 늘려 보세요.")
+        return
+
+    keys = [r["field"] if isinstance(r, dict) else r
+            for r in (view["g_rows"] or GOOGLE_DEFAULT_ROWS)]
+    labels = {f: GOOGLE_DIMENSIONS.get(f, f) for f in keys}
+    labels.update(COLUMN_LABELS)
+    render_table(table.rename(columns=labels), color_columns=["CPI"])
+
+    # ⚠ 이 각주는 **광고주도 봐야 한다** — `editing` 안에 감싸지 말 것.
+    st.markdown(f'<div class="tbl-note">{html.escape(GOOGLE_ALLOCATION_NOTE)}</div>',
+                unsafe_allow_html=True)
+    if editing:
+        st.markdown(
+            f'<div class="tbl-note">{" · ".join(labels.get(f, f) for f in keys)} 기준 '
+            f"{len(table):,}줄 · 구글은 소재명 규칙·Drive 매칭이 없어 "
+            "대조군·썸네일을 쓰지 않습니다.</div>",
+            unsafe_allow_html=True)
+
+
 def render_compare_view(view: dict) -> None:
     """기간 비교표 — 행이 지표, 열이 기간 + 증감.
 
@@ -3023,7 +3073,10 @@ def render_view(view: dict, month: int, key_prefix: str,
     # 소재 미리보기는 **표보다 위**에 둔다. 테이블명과 표 사이에 끼면 이름이 어느
     # 표의 것인지 안 읽힌다(규리님 지적 — 라벨에서 표까지 시선이 카드를 넘어가야 했다).
     # 편집 중에도 편집기보다 위다 — "무엇을 고르고 있는지"를 먼저 보여줘야 한다.
-    if view["thumbs"] and view["kind"] != "compare":
+    # ⚠ **허용목록으로 판정한다.** `!= "compare"`로 두면 새 종류(구글 표)가 조용히
+    #   피벗 취급되어 `named_overview`(메타·틱톡 프레임)에 구글 필터가 걸린다.
+    #   계획서가 "이 작업 최대의 조용한 실패 지점"으로 지목한 자리다(2026-09-16).
+    if view["thumbs"] and view["kind"] == "pivot":
         render_thumbs(filtered_scope(named_overview, view["filters"],
                                      view["include_ads"]))
     if editing:
@@ -3036,6 +3089,15 @@ def render_view(view: dict, month: int, key_prefix: str,
 
     if view["kind"] == "compare":
         render_compare_view(view)
+        return
+    if view["kind"] == "google":
+        render_google_view(view, month, editing)
+        return
+    if view["kind"] != "pivot":
+        # 알 수 없는 종류를 피벗으로 떨어뜨리지 않는다 — 옛 배포판이 새 종류를 만나면
+        # 그 달 메타·틱톡 전체 표를 경고 없이 그린다.
+        status_row("bad", "이 표는 최신 버전에서만 볼 수 있습니다",
+                   f"종류: {view['kind']}")
         return
 
     highlight_key = f"{key_prefix}_{view['id']}"
@@ -3071,7 +3133,7 @@ def render_view(view: dict, month: int, key_prefix: str,
         )
 
 
-VIEW_KINDS = {"pivot": "피벗 표", "compare": "기간 비교"}
+VIEW_KINDS = {"pivot": "피벗 표", "compare": "기간 비교", "google": "구글 애셋"}
 QUILL_TOOLBAR = [
     ["bold", "italic", "underline", "strike"],
     [{"header": [2, 3, False]}],
@@ -3192,8 +3254,103 @@ def table_editor(view: dict, view_key: str) -> dict:
             drop_view(view_key, view["id"])
 
         view = {**view, "label": label, "kind": kind}
-        view = pivot_editor(view, view_key)
+        # 구글 표는 축·지표 어휘가 완전히 다르다(소재명 파싱 축이 없고, D0 계열 지표도
+        # 없다). 같은 편집기에 분기를 넣으면 메타 어휘가 구글 표에 새므로 갈라 놓는다.
+        view = (google_editor(view, view_key) if kind == "google"
+                else pivot_editor(view, view_key))
     return view
+
+
+def google_value_options(field: str) -> list[str]:
+    """그 축에 이 달 실제로 있는 값들. **구글 프레임에서만** 찾는다."""
+    if google_all is None or google_all.empty or field not in google_all.columns:
+        return []
+    return sorted(google_all[field].dropna().astype(str)
+                  .replace("", pd.NA).dropna().unique())
+
+
+def google_editor(view: dict, view_key: str) -> dict:
+    """구글 애셋 표의 행 / 값 / 필터. 피벗 편집기와 **같은 배치**(시안 E3a)다.
+
+    ⚠ 대조군·썸네일·소재 추가·그래프 위젯은 **아예 그리지 않는다**(disabled보다 미표시가
+      맞다 — 켤 수 없는 토글은 "왜 안 되나"를 만든다). 구글은 소재명 규칙도 Drive
+      매칭도 없어서 그 기능들이 원리적으로 성립하지 않는다.
+
+    ⚠ 위젯 키를 `gv*`로 따로 쓴다. 피벗 키(`pvrows_`…)를 재사용하면 한 블록에서 표
+      종류를 바꿀 때 메타 축이 구글 표에 그대로 남는다.
+    """
+    saved_rows = [r["field"] if isinstance(r, dict) else r
+                  for r in (view.get("g_rows") or [])]
+
+    with st.container(key=f"gv_{view_key}"):
+        with st.container(border=True, key=f"gvbox_{view_key}"):
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label("행", "묶는 기준")
+            with slot:
+                rows = st.multiselect(
+                    "행", list(GOOGLE_DIMENSIONS),
+                    default=[f for f in (saved_rows or GOOGLE_DEFAULT_ROWS)
+                             if f in GOOGLE_DIMENSIONS],
+                    format_func=lambda f: GOOGLE_DIMENSIONS.get(f, f),
+                    key=f"gvrows_{view_key}", label_visibility="collapsed",
+                    placeholder="기본 구분 사용 · 작품",
+                )
+
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label("값", "보여줄 지표")
+            with slot:
+                values = st.multiselect(
+                    "값", GOOGLE_METRIC_COLUMNS,
+                    default=[c for c in (view.get("g_values") or GOOGLE_DEFAULT_VALUES)
+                             if c in GOOGLE_METRIC_COLUMNS],
+                    format_func=lambda c: COLUMN_LABELS.get(c, c),
+                    key=f"gvvals_{view_key}", label_visibility="collapsed",
+                    placeholder="기본 지표 사용",
+                )
+
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label("필터", "담을 범위")
+            with slot:
+                filter_fields = st.multiselect(
+                    "필터", list(GOOGLE_DIMENSIONS),
+                    default=[f for f in (view.get("g_filters") or {})
+                             if f in GOOGLE_DIMENSIONS],
+                    format_func=lambda f: GOOGLE_DIMENSIONS.get(f, f),
+                    key=f"gvfilters_{view_key}", label_visibility="collapsed",
+                    placeholder="필터 없음 · 전체 애셋",
+                )
+
+            filter_values: dict[str, list[str]] = {}
+            for field in filter_fields:
+                _pad, name_col, val_col = st.columns([1.05, 1.9, 6.1])
+                with name_col:
+                    st.markdown(
+                        f'<div class="pe-sub">{GOOGLE_DIMENSIONS.get(field, field)}</div>',
+                        unsafe_allow_html=True)
+                choices = google_value_options(field)
+                with val_col:
+                    filter_values[field] = st.multiselect(
+                        f"{field} 값", choices,
+                        default=[v for v in (view.get("g_filters") or {}).get(field, [])
+                                 if v in choices],
+                        key=f"gvfval_{view_key}_{field}", label_visibility="collapsed",
+                        filter_mode="contains",
+                        placeholder="값을 고르세요 — 비우면 아무것도 걸지 않습니다",
+                    )
+
+        creative_only = st.checkbox(
+            "영상·이미지만", value=bool(view.get("g_creative_only", True)),
+            key=f"gvonly_{view_key}",
+            help="텍스트 애셋(광고 제목·설명·앱 딥 링크)은 애셋 이름이 전부 `--`라 "
+                 "소재로 볼 수 없습니다. 끄면 그것까지 합산합니다.",
+        )
+
+    return {**view, "g_rows": [{"field": f} for f in rows], "g_values": values,
+            "g_filters": {f: v for f, v in filter_values.items() if v},
+            "g_creative_only": bool(creative_only)}
 
 
 def editor_label(name: str, hint: str = "") -> None:
@@ -3489,7 +3646,9 @@ def insight_button(block: dict, views: list[dict], month: int) -> None:
         # 블록 제목으로 대체하면 뷰 5개가 전부 같은 제목이 되어 식별이 사라진다.
         return view["label"] or filter_summary(view) or (block.get("title") or "")
 
-    live = [view_with_defaults(v) for v in views if v["kind"] != "compare"]
+    # 초안은 메타·틱톡 표에서만 쓴다 — 구글 표는 애셋 단위 배분값이라 같은 문장에
+    # 섞으면 매체 간 비교처럼 읽힌다.
+    live = [view_with_defaults(v) for v in views if v["kind"] == "pivot"]
     contrast_views = [v for v in live if v["contrast"] and contrast_ready(v)]
     ad_views = [v for v in live if not v["contrast"]
                 and "ad" in [r["field"] for r in v["rows"]]]
@@ -3630,7 +3789,7 @@ def render_block_kpis(views: list[dict], month: int) -> None:
     #   990,538(TikTok까지)이 됐다. 표가 쓰는 것과 **같은 필터 함수**로 행을 고른 뒤
     #   그 행들을 합쳐야 숫자가 어긋나지 않는다.
     parts = [filtered_scope(named_overview, view["filters"], view["include_ads"])
-             for view in views if view["kind"] != "compare"]
+             for view in views if view["kind"] == "pivot"]
     parts = [frame for frame in parts if not frame.empty]
     if not parts:
         return
