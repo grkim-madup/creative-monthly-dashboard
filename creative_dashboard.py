@@ -38,6 +38,11 @@ import overrides as manual_overrides
 import prefetch
 import reconcile
 import topics
+from view_state import (
+    empty_periods,
+    view_with_defaults,
+)
+from view_state import view_from_widgets as _view_from_widgets
 from creative_data import (
     delta_direction,
     DISPLAY_COLUMNS,
@@ -53,11 +58,8 @@ from creative_data import (
     add_derived_metrics,
     aggregate_by,
     aggregate_by_axis,
-    chart_frame,
     compare_periods,
-    dumbbell_frame,
     explode_extra_info,
-    metric_benchmark,
     month_options,
     pick_best_worst,
     CREATIVE_FIELDS,
@@ -85,6 +87,7 @@ from google_ads_report import (
     DEFAULT_COST_MARKUP,
     aggregate_google,
     creative_assets,
+    fill_titles,
     load_google_ads_folder,
 )
 from sheet_loader import cache_timestamp, extract_sheet_id, load_media_raw
@@ -1751,6 +1754,18 @@ try:
 except Exception as error:
     google_error = str(error)
 
+# 작품명(`title_kr`)은 **파일명에서** 온다 — 담당자가 폴더를 어떻게 이름 지었는지에
+# 따라 `365dtg`·`2608 EPUB` 같은 값이 작품명 자리에 들어왔다(2026-09-09 실측 302행 ·
+# 소진 ₩15,938,116). 애셋 이름으로 보정한다(규리님 요청: *"에셋이름 컬럼을 활용하자"*).
+#
+# 실측 효과: 쓰레기값 302행 → **0행**, 작품 39종 → **67종**(한글 60 · 중국어 6 ·
+# 미분류). 정상 작품명이 바뀐 것은 0건이다.
+#
+# ⚠ 대응표는 **전체 기간**의 Media_RAW에서 만든다. 그 달만 쓰면 다른 달에 집행된
+#   작품의 한글 제목을 못 찾는다(8월만 49종 → 전체 187종).
+if not google_all.empty:
+    google_all = fill_titles(google_all, raw)
+
 google = pd.DataFrame()
 if not google_all.empty:
     google = creative_assets(google_all)
@@ -2688,106 +2703,6 @@ def match_conditions(conditions: dict,
     return scope_of_match, len(matched_ads)
 
 
-COMPARE_METRICS = ["cost", "CPI", "CTR", "D0 read CVR", "D0 coin CVR",
-                   "CPC", "CPM"]
-
-#: 빈 뷰를 만들 때의 기본값. 저장된 뷰에 없는 키는 여기서 채운다 — 나중에 필드를
-#: 늘려도 예전에 저장된 뷰가 KeyError로 화면을 죽이지 않는다.
-VIEW_DEFAULTS = {
-    "label": "",
-    # 표 종류는 이제 `pivot`(행/값/필터) 또는 `compare`(기간 비교) 둘뿐이다.
-    # 예전의 `aggregate`/`list` 구분은 사라졌다 — 행에 소재명을 넣으면 목록,
-    # 빼면 집계표다. 별도 드롭다운으로 고를 필요가 없다.
-    "kind": "pivot",
-    #: 행 = 묶는 기준. `[{"field": ..., "values": [...]}]`.
-    #: 값을 지정하면 그 축에서 그 값들만 보여준다(비우면 전체).
-    "rows": [],
-    #: 값 = 보여줄 지표. 비우면 기본 세트 — 빈 목록을 '0개'로 읽으면 표가 사라진다.
-    "values": [],
-    #: 필터 = 표에 담을 범위. **값을 좁히는 자리는 여기 하나뿐이다** — 행에도 값
-    #: 선택을 붙였더니 하는 일이 같아져서 "왜 두 군데서 좁히나"가 됐다.
-    #: 행으로 쓰는 구분자도 여기서 고를 수 있다(시트 피벗도 그렇다).
-    "filters": {},
-    #: 대조군 비교 — 켜면 "동일 조건에서 이 소재군을 제외한 나머지"와 매체별로 견준다.
-    #: 규리님 요구: "효율이 좋았냐 안 좋았냐. 그 기준은 그걸 제외한 다른 소재들의 평균."
-    "contrast": False,
-    #: 대조 기준으로 삼을 필터 하나. 비우면 `default_contrast_field`가 고른다.
-    #: 이 필터만 뒤집히고 **나머지 필터는 양쪽에 똑같이 걸린다** — `format=IMG` +
-    #: `태그=comic`이면 같은 IMG 안에서 comic vs 나머지를 본다(규리님 요청).
-    "contrast_field": "",
-    #: 표 위에 소재 썸네일 줄을 보여줄지. 광고주 Drive 조회가 필요해 기본은 꺼 둔다.
-    "thumbs": False,
-    #: 필터 결과에 **더할** 소재. 필터를 두 개 걸면 교집합이라 "이 조건에 맞는 소재
-    #: + 손으로 고른 소재"는 필터로 표현할 수 없다. 실제 리포트도 대상 소재를
-    #: 파일명으로 나열하는 칸을 따로 둔다(8월 시트 148~175행).
-    "include_ads": [],
-    "chart_kind": "", "metric": "CPI", "top_n": 0,
-    # 기간 비교 뷰용
-    "periods": [], "metrics": [],
-}
-
-#: 예전 형식의 필드 — 지우지 않는다. 되돌리려면 코드만 되돌리면 되게 남겨 둔다.
-LEGACY_VIEW_FIELDS = ("axis", "axis_values", "conditions", "columns", "chart",
-                      "show_table")
-
-
-def migrate_view(view: dict) -> dict:
-    """예전 뷰(`axis`/`conditions`/`columns`)를 행/값/필터로 옮긴다.
-
-    **읽을 때만 변환하고 저장된 원본은 건드리지 않는다** — `promote_views`와 같은 방식.
-    다음 저장 때 새 형식으로 굳는다.
-    """
-    if view.get("rows") or view.get("kind") == "compare":
-        return view
-
-    legacy_kind = view.get("kind")
-    if legacy_kind not in ("aggregate", "list"):
-        return view
-
-    columns = list(view.get("columns") or [])
-    conditions = dict(view.get("conditions") or {})
-    axis = view.get("axis") or "creative_type"
-
-    # 행: 목록이면 소재명, 집계면 축. 매체는 예전에 컬럼 선택이 결정했다
-    # (컬럼을 안 고르면 기본 세트에 매체가 있었으므로 나뉘어 있었다).
-    head = "ad" if legacy_kind == "list" else axis
-    rows = [{"field": head}]
-    if "media" in (columns or DEFAULT_PIVOT_ROWS):
-        rows.append({"field": "media"})
-
-    values = [c for c in columns if c in METRIC_COLUMNS]
-    # 예전 축 값은 이제 **필터**로 간다 — 좁히는 자리가 하나뿐이므로.
-    filters = dict(conditions)
-    narrowed = list(view.get("axis_values") or conditions.get(axis) or [])
-    if legacy_kind == "aggregate" and narrowed:
-        filters[axis] = narrowed
-
-    moved = dict(view)
-    moved.update({"kind": "pivot", "rows": rows, "values": values,
-                  "filters": filters, "include_ads": []})
-    return moved
-
-
-def empty_periods() -> list[dict]:
-    return [{"label": "", "months": []}, {"label": "", "months": []}]
-
-
-def view_with_defaults(view: dict) -> dict:
-    merged = copy.deepcopy(VIEW_DEFAULTS)
-    source = migrate_view(dict(view or {}))
-    merged.update({k: v for k, v in source.items()
-                   if v is not None and k not in LEGACY_VIEW_FIELDS})
-    merged["rows"] = normalize_rows(merged["rows"])
-    if not merged.get("id"):
-        merged["id"] = uuid4().hex[:6]
-    # 예전 뷰는 차트가 켜짐/꺼짐 두 가지뿐이었다. 켜져 있었으면 기본 차트로 올린다.
-    if (view or {}).get("chart") and not merged.get("chart_kind"):
-        merged["chart_kind"] = "ranking"
-    if merged["chart_kind"] not in CHART_KINDS:
-        merged["chart_kind"] = ""
-    return merged
-
-
 #: 행·필터에 쓸 수 있는 구분자와 그 이름. `PIVOT_FIELDS`와 같은 어휘를 쓰되
 #: 피벗의 행으로 넣을 수 있는 것만 남긴다(소재명이 추가된다 — 넣으면 소재 목록이 된다).
 FIELD_LABELS = {
@@ -2806,218 +2721,9 @@ def field_label(field: str) -> str:
     return FIELD_LABELS.get(field, COLUMN_LABELS.get(field, field))
 
 
-CHART_KINDS = {
-    "": "없음",
-    "ranking": "랭킹 막대 + 기준선",
-    "quadrant": "효율 × 볼륨",
-    "dumbbell": "매체 대비",
-}
-
-#: 차트 공통 서식. 표와 같은 회색조를 쓰고 격자·눈금은 뒤로 물린다(액센트 1색 원칙).
-CHART_INK, CHART_MUTED, CHART_FAINT, CHART_GRID = "#14171a", "#6b7681", "#97a1ac", "#e6e9ec"
-#: 소진 비중이 이 값보다 작으면 흐리게 그린다. 없애지는 않는다 — 합계가 안 맞으면
-#: 광고주가 표와 대조할 때 어긋난다.
-LOW_VOLUME_SHARE = 0.02
-
-
-def chart_layout(fig, height: int = 380):
-    """대시보드 톤앤매너 — Pretendard, 흰 배경, 그림자 없음, 회색조 축."""
-    fig.update_layout(
-        plot_bgcolor="#fff", paper_bgcolor="#fff",
-        margin=dict(l=10, r=10, t=26, b=10), height=height,
-        font=dict(size=12, family="Pretendard, sans-serif", color=CHART_MUTED),
-        showlegend=False, hoverlabel=dict(font_family="Pretendard, sans-serif"),
-    )
-    fig.update_xaxes(gridcolor=CHART_GRID, zeroline=False, linecolor=CHART_GRID,
-                     tickfont=dict(color=CHART_FAINT, size=10))
-    fig.update_yaxes(gridcolor=CHART_GRID, zeroline=False, linecolor=CHART_GRID,
-                     tickfont=dict(color=CHART_MUTED, size=11))
-    return fig
-
-
 def media_color(media: str) -> str:
     return MEDIA_COLORS.get(str(media), MEDIA_COLOR_FALLBACK)
 
-
-def metric_axis_format(metric: str) -> str:
-    if metric in ("CTR", "D0 read CVR", "D0 coin CVR", "D7 coin CVR"):
-        return ".1%"
-    return ",.0f"
-
-
-def benchmark_note(value: float | None, metric: str, month: int) -> str:
-    """기준선이 무엇인지 표 아래에 글로도 남긴다 — 선만 있으면 무엇의 평균인지 모른다."""
-    if value is None:
-        return ""
-    shown = f"{value:.2%}" if metric_axis_format(metric) == ".1%" else f"₩{value:,.0f}"
-    return (f'<div class="tbl-note">점선 = {month}월 전체 성과 {shown} '
-            "(조건을 걸지 않은 그 달 같은 매체 전체). "
-            "흐린 막대는 소진 비중 2% 미만입니다.</div>")
-
-
-def ranking_chart(frame: pd.DataFrame, axis: str, metric: str, benchmark: float | None):
-    """A안 — 좋은 순으로 정렬한 가로 막대. 기준선 하나.
-
-    예전 그룹 막대의 문제는 **가장 큰 막대가 노이즈**였다는 것이다(8월 Visual·Meta
-    CPI ₩29,373 = 설치 19건). 정렬하면 그게 맨 끝으로 가고, 흐리게 칠하면 결론처럼
-    보이지 않는다.
-    """
-    labels = [f"{row[axis]} · {row['media']}" if "media" in frame.columns else str(row[axis])
-              for _, row in frame.iterrows()]
-    colors = [media_color(row["media"]) if "media" in frame.columns else MEDIA_COLOR_FALLBACK
-              for _, row in frame.iterrows()]
-    opacity = [0.35 if bool(row["_low_volume"]) else 0.95 for _, row in frame.iterrows()]
-
-    fig = go.Figure(go.Bar(
-        x=frame["_rank_value"], y=labels, orientation="h",
-        marker=dict(color=colors, opacity=opacity),
-        customdata=frame[["cost", "total install"]].to_numpy(),
-        hovertemplate=("%{y}<br>" + METRIC_LABELS.get(metric, metric) + " %{x:,.0f}"
-                       "<br>소진 ₩%{customdata[0]:,.0f}"
-                       "<br>설치 %{customdata[1]:,.0f}건<extra></extra>"),
-    ))
-    # 좋은 것이 위로 오게. plotly의 가로 막대는 첫 항목을 아래에 놓는다.
-    fig.update_yaxes(autorange="reversed", showgrid=False)
-    fig.update_xaxes(tickformat=metric_axis_format(metric),
-                     title_text=METRIC_LABELS.get(metric, metric))
-    if benchmark is not None:
-        fig.add_vline(x=benchmark, line=dict(color=CHART_INK, width=1, dash="dot"))
-    return chart_layout(fig, height=max(240, 26 * len(frame) + 90))
-
-
-def wide_spread(values: pd.Series, ratio: float = 8.0) -> bool:
-    """최댓값이 최솟값의 `ratio`배를 넘는가 — 넘으면 선형 축에서 작은 값들이 뭉개진다."""
-    numbers = pd.to_numeric(values, errors="coerce").dropna()
-    numbers = numbers[numbers > 0]
-    if len(numbers) < 3:
-        return False
-    return float(numbers.max()) / float(numbers.min()) > ratio
-
-
-def quadrant_chart(frame: pd.DataFrame, axis: str, metric: str, benchmark: float | None):
-    """B안 — 가로 소진액(규모) × 세로 지표(효율), 원 크기 = 설치.
-
-    "효율이 좋다"와 "규모가 있다"를 한 화면에서 본다. 다음 달 제작 방향을 정할 때
-    실제로 필요한 건 그 둘의 교집합인데, 막대 하나로는 절대 안 보인다.
-    """
-    installs = frame["total install"].fillna(0).clip(lower=0)
-    sizes = (installs ** 0.5)
-    sizes = (sizes / sizes.max() * 34 + 8) if sizes.max() > 0 else pd.Series(12, index=frame.index)
-
-    fig = go.Figure()
-    for media, part in frame.groupby("media", sort=False) if "media" in frame.columns \
-            else [("전체", frame)]:
-        fig.add_trace(go.Scatter(
-            x=part["cost"], y=part["_rank_value"], mode="markers+text",
-            text=part[axis].astype(str), textposition="middle right",
-            textfont=dict(size=10, color=CHART_MUTED),
-            marker=dict(size=sizes.loc[part.index], color=media_color(media),
-                        opacity=0.55, line=dict(width=1.2, color=media_color(media))),
-            customdata=part[["total install"]].to_numpy(),
-            hovertemplate=("%{text} · " + str(media) + "<br>소진 ₩%{x:,.0f}<br>"
-                           + METRIC_LABELS.get(metric, metric) + " %{y:,.0f}"
-                           "<br>설치 %{customdata[0]:,.0f}건<extra></extra>"),
-        ))
-    # 값 범위가 넓으면 **이상치 하나가 축을 독차지한다.** 실측(2026-08): Visual·Meta가
-    # CPI ₩29,373(설치 19건)이라 y축이 3만까지 늘어나고 나머지 20개가 바닥에 눌렸다.
-    # 점을 빼면 합계가 안 맞고 조용히 숨기는 셈이라, 대신 로그 축으로 펼친다.
-    log_x = wide_spread(frame["cost"])
-    log_y = wide_spread(frame["_rank_value"])
-    fig.update_xaxes(title_text="소진액" + (" (로그)" if log_x else ""),
-                     type="log" if log_x else "linear",
-                     tickformat=",.0f" if not log_x else "~s")
-    fig.update_yaxes(title_text=METRIC_LABELS.get(metric, metric) + (" (로그)" if log_y else ""),
-                     type="log" if log_y else "linear",
-                     tickformat=metric_axis_format(metric) if not log_y else "~s")
-    if benchmark is not None and benchmark > 0:
-        fig.add_hline(y=math.log10(benchmark) if log_y else benchmark,
-                      line=dict(color=CHART_INK, width=1, dash="dot"))
-    return chart_layout(fig, height=400)
-
-
-def dumbbell_chart(pairs: pd.DataFrame, axis: str, metric: str):
-    """C안 — 같은 유형이 매체마다 얼마나 다른지. 선 길이가 곧 격차."""
-    fig = go.Figure()
-    names = pairs[axis].tolist()
-    for position, row in pairs.iterrows():
-        fig.add_trace(go.Scatter(
-            x=[row["value_a"], row["value_b"]], y=[names[position]] * 2,
-            mode="lines", line=dict(color=CHART_GRID, width=3), hoverinfo="skip",
-        ))
-    for side in ("a", "b"):
-        fig.add_trace(go.Scatter(
-            x=pairs[f"value_{side}"], y=names, mode="markers",
-            marker=dict(size=11, color=[media_color(m) for m in pairs[f"media_{side}"]]),
-            customdata=pairs[[f"media_{side}"]].to_numpy(),
-            hovertemplate=("%{y} · %{customdata[0]}<br>"
-                           + METRIC_LABELS.get(metric, metric)
-                           + " %{x:,.0f}<extra></extra>"),
-        ))
-    fig.update_xaxes(title_text=METRIC_LABELS.get(metric, metric),
-                     tickformat=metric_axis_format(metric))
-    fig.update_yaxes(autorange="reversed", showgrid=False)
-    return chart_layout(fig, height=max(240, 30 * len(pairs) + 90))
-
-
-def media_legend(medias) -> str:
-    dots = "".join(
-        f'<span class="chart-key"><i style="background:{media_color(m)}"></i>{html.escape(str(m))}</span>'
-        for m in medias
-    )
-    return f'<div class="chart-legend">{dots}</div>'
-
-
-def render_axis_chart(view: dict, table: pd.DataFrame, axis: str,
-                      month: int, key: str) -> None:
-    """집계표 위에 차트를 그린다. 종류는 뷰가 고른다.
-
-    **기준선은 표 안의 평균이 아니라 그 달 전체 성과**다. 실제 리포트 시트도
-    `TikTok 신규유형 총계` 바로 아래 `6월 틱톡 AOS 베너 소재 총 성과`를 붙여 놓고
-    눈으로 대조한다 — 조건을 건 표의 자기 평균과 비교하면 "이 조건이 좋은가"를
-    자기 자신에게 묻는 셈이라 아무것도 알 수 없다.
-    """
-    metric = view["metric"] if view["metric"] in COMPARE_METRICS else "CPI"
-    kind = view["chart_kind"]
-
-    # 그 달 전체(조건 없음) — 단, 표에 있는 매체로만 좁힌다. 표가 틱톡만 담고 있는데
-    # 메타가 섞인 전체와 비교하면 기준선이 엉뚱해진다.
-    whole = named_overview
-    if "media" in table.columns:
-        whole = whole[whole["media"].isin(table["media"].unique())]
-    benchmark = metric_benchmark(whole, metric)
-    if metric not in table.columns:
-        # 값 목록에서 그 지표를 빼면 그릴 수가 없다 — 조용히 빈 그래프를 그리지 않는다.
-        status_row("warn", f"{METRIC_LABELS.get(metric, metric)}가 표에 없습니다",
-                   "값 칩에 그 지표를 추가하면 그래프가 그려집니다.")
-        return
-
-    if kind == "dumbbell":
-        pairs = dumbbell_frame(table, axis, metric)
-        if len(pairs) < 2:
-            status_row("warn", "매체 대비를 그릴 수 없습니다",
-                       "두 매체에 모두 있는 값이 2개 이상이어야 선을 그을 수 있습니다.")
-            return
-        st.plotly_chart(dumbbell_chart(pairs, axis, metric), width="stretch",
-                        key=f"chart_{key}")
-        st.markdown(media_legend(sorted({*pairs["media_a"], *pairs["media_b"]})),
-                    unsafe_allow_html=True)
-        return
-
-    frame = chart_frame(table, axis, metric,
-                        low_volume_share=LOW_VOLUME_SHARE, benchmark=benchmark)
-    if frame.empty:
-        return
-    if kind == "ranking" and view["top_n"]:
-        # 정렬이 끝난 뒤에 자른다 — "상위 N개"는 좋은 순으로 N개라는 뜻이다.
-        frame = frame.head(int(view["top_n"]))
-
-    figure = (ranking_chart(frame, axis, metric, benchmark) if kind == "ranking"
-              else quadrant_chart(frame, axis, metric, benchmark))
-    st.plotly_chart(figure, width="stretch", key=f"chart_{key}")
-    if "media" in frame.columns:
-        st.markdown(media_legend(sorted(frame["media"].unique())),
-                    unsafe_allow_html=True)
-    st.markdown(benchmark_note(benchmark, metric, month), unsafe_allow_html=True)
 
 
 def render_compare_view(view: dict) -> None:
@@ -3307,14 +3013,14 @@ def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
 
 def render_view(view: dict, month: int, key_prefix: str,
                 editing: bool = False) -> None:
-    """뷰 하나(기준 라벨 + 편집기 + 표 [+ 그래프])를 그린다.
+    """뷰 하나(테이블명 + 편집기 + 표)를 그린다.
 
     강조 키에 **뷰 id를 섞는다** — 안 그러면 한 블록 안 두 표가 강조 상태를 공유해서,
     첫 표의 셀을 칠하면 둘째 표의 같은 자리가 함께 칠해진다.
     """
     view = view_with_defaults(view)
     view_key = f"{block_id_of(key_prefix)}_{view['id']}"
-    # 소재 미리보기는 **표보다 위**에 둔다. 기준 라벨과 표 사이에 끼면 라벨이 어느
+    # 소재 미리보기는 **표보다 위**에 둔다. 테이블명과 표 사이에 끼면 이름이 어느
     # 표의 것인지 안 읽힌다(규리님 지적 — 라벨에서 표까지 시선이 카드를 넘어가야 했다).
     # 편집 중에도 편집기보다 위다 — "무엇을 고르고 있는지"를 먼저 보여줘야 한다.
     if view["thumbs"] and view["kind"] != "compare":
@@ -3351,10 +3057,6 @@ def render_view(view: dict, month: int, key_prefix: str,
         return
 
     fields = [r["field"] for r in view["rows"]]
-    # 그래프는 소재명이 아닌 첫 행을 축으로 쓴다 — 소재 300개를 막대로 그리면 못 읽는다.
-    axis = next((f for f in fields if f != "ad"), None)
-    if view["chart_kind"] and axis:
-        render_axis_chart(view, table, axis, month, highlight_key)
 
     render_table(
         table.rename(columns={f: field_label(f) for f in fields}),
@@ -3388,41 +3090,12 @@ def clear_view_state(block_id: str, view_id: str) -> None:
 
 
 def view_from_widgets(view: dict, view_key: str) -> dict:
-    """저장할 뷰를 **화면 위젯의 현재 값**으로 조립한다.
+    """`view_state.view_from_widgets`에 세션을 넘기는 얇은 래퍼.
 
-    편집기는 표 바로 위(`render_view`)에서 그리는데 저장 버튼은 그보다 위에 있다.
-    Streamlit 위젯 값은 세션에 남아 있으므로, 저장 시점에 그 세션 값을 읽으면
-    순서에 상관없이 항상 화면과 같은 것이 저장된다.
+    로직은 `view_state.py`에 있다 — 진입점은 import할 수 없어서 그 안에 있는 동안은
+    **어떤 테스트도 이 계약을 검증하지 못했다**(`tests/test_view_editor_contract.py`).
     """
-    merged = view_with_defaults(view)
-    session = st.session_state
-
-    def take(key, fallback):
-        value = session.get(key)
-        return fallback if value is None else value
-
-    merged["label"] = take(f"vlabel_{view_key}", merged["label"])
-    merged["kind"] = take(f"vkind_{view_key}", merged["kind"])
-    merged["chart_kind"] = take(f"vchart_{view_key}", merged["chart_kind"])
-    merged["metric"] = take(f"vmetric_{view_key}", merged["metric"])
-    merged["top_n"] = int(take(f"vtop_{view_key}", merged["top_n"]) or 0)
-
-    row_fields = take(f"pvrows_{view_key}", [r["field"] for r in merged["rows"]])
-    merged["rows"] = normalize_rows([{"field": f} for f in row_fields])
-    merged["values"] = list(take(f"pvvals_{view_key}", merged["values"]))
-    merged["include_ads"] = list(take(f"pvads_{view_key}", merged["include_ads"]))
-    merged["contrast"] = bool(take(f"pvct_{view_key}", merged["contrast"]))
-    merged["contrast_field"] = str(
-        take(f"pvctf_{view_key}", merged["contrast_field"]) or "")
-    merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
-
-    filter_fields = take(f"pvfilters_{view_key}", list(merged["filters"] or {}))
-    merged["filters"] = {
-        f: list(take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or []))
-        for f in filter_fields
-        if take(f"pvfval_{view_key}_{f}", (merged["filters"] or {}).get(f) or [])
-    }
-    return merged
+    return _view_from_widgets(view, view_key, st.session_state)
 
 
 def period_editor(view_key: str, periods: list[dict]) -> list[dict]:
@@ -3467,30 +3140,6 @@ def field_value_options(field: str) -> list[str]:
                   .replace("", pd.NA).dropna().unique())
 
 
-def value_popover(view_key: str, slot: str, fields: list[str], saved: dict) -> dict:
-    """고른 구분자마다 값 선택을 하나씩 담은 팝오버. `{필드: [값...]}`을 돌려준다.
-
-    구분자 선택(멀티셀렉트)과 값 선택(팝오버)을 나눈 이유: 한 줄에 다 펼치면 구분자
-    수만큼 위젯이 늘어나 다시 컨트롤 벽이 된다. 칩을 눌러 값만 손보는 흐름이 짧다.
-    """
-    if not fields:
-        return {}
-    picked = {f: [v for v in (saved.get(f) or [])] for f in fields}
-    summary = ", ".join(
-        f"{field_label(f)}={','.join(picked[f])}" if picked[f] else field_label(f)
-        for f in fields
-    )
-    with st.popover(f"값 지정 · {summary[:34]}", use_container_width=True):
-        for field in fields:
-            choices = field_value_options(field)
-            picked[field] = st.multiselect(
-                f"{field_label(field)} (비우면 전체)", choices,
-                default=[v for v in picked[field] if v in choices],
-                key=f"pv{slot}val_{view_key}_{field}",
-            )
-    return picked
-
-
 def drop_view(view_key: str, view_id: str) -> None:
     """표 하나를 지운다. 목록은 블록 단위 세션에 있다."""
     block_id = view_key.rsplit("_", 1)[0]
@@ -3508,16 +3157,26 @@ def block_id_of(key_prefix: str) -> str:
 
 
 def table_editor(view: dict, view_key: str) -> dict:
-    """표 하나의 설정 전체 — 기준 라벨 · 그래프 · 행/값/필터. **표 바로 위**에 그린다.
+    """표 하나의 설정 전체. **표 바로 위**에 그린다.
 
-    예전에는 블록 상단 `설정` 아코디언 안에 모여 있었다. 표가 2~6개 붙는 구조라,
-    어느 표의 설정인지 눈으로 한 번 더 찾아야 했다. 고치려는 표를 보면서 만지게 한다.
+    배치(2026-09-09, 시안 E3a — 규리님 선택): 라벨을 위젯 **왼쪽**에 붙여 위젯당 한 줄로
+    줄이고, 데이터 구성(행·값·필터)만 옅은 박스로 묶는다. 표시 옵션은 박스 밖 한 줄이다.
+
+    왜 바꿨나: 전체 폭 위젯이 세로로 8줄 쌓여 **표가 첫 화면 밖으로 밀려났다**
+    (1440×900 실측 — 설정 582px, 표 상단 y=984px). 값을 하나 고치고 결과를 보려면
+    매번 스크롤을 내렸다 올려야 했다.
+
+    ⚠ `표 종류`는 표의 성격을 바꾸는 스위치라 **이름 옆**이 제자리다. 예전에는 그래프
+      셀렉트와 나란히 있었는데 그래프는 걷어냈다(7·8월 실사용 0%).
     """
     with st.container(key=f"te_{view_key}"):
-        head = st.columns([4, 2, 2, 0.7], vertical_alignment="bottom")
+        head = st.columns([5.4, 2.2, 0.5], vertical_alignment="bottom")
         label = head[0].text_input(
-            "기준 라벨", value=view["label"], key=f"vlabel_{view_key}",
-            placeholder="예: 틱톡 AOS / 앱스플라이어 코호트 기준",
+            # 예시는 **규리님이 실제로 쓴 이름**에서 가져온다(8월 블록 실측). 예전에는
+            # `예: 틱톡 AOS / 앱스플라이어 코호트 기준`이라 실제 쓰임과 어긋났다 —
+            # 그건 기준 표기이지 표 이름이 아니다.
+            "테이블명", value=view["label"], key=f"vlabel_{view_key}",
+            placeholder="예: 매체별 EPN 소재 성과 · EPN 소재단 성과",
         )
         kinds = list(VIEW_KINDS)
         kind = head[1].selectbox(
@@ -3525,162 +3184,237 @@ def table_editor(view: dict, view_key: str) -> dict:
             index=kinds.index(view["kind"]) if view["kind"] in VIEW_KINDS else 0,
             format_func=lambda k: VIEW_KINDS[k], key=f"vkind_{view_key}",
         )
-        chart_kinds = list(CHART_KINDS)
-        chart_kind = view["chart_kind"]
-        if kind == "pivot":
-            chart_kind = head[2].selectbox(
-                "그래프", chart_kinds,
-                index=chart_kinds.index(chart_kind) if chart_kind in CHART_KINDS else 0,
-                format_func=lambda k: CHART_KINDS[k], key=f"vchart_{view_key}",
-            )
         # ⚠ `st.button`은 눌린 **그 리런에서만** True다. 예전에는 이 값을 `완료` 누를
         #    때 읽어서 삭제하려 했는데, 그때는 이미 False라 영영 삭제가 안 됐다.
         #    그 자리에서 세션 목록을 고치고 리런한다.
-        if head[3].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
+        head[2].markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
+        if head[2].button("✕", key=f"vdrop_{view_key}", help="이 표 삭제"):
             drop_view(view_key, view["id"])
 
-        if kind == "pivot" and chart_kind:
-            metric_col, top_col = st.columns([3, 1], vertical_alignment="bottom")
-            metric_col.segmented_control(
-                "그래프 지표", COMPARE_METRICS,
-                default=view["metric"] if view["metric"] in COMPARE_METRICS else "CPI",
-                key=f"vmetric_{view_key}",
-                format_func=lambda m: METRIC_LABELS.get(m, m),
-            )
-            if chart_kind == "ranking":
-                top_col.number_input(
-                    "상위 N개 (0=전체)", min_value=0, max_value=50,
-                    value=int(view["top_n"] or 0), step=5, key=f"vtop_{view_key}",
-                )
-
-        view = {**view, "label": label, "kind": kind, "chart_kind": chart_kind}
-        if kind == "compare":
-            view = {**view, "periods": period_editor(view_key, view["periods"])}
-        else:
-            view = pivot_editor(view, view_key)
+        view = {**view, "label": label, "kind": kind}
+        view = pivot_editor(view, view_key)
     return view
 
 
-def pivot_editor(view: dict, view_key: str) -> dict:
-    """행 / 값 / 필터 / 소재 추가. 표 **바로 위**에 둔다.
+def editor_label(name: str, hint: str = "") -> None:
+    """왼쪽 라벨 열 한 칸. 이름 아래에 힌트가 작게 붙는다."""
+    tail = f'<span>{hint}</span>' if hint else ""
+    st.markdown(f'<div class="pe-lab">{name}{tail}</div>', unsafe_allow_html=True)
 
-    구글 시트 피벗 편집기와 같은 모델이다(사용자가 그 화면을 참고로 지목했다).
-    중요한 것은 **역할이 한 자리씩만 있다는 점**이다:
+
+def split_slot_label(kind: str) -> tuple[str, str]:
+    """「무엇으로 나눌까」 자리의 이름. 기간 비교는 행 대신 기간을 쓴다."""
+    if kind == "compare":
+        return "기간", "비교할 두 기간"
+    return "행", "묶는 기준"
+
+
+def pivot_editor(view: dict, view_key: str) -> dict:
+    """행 / 값 / 필터(+직접 추가) / 표시. 표 **바로 위**에 둔다.
+
+    역할은 한 자리씩만 있다(구글 시트 피벗 편집기와 같은 모델):
 
       행        = 무엇으로 묶을까. 빼면 그 축을 합쳐 **다시 집계**된다.
-      값        = 어떤 지표를 보여줄까.
+                  기간 비교에서는 이 자리를 **기간 두 개**가 쓴다.
+      값        = 어떤 지표를 보여줄까. 기간 비교의 지표도 이걸 쓴다.
       필터      = 무엇을 **좁힐까**. 좁히는 자리는 여기 하나뿐이다.
-      소재 추가 = 무엇을 **더할까**. 필터는 교집합이라 합집합을 표현할 수 없다.
+      직접 추가 = 소재명 규칙이 안 맞아 **필터로는 안 잡히는** 소재를 이 그룹에 넣는다.
 
-    처음에는 행마다 값 선택을 붙였는데, 그러면 행과 필터가 같은 일을 해서
-    "왜 두 군데서 좁히나"가 됐다(사용자 지적). 시트 피벗도 행에는 값 선택기가 없다.
-    그래서 행 필드를 필터에서 빼지 않는다 — 자리가 하나면 겹치는 게 아니라 그게
-    유일한 방법이 된다.
+    **배치(시안 E3a, 2026-09-09 규리님 선택)** — 라벨을 위젯 왼쪽에 붙여 위젯당 한 줄로
+    줄이고, 고른 구분마다 값 멀티셀렉트를 한 줄씩 그린다. 예전에는 값이 팝오버 안에
+    있어서 (1) 구분과 값이 2단 동작이고 (2) `Creative Type 10개`가 무엇인지 열어야 알았고
+    (3) 한 팝오버에 두 구분의 값이 섞여 있었다. 값이 화면에 있으면 세 문제가 다 없어지고,
+    **「값 없음」도 빈 멀티셀렉트로 그 자리에서 보이니** 별도 경고 줄이 필요 없다.
 
-    **위젯만으로 만든다.** 버튼으로 중간 상태를 옮기는 방식은 이 프로젝트에서 위젯
-    상태와 저장 상태가 엇갈리는 버그를 반복해서 만들었다. 멀티셀렉트 하나가
-    추가·삭제·순서를 다 해결한다(선택 순서가 곧 행 순서다).
+    ⚠ **위젯만으로 만든다.** 버튼으로 중간 상태를 옮기는 방식은 이 프로젝트에서 위젯
+      상태와 저장 상태가 엇갈리는 버그를 반복해서 만들었다. 구분의 추가·삭제·순서는
+      멀티셀렉트 하나가 다 해결한다(선택 순서가 곧 순서다).
+
+    ⚠ 위젯 키는 예전과 **그대로** 다(`pvfilters_` · `pvfval_<view_key>_<field>`) —
+      그래서 `view_state.view_from_widgets`를 한 줄도 고치지 않았다.
     """
     saved_rows = [r["field"] for r in view["rows"]]
+    kind = view.get("kind", "pivot")
+    row_fields = saved_rows
+    periods = view.get("periods") or empty_periods()
+    include: list[str] = list(view["include_ads"] or [])
 
     with st.container(key=f"pv_{view_key}"):
-        st.markdown('<div class="pv-lab">행 <span>묶는 기준 · 빼면 합쳐서 다시 계산</span>'
-                    "</div>", unsafe_allow_html=True)
-        row_fields = st.multiselect(
-            "행", DIMENSION_COLUMNS,
-            default=[f for f in (saved_rows or DEFAULT_PIVOT_ROWS)
-                     if f in DIMENSION_COLUMNS],
-            format_func=field_label, key=f"pvrows_{view_key}",
-            label_visibility="collapsed", placeholder="묶을 구분을 고르세요",
-        )
+        with st.container(border=True, key=f"pvbox_{view_key}"):
+            # ------------------------------------------- 무엇으로 나눌까
+            name, hint = split_slot_label(kind)
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label(name, hint)
+            with slot:
+                if kind == "compare":
+                    periods = period_editor(view_key, periods)
+                else:
+                    row_fields = st.multiselect(
+                        "행", DIMENSION_COLUMNS,
+                        default=[f for f in (saved_rows or DEFAULT_PIVOT_ROWS)
+                                 if f in DIMENSION_COLUMNS],
+                        format_func=field_label, key=f"pvrows_{view_key}",
+                        label_visibility="collapsed",
+                        placeholder="기본 구분 사용 · 소재명 · 매체",
+                    )
 
-        st.markdown('<div class="pv-lab">값 <span>보여줄 지표 · 순서는 고정</span></div>',
-                    unsafe_allow_html=True)
-        metrics = st.multiselect(
-            "값", METRIC_COLUMNS,
-            default=[c for c in (view["values"] or DEFAULT_PIVOT_VALUES)
-                     if c in METRIC_COLUMNS],
-            format_func=lambda c: COLUMN_LABELS.get(c, c),
-            key=f"pvvals_{view_key}", label_visibility="collapsed",
-            placeholder="기본 지표 사용",
-        )
+            # ---------------------------------------------------------- 값
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label("값", "보여줄 지표")
+            with slot:
+                metrics = st.multiselect(
+                    "값", METRIC_COLUMNS,
+                    default=[c for c in (view["values"] or DEFAULT_PIVOT_VALUES)
+                             if c in METRIC_COLUMNS],
+                    format_func=lambda c: COLUMN_LABELS.get(c, c),
+                    key=f"pvvals_{view_key}", label_visibility="collapsed",
+                    placeholder="기본 지표 사용",
+                )
 
-        left, right = st.columns([5, 3], vertical_alignment="center")
-        left.markdown('<div class="pv-lab">필터 <span>좁히기 · 여러 개면 모두 만족'
-                      "</span></div>", unsafe_allow_html=True)
-        filter_fields = left.multiselect(
-            "필터", DIMENSION_COLUMNS,
-            default=[f for f in (view["filters"] or {}) if f in DIMENSION_COLUMNS],
-            format_func=field_label, key=f"pvfilters_{view_key}",
-            label_visibility="collapsed", placeholder="필터 없음 · 전체 소재",
-        )
-        with right:
-            st.markdown('<div class="pv-lab">&nbsp;</div>', unsafe_allow_html=True)
-            filter_values = value_popover(view_key, "f", filter_fields,
-                                          dict(view["filters"] or {}))
+            # -------------------------------------------------------- 필터
+            lab, slot = st.columns([1.05, 8])
+            with lab:
+                editor_label("필터", "담을 범위")
+            with slot:
+                filter_fields = st.multiselect(
+                    "필터", DIMENSION_COLUMNS,
+                    default=[f for f in (view["filters"] or {})
+                             if f in DIMENSION_COLUMNS],
+                    format_func=field_label, key=f"pvfilters_{view_key}",
+                    label_visibility="collapsed",
+                    placeholder="필터 없음 · 전체 소재",
+                )
 
-        # **값을 안 고른 필터는 아무것도 걸지 않는다.** 그런데 칩은 그대로 남아 있어서
-        # 필터가 걸린 것처럼 보인다(실제로 `Extra Info` 칩이 있는데 표에 epn·6s·new가
-        # 다 나오는 화면을 받았다). 무엇이 실제로 걸렸는지 한 줄로 적는다.
-        idle = [f for f in filter_fields if not filter_values.get(f)]
-        active = [f for f in filter_fields if filter_values.get(f)]
-        if active or idle:
-            parts = [f"{field_label(f)} <b>{html.escape(', '.join(filter_values[f]))}</b>"
-                     for f in active]
-            parts += [f'<span class="pv-idle">{field_label(f)} 값 없음 — '
-                      "아무것도 걸지 않습니다</span>" for f in idle]
-            st.markdown(f'<div class="pv-state">{" · ".join(parts)}</div>',
+            # 고른 구분마다 값 한 줄. 키는 예전 팝오버가 쓰던 것과 **같다.**
+            filter_values: dict[str, list[str]] = {}
+            for field in filter_fields:
+                _pad, name_col, val_col = st.columns(
+                    [1.05, 1.9, 6.1])
+                with name_col:
+                    st.markdown(
+                        f'<div class="pe-sub">{field_label(field)}</div>',
                         unsafe_allow_html=True)
+                choices = field_value_options(field)
+                with val_col:
+                    filter_values[field] = st.multiselect(
+                        f"{field_label(field)} 값", choices,
+                        default=[v for v in (view["filters"] or {}).get(field, [])
+                                 if v in choices],
+                        key=f"pvfval_{view_key}_{field}",
+                        label_visibility="collapsed",
+                        placeholder="값을 고르세요 — 비우면 아무것도 걸지 않습니다",
+                    )
 
-        st.markdown('<div class="pv-lab">소재 추가 <span>더하기 · 필터 결과에 합친다'
-                    "</span></div>", unsafe_allow_html=True)
-        include = st.multiselect(
-            "소재 추가", ad_options(),
-            default=[a for a in (view["include_ads"] or []) if a in set(ad_options())],
-            key=f"pvads_{view_key}", label_visibility="collapsed",
-            placeholder="필터 결과만 사용 · 손으로 더할 소재가 있으면 고르세요",
-        )
-
-        # 딸깍 두 개 — 규리님 요구는 "피벗으로 하나하나 구축하지 않고 원클릭"이었다.
-        left, right = st.columns(2)
-        contrast = left.toggle(
-            "대조군 비교", value=bool(view["contrast"]), key=f"pvct_{view_key}",
-            help="같은 조건에서 이 소재군을 **제외한 나머지**와 매체별로 견줍니다.",
-        )
-        thumbs = right.toggle(
-            "썸네일 미리보기", value=bool(view["thumbs"]), key=f"pvth_{view_key}",
-            help="이 표에 담긴 소재의 첫 프레임을 소진 상위 12개까지 보여줍니다.",
-        )
+            # 직접 추가 — 필터가 **못 잡은 것**을 메우는 자리라 필터 값 줄과 같은
+            # 모양으로 그 아래에 붙인다.
+            #
+            # ⚠ **팝오버를 쓰지 않는다.** 팝오버 본문이 멀티셀렉트 한 줄 높이뿐이라
+            #   목록을 열면 그 목록이 입력창을 그대로 덮었다(규리님이 세 번 지적).
+            #   드롭다운은 body로 포털되고 방향은 화면 여백이 정하므로 코드로 못 돌린다.
+            #   페이지 흐름 안에 두면 목록이 아래 빈 자리로 열려서 문제가 사라진다.
+            #   대가는 안 쓸 때도 한 줄을 차지하는 것인데, 필터 값 줄과 같은 모양이라
+            #   따로 읽히지 않는다.
+            all_ads = ad_options()
+            chosen_ads = [a for a in include if a in set(all_ads)]
+            _pad, name_col, val_col = st.columns([1.05, 1.9, 6.1])
+            with name_col:
+                st.markdown('<div class="pe-sub">직접 추가</div>',
+                            unsafe_allow_html=True)
+            with val_col:
+                include = st.multiselect(
+                    "직접 추가", all_ads, default=chosen_ads,
+                    key=f"pvads_{view_key}", label_visibility="collapsed",
+                    # ⚠ 기본값 `fuzzy`는 **흩어진 글자**를 이어 맞춘다. 소재명은
+                    #   `10017_盜墓王_VID_Webtoon-YJ_Highlight_9x16_5`처럼 길어서
+                    #   fuzzy로는 엉뚱한 소재가 먼저 뜬다. 사람이 실제로 치는 것은
+                    #   `Carousel`·`9X16`·작품코드 같은 조각이라 부분 문자열로 찾는다.
+                    filter_mode="contains",
+                    # 목록에 없는 이름을 새로 만들 수 있게 하면, 오타난 이름이
+                    # 어떤 데이터와도 안 맞아 **조용히 아무것도 안 더한다.**
+                    accept_new_options=False,
+                    placeholder="규칙이 안 맞아 필터로 안 잡히는 소재 — 이름 일부를 "
+                                "입력해 찾으세요",
+                )
 
         # ⚠ `filters`를 여기서 만든다. 예전에는 이 블록 **밖에서** 만들어서, 안에서
-        #    참조한 순간 `NameError`로 화면이 통째로 죽었다(규리님 스샷의 그 에러).
+        #    참조한 순간 `NameError`로 화면이 통째로 죽었다.
+        #    **값을 안 고른 구분은 아무것도 걸지 않는다** — 저장에서도 뺀다.
         filters = {f: list(filter_values[f]) for f in filter_fields
                    if filter_values.get(f)}
+
+        # -------------------------------------------------------- 표시 옵션
+        st.markdown('<div class="pe-rule"></div>', unsafe_allow_html=True)
+        creative_filters = [f for f in filters if f in CREATIVE_FIELDS and filters[f]]
+        # ── 표시 옵션 (시안 안 2, 2026-09-09 규리님 선택) ──────────────────
+        # 꺼져 있을 때는 **아무 설명도 없다.** 예전에는 `대조군을 켜면 무엇을 뒤집을지
+        # 고릅니다`가 두 토글 **사이**에 끼어 둘을 갈라놓았는데, 그건 지시문이지
+        # 정보가 아니다. 켜지면 그 자리에 **뒤집을 기준**이 들어간다.
+        #
+        # ⚠ 토글은 그린 **뒤에야** 값을 알 수 있는데 `st.columns` 폭은 먼저 정해야
+        #   한다. 그래서 세션에 남아 있는 직전 값을 먼저 읽어 폭을 고른다
+        #   (요약 줄이 세션을 읽는 것과 같은 방식 — 저장값을 읽으면 한 박자 어긋난다).
+        on = bool(st.session_state.get(f"pvct_{view_key}", view["contrast"]))
+        needs_pick = on and len(creative_filters) > 1
+
+        if needs_pick:
+            lab, c_ct, c_lb, c_sel, c_th, _tail = st.columns(
+                [1.05, 1.7, 1.15, 2.0, 1.2, 1.9], vertical_alignment="center")
+        elif on:
+            lab, c_ct, c_lb, c_th, _tail = st.columns(
+                [1.05, 1.7, 3.15, 1.2, 1.9], vertical_alignment="center")
+            c_sel = None
+        else:
+            lab, c_ct, c_th, _tail = st.columns(
+                [1.05, 1.7, 1.2, 5.05], vertical_alignment="center")
+            c_lb = c_sel = None
+
+        with lab:
+            editor_label("표시", "보이는 방식")
+        # `help=`를 주면 이름 옆에 `?`가 붙는다 — 짧은 한 줄에 물음표가 둘이면
+        # 노이즈다(규리님 지적). 대조군이 하는 일은 켜졌을 때 나오는 `뒤집을 기준`이
+        # 말해 준다.
+        contrast = c_ct.toggle("대조군 비교", value=bool(view["contrast"]),
+                               key=f"pvct_{view_key}")
 
         # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
         # `format=IMG` + `태그=comic`에서 comic을 기준으로 잡으면 같은 IMG 안에서
         # 비교하고, format을 기준으로 잡으면 IMG vs 영상 비교가 된다.
         contrast_field = view["contrast_field"]
-        creative_filters = [f for f in filters if f in CREATIVE_FIELDS and filters[f]]
-        if contrast and len(creative_filters) > 1:
-            picked = default_contrast_field(filters)
+        picked = default_contrast_field(filters) if creative_filters else ""
+        if needs_pick:
+            c_lb.markdown('<div class="pe-fact">뒤집을 기준</div>',
+                          unsafe_allow_html=True)
             options = creative_filters
-            st.markdown('<div class="pv-lab">대조 기준 <span>이 필터만 뒤집는다 · '
-                        "나머지는 양쪽에 똑같이 걸린다</span></div>",
-                        unsafe_allow_html=True)
-            contrast_field = st.selectbox(
-                "대조 기준", options,
+            contrast_field = c_sel.selectbox(
+                "뒤집을 기준", options,
                 index=options.index(contrast_field) if contrast_field in options
                 else (options.index(picked) if picked in options else 0),
                 format_func=field_label, key=f"pvctf_{view_key}",
                 label_visibility="collapsed",
             )
+        elif on:
+            # 고를 게 없으면 **정해진 기준을 사실로 적는다** — 자리를 비우면 레이아웃이
+            # 흔들리고, 안내문을 넣으면 지시문이 된다.
+            fixed = contrast_field if contrast_field in creative_filters else picked
+            c_lb.markdown(
+                f'<div class="pe-fact">뒤집을 기준 <b>{field_label(fixed)}</b></div>'
+                if fixed else '<div class="pe-fact">대조 기준이 될 필터가 없습니다</div>',
+                unsafe_allow_html=True)
+            contrast_field = fixed
+        thumbs = c_th.toggle("썸네일", value=bool(view["thumbs"]),
+                             key=f"pvth_{view_key}")
 
-    return {**view, "rows": [{"field": f} for f in row_fields],
-            "values": list(metrics), "filters": filters,
-            "include_ads": list(include),
-            "contrast": bool(contrast), "thumbs": bool(thumbs),
-            "contrast_field": str(contrast_field or "")}
+    out = {**view, "values": list(metrics), "filters": filters,
+           "include_ads": list(include),
+           "contrast": bool(contrast), "thumbs": bool(thumbs),
+           "contrast_field": str(contrast_field or "")}
+    if kind == "compare":
+        out["periods"] = periods
+    else:
+        out["rows"] = [{"field": f} for f in row_fields]
+    return out
 
 
 @st.cache_data(show_spinner=False)
@@ -3696,7 +3430,7 @@ def ad_options() -> list[str]:
 def views_editor(block_id: str, views: list[dict]) -> list[dict]:
     """이 주제가 담을 표의 목록. 표별 설정은 **표 바로 위**에서 그린다(`render_view`).
 
-    여기서는 표 추가와 기준 라벨만 다룬다.
+    여기서는 표 추가와 테이블명만 다룬다.
     """
     state_key = f"views_{block_id}"
     if state_key not in st.session_state:

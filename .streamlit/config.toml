@@ -6,3 +6,18 @@
 [theme]
 dataframeHeaderBackgroundColor = "#f1f4f6"
 dataframeBorderColor = "#dfe3e6"
+
+# 위젯 강조색 = 브랜드 그린. 안 정하면 Streamlit 기본값 **빨강(#FF4B4B)** 이 나온다 —
+# 이 리포트에서 빨강은 「저조」(#fdf1f1)를 뜻하므로, 켜진 토글이 부정 신호로 읽혔다
+# (2026-09-09 규리님 지적: *"이 토글의 색상과 위치 등이 대시보드 톤앤매너와 안맞아"*).
+#
+# 값은 `ui.py`의 `--brand`와 같고, `mode_toggle` 선택 상태를 손으로 칠할 때 쓴 색과도
+# 같다 — 채워진 인터랙티브 컨트롤은 이 프로젝트에서 전부 이 색이다.
+#
+# 영향 범위를 세어보고 넣었다: 토글 2 · 슬라이더 1 · 라디오 1 · 세그먼트 1 ·
+# `type="primary"` 버튼 3. 세그먼트와 버튼은 이미 같은 색으로 손칠해져 있어서
+# (`a422890`·`ui.py`의 `st-key-mode_toggle`) 오히려 어긋남이 사라진다.
+#
+# ⚠ CSS로는 못 고친다 — 위젯 색은 런타임 emotion 주입이라 정적 CSS에 훅이 없다
+#   (배포된 `index.*.css`가 1KB뿐인 것으로 확인).
+primaryColor = "#00DC64"

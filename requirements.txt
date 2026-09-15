@@ -40,3 +40,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — manual_picks 캐시 / purge_released_locks (2026-09-08)
 # 재시작 마커 — 수기 지정 편집기(시안 A) (2026-09-09)
 # 재시작 마커 — backup.py 신규 모듈 / 사이드바 개편 (2026-09-09)
+# 재시작 마커 — view_state.py 신규 모듈 / 편집기 E3a (2026-09-16)

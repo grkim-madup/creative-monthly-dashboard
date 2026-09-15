@@ -781,9 +781,12 @@ header[data-testid="stHeader"] { background: transparent; }
 [class*="st-key-pvfilters_"] [data-baseweb="tag"] {
   background: #fff7ed !important; border-color: #f5e0c3 !important;
 }
-/* 편집기는 표 바로 위에 붙는 도구다 — 표와 구분되되 튀지 않게 얇은 세로선만. */
+/* 편집기는 표 바로 위에 붙는 도구다 — 여백으로만 표와 떼어 놓는다.
+   ⚠ 예전에는 왼쪽에 2px 세로선을 그었다. E3a(2026-09-09)에서 행·값·필터를 박스로
+   묶으면서 **선과 박스가 같은 일을 두 번** 하게 됐고, 선이 박스 밖까지 내려와
+   무엇을 감싸는지 애매해졌다(규리님 지적). 묶는 일은 박스 하나가 한다. */
 [class*="st-key-te_"] {
-  border-left: 2px solid var(--line) !important; padding: 4px 0 8px 14px !important;
+  padding: 4px 0 8px 0 !important;
   margin-bottom: 8px;
 }
 [class*="st-key-pv_"] { padding: 0 !important; border: none !important; }
@@ -925,10 +928,72 @@ section[data-testid="stSidebar"] { font-variant-numeric: tabular-nums; }
 /* ⚠ 멀티셀렉트 칩 색 규칙은 걷어냈다(2026-09-09) — `st.data_editor`로 바뀌면서
    칩이 없어졌다. 표 강조색과의 대응은 컬럼 이름(`우수`/`저조`)이 담당한다. */
 
-/* 필터가 실제로 무엇을 걸고 있는지 한 줄로 — 값 없는 칩은 아무 일도 하지 않는다. */
+/* 필터가 실제로 무엇을 걸고 있는지 한 줄로 — 값 없는 칩은 아무 일도 하지 않는다.
+   ⚠ 편집기(E3a)에서는 값이 화면에 있으니 이 줄을 쓰지 않는다. `pv-idle`은 섹션 4의
+   `＋ 주제 추가` 팝오버가 아직 쓰므로 남긴다. */
 .pv-state { font-size: 11.5px; color: var(--muted); margin: 3px 0 2px 2px; }
 .pv-state b { color: var(--ink); font-weight: 600; }
 .pv-idle { color: #8a1f1f; }
+
+/* ─── 표 편집기 라벨 열 (시안 E3a, 2026-09-09) ────────────────────────────────
+   라벨을 위젯 **왼쪽**에 붙여 위젯당 한 줄로 줄인다. 예전에는 라벨 줄 + 위젯 줄로
+   위젯 하나가 2줄을 써서, 설정 8줄이 표를 첫 화면 밖으로 밀어냈다(실측 582px). */
+.pe-lab, .pe-sub {
+  /* ⚠ **컬럼의 `vertical_alignment="center"`에 기대지 않는다.**
+     그것을 쓰면 라벨이 **어떤 높이여도 항상 8px 아래**로 내려갔다
+     (라벨 40 / 28.5 / 23.5 / 15px 네 경우를 재 보았는데 어긋남이 전부 8px로
+     같았다 — 내 CSS가 아니라 Streamlit 쪽 세로 정렬 계산의 문제다).
+     대신 **위를 맞추고**(컬럼 기본값) 라벨 자신을 입력창과 같은 40px 상자로
+     만들어 그 안에서 중앙 정렬한다. 두 상자가 같은 y에서 시작해 같은 높이면
+     가운데도 같다 — 계산이 끼지 않는다.
+     40px은 Streamlit 입력 위젯의 표준 높이다(실측해서 맞춘 값). */
+  display: flex; justify-content: flex-end;
+  text-align: right; padding-right: 2px;
+  /* 한글은 기본값이면 **단어 한가운데서 잘린다** — `들어가나`가 `들어`/`가나`로
+     갈렸다. 한글은 띄어쓰기에서만 끊어야 한다. */
+  word-break: keep-all;
+}
+.pe-lab {
+  flex-direction: column; align-items: flex-end; justify-content: center;
+  font-size: 12px; font-weight: 600; color: var(--ink); line-height: 1.25;
+}
+.pe-lab span {
+  display: block; font-size: 10px; font-weight: 400; color: var(--faint);
+  margin-top: 1px;
+}
+/* 필터 아래 구분 이름 — 라벨 열보다 한 단 낮은 무게로 둔다(같으면 위계가 사라진다). */
+.pe-sub {
+  align-items: center;
+  font-size: 11.5px; color: var(--muted); line-height: 1.3;
+}
+/* 40px 상자는 **입력 위젯과 나란한 줄에만** 준다. 밖의 `표시` 줄은 토글이라
+   높이가 다르고, 거기까지 40px로 잡으면 오히려 어긋난다. */
+[class*="st-key-pvbox_"] .pe-lab,
+[class*="st-key-pvbox_"] .pe-sub { height: 40px; }
+/* 데이터 구성과 표시 옵션을 가르는 선. 카드를 더하지 않고 선 하나로만 나눈다. */
+.pe-rule { border-top: 1px solid var(--line); margin: 10px 0 2px; }
+/* 고를 게 없을 때 자리를 비우지 않는다 — 조건부로 줄이 생기면 레이아웃이 흔들린다. */
+.pe-hint { font-size: 11px; color: var(--faint); line-height: 1.3; }
+/* 대조군이 켜졌을 때만 나오는 **사실** 한 조각(`뒤집을 기준 Extra Info`).
+   안내문(`~하면 ~합니다`)이 아니라 지금 상태를 적는 자리다 — 꺼져 있으면 아예 없다. */
+.pe-fact { font-size: 12px; color: var(--muted); line-height: 1.3; }
+.pe-fact b { color: var(--ink); font-weight: 600; }
+/* 행·값·필터를 묶는 박스. 액센트를 쓰지 않고 아주 옅은 바탕 + 기본 hairline으로만. */
+[class*="st-key-pvbox_"] {
+  background: #fbfcfd; border-color: var(--line) !important;
+  padding: 10px 14px 4px !important;
+}
+
+/* 표시 옵션 토글 — **스위치를 이름 오른쪽**에 둔다(2026-09-09 규리님 요청).
+   Streamlit 기본은 `[스위치] 이름` 순서라 이름이 들쭉날쭉한 위치에서 시작한다.
+   순서를 뒤집으면 이름이 왼쪽에 가지런히 서고 스위치가 그 뒤에 붙는다.
+   ⚠ `flex-direction`만 뒤집으면 오른쪽 정렬로 밀리므로 `justify-content`를 함께 준다. */
+[class*="st-key-pvct_"] [data-testid="stCheckbox"] label,
+[class*="st-key-pvth_"] [data-testid="stCheckbox"] label {
+  flex-direction: row-reverse !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+}
 
 /* 표(뷰) 요약 줄 — 안 고칠 때는 이 한 줄만 읽으면 된다. */
 .vs { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
@@ -970,7 +1035,7 @@ section[data-testid="stSidebar"] { font-variant-numeric: tabular-nums; }
 .chart-key { display: inline-flex; align-items: center; gap: 5px; }
 .chart-key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
-/* 표 위 기준 라벨 — 실제 리포트 시트가 표마다 `* 틱톡 AOS`처럼 붙이는 그것. */
+/* 표 위 테이블명 — 실제 리포트 시트가 표마다 `* 틱톡 AOS`처럼 붙이는 그것. */
 .view-basis {
   font-size: 12px; color: var(--ink-2); margin: 30px 0 2px 0; font-weight: 600;
 }
