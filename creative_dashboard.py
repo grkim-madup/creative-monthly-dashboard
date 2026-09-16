@@ -72,6 +72,7 @@ from creative_data import (
     filtered_scope,
     google_pick_metrics,
     pick_metrics_for,
+    rank_picks,
     representative_ads,
     METRIC_DISPLAY,
     RATIO_METRICS,
@@ -86,7 +87,6 @@ from creative_data import (
     sort_within_groups,
     title_level_allowed,
     top_creatives,
-    UNRANKED_VALUES,
 )
 from google_ads_report import (
     DEFAULT_COST_MARKUP,
@@ -3179,10 +3179,15 @@ def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
                     f"(나머지 {hidden:,}개 생략).</div>", unsafe_allow_html=True)
 
 
-#: 순위표에서 **1등/꼴찌만** 칠한다. 히트맵처럼 전 줄을 칠하면 "어디가 좋은가"가
+#: 순위표에서 **뽑힌 줄만** 칠한다. 히트맵처럼 전 줄을 칠하면 "어디가 좋은가"가
 #: 아니라 "숫자가 큰가"를 읽게 된다 — 실제로 `미분류 ₩25,458`이 가장 진한 초록이었다.
-RANK_BEST_STYLE = "background-color:#e7f9f0;color:#0F6E56;font-weight:700"
-RANK_WORST_STYLE = "background-color:#fdf1f1;color:#8a1f1f"
+#:
+#: 값은 2번 섹션의 행 색칠(`.rt tr.is-good td` / `.rt tr.is-bad td`)과 **같다.**
+#: 두 곳이 같은 일(우수·저조 줄 표시)을 하는데 색이 다르면 "이 색이 그 색인가"를
+#: 다시 확인해야 한다. 여기서 클래스가 아니라 인라인 스타일을 쓰는 이유는 하나뿐이다 —
+#: 매체·OS 칸이 세로 병합돼 있어서 `<tr>`을 칠하면 **묶음 전체가 칠해진다.**
+RANK_BEST_STYLE = "background:#eefaf4;color:#0b5c38;font-weight:700"
+RANK_WORST_STYLE = "background:#fdf3f3;color:#8c2b2b;font-weight:700"
 
 
 def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> None:
@@ -3194,17 +3199,25 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
 
       · 묶음 칸(매체·OS)을 **세로 병합** — 빈 칸이 아니라 한 덩어리로 읽힌다
       · 묶음이 바뀌는 줄에 구분선(`ct-grp`)
-      · 색은 **묶음 안에서만** — 1등 초록 / 꼴찌 빨강. 묶음끼리 비교하는 표가 아니다
+      · 색은 **묶음 안에서만** — 묶음끼리 비교하는 표가 아니다(AOS·iOS는 CPI가 3~7배 다르다)
+
+    ## 무엇을 칠하나 (2026-09-16 규리님 요청으로 바뀜)
+
+    `rank_picks`가 **소재 우수·저조와 같은 규칙**으로 고른다 — 지표 상위/하위 30% 안에서
+    **소진액이 큰 줄**. 예전의 `CPI` 최저/최고 한 줄씩은 집행 규모를 통째로 무시해서,
+    실측 8월 `Meta·AOS`에서 소진 ₩15,895짜리가 우수로 칠해졌다.
+    칠하는 범위도 지표 한 칸이 아니라 **마지막 축 이름부터 줄 끝까지**다.
 
     ⚠ 셀 클릭 강조는 이 경로에 없다(`report_table`의 한계). 순위표는 "어느 칸을
       강조할까"보다 "순서가 보이는가"가 요점이라 그 교환을 받아들인다.
     """
     group_fields = fields[:-1]
     labels = [field_label(f) for f in fields]
-    metric_label = COLUMN_LABELS.get(metric, metric)
     headers = [field_label(f) for f in fields] + [
         COLUMN_LABELS.get(c, c) for c in table.columns if c not in fields]
     value_columns = [c for c in table.columns if c not in fields]
+    # 칠할 칸 = 마지막 축(장르 등) + 모든 지표 칸. 묶음 축은 병합이라 제외한다.
+    paint_columns = [labels[-1]] + [COLUMN_LABELS.get(c, c) for c in value_columns]
 
     rows: list[list[str]] = []
     row_classes: list[str] = []
@@ -3228,28 +3241,18 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
         start_of[index] = key != previous
         previous = key
 
-    # 각 묶음의 1등·꼴찌를 미리 찾는다. `미분류`·값 없음은 순위에서 뺀다 —
-    # 그것들은 이미 `sort_within_groups`가 뒤로 보냈다.
-    best_at: set[int] = set()
-    worst_at: set[int] = set()
-    if metric in table.columns:
-        chunks = (table.groupby(group_key, sort=False) if group_fields
-                  else [((), table)])
-        for _, chunk in chunks:
-            # ⚠ **소진이나 설치가 0인 줄은 색칠에서 뺀다.** 실제로 `Meta AOS
-            #   THRILLER & HORROR`가 소진 ₩0 · 설치 6건이라 CPI ₩0으로 찍혀
-            #   1등 초록이 됐다 — 집행하지 않은 것이 "가장 효율이 좋다"로 읽힌다.
-            ranked = chunk[chunk[metric].notna()
-                           & ~chunk[fields[-1]].astype(str).isin(UNRANKED_VALUES)]
-            for guard in ("cost", "total install"):
-                if guard in ranked.columns:
-                    ranked = ranked[ranked[guard].fillna(0) > 0]
-            if len(ranked) < 2:
-                continue
-            ascending = metric in LOWER_IS_BETTER
-            ordered = ranked.sort_values(metric, ascending=ascending)
-            best_at.add(ordered.index[0])
-            worst_at.add(ordered.index[-1])
+    # 각 묶음의 우수·저조 줄을 미리 찾는다 — **소재 우수·저조와 같은 규칙**
+    # (`rank_picks`). 예전에는 `CPI` 최저/최고 한 줄씩이라 집행 규모를 통째로
+    # 무시했다: 실측 8월 `Meta·AOS`에서 소진 **₩15,895 · 설치 7건**짜리가 우수로
+    # 칠해졌고 같은 묶음의 ₩11,175,710짜리에는 아무 표시가 없었다(규리님 지적).
+    best_at: dict[int, str] = {}
+    worst_at: dict[int, str] = {}
+    chunks = (table.groupby(group_key, sort=False) if group_fields
+              else [((), table)])
+    for _, chunk in chunks:
+        picked_best, picked_worst = rank_picks(chunk, fields[-1], metric)
+        best_at.update(picked_best)
+        worst_at.update(picked_worst)
 
     for index, (position, row) in enumerate(table.iterrows()):
         line = [str(row[f]) for f in fields]
@@ -3257,11 +3260,15 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
             line.append(fmt_metric(column, row[column]))
         rows.append(line)
         row_classes.append("ct-grp" if (start_of[index] and index) else "")
+        # 색은 **축 이름부터 오른쪽 끝까지** 한 줄로 칠한다(규리님 2026-09-16).
+        # 지표 한 칸만 칠하면 "이 줄이 좋다"가 아니라 "이 숫자가 좋다"로 읽힌다.
+        # 묶음 칸(매체·OS)은 세로 병합이라 뺀다 — 칠하면 묶음 전체가 물든다.
         style: dict[str, str] = {}
-        if position in best_at:
-            style[metric_label] = RANK_BEST_STYLE
-        elif position in worst_at:
-            style[metric_label] = RANK_WORST_STYLE
+        paint = (RANK_BEST_STYLE if position in best_at
+                 else RANK_WORST_STYLE if position in worst_at else "")
+        if paint:
+            for name in paint_columns:
+                style[name] = paint
         styles.append(style)
 
         # 묶음 칸 세로 병합 — 축마다 따로 센다(매체가 OS 두 덩이를 덮는다).

@@ -43,3 +43,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — view_state.py 신규 모듈 / 편집기 E3a (2026-09-16)
 # 재시작 마커 — google_pivot / GOOGLE_* 어휘 / view_state g_* (2026-09-16)
 # 재시작 마커 — title_genre.py 신규 모듈 / sort_within_groups · drop_unattributable (2026-09-16)
+# 재시작 마커 — creative_data.rank_picks / rank_slots 새 심볼 (2026-09-16)

@@ -1599,6 +1599,82 @@ _GROUP_ORDER = {"media": MEDIA_ORDER, "os": OS_ORDER}
 UNRANKED_VALUES = frozenset({"미분류", "확인불가", "없음", "일반", ""})
 
 
+#: 한 묶음에서 색칠할 줄의 **상한 비율**. 2번 섹션이 10줄짜리 표에 4줄(우수 2·저조 2)을
+#: 칠한다 — 그 밀도를 넘지 않는다. 넘기면 색이 "우수/저조"가 아니라 배경이 된다
+#: (CLAUDE.md 2026-09-08: 10줄 중 6줄을 칠하는 안을 정밀도가 61%로 떨어져서 버렸다).
+RANK_PAINT_SHARE = 0.40
+
+#: 색칠 후보를 **그 묶음 소진 중위값 이상**으로 좁힌다.
+#:
+#: `pick_best_worst`의 기본값은 0이고, 그렇게 정한 이유는 *"이 함수에 들어오는 표는
+#: 이미 최소 소진액(₩100,000)으로 거르고 볼륨 상위 N개만 남긴 것"* 이었다(2026-09-01).
+#: **피벗 묶음에는 그 전처리가 없다** — 숨은 문턱이 사용자 필터를 뒤집으면 안 되므로
+#: 피벗은 `min_cost`를 걸지 않는다. 그래서 여기서 그 전제를 복원한다.
+#: 표에서 줄을 숨기는 게 아니라 **색칠 후보만** 좁히는 것이라 숫자는 그대로다.
+#:
+#: 실측(8월): `TikTok·iOS` 우수가 소진 ₩169,099 → **₩1,096,589**,
+#: `Meta·iOS` 저조가 ₩339,884 → **₩28,371,290**(큰 실패가 작은 실패보다 중요하다).
+RANK_SPEND_QUANTILE = 0.5
+
+
+def rank_slots(row_count: int) -> int:
+    """이 묶음을 지표 **몇 개**로 뽑을지. 한 지표가 우수 1줄 + 저조 1줄을 가져간다.
+
+    실측(8월, `creative_type` 축): 12줄→2(33%) · 10줄→2(40%) · 9줄→1(22%) ·
+    7줄→1(29%) · 3줄→0. 4줄 이하에서 0이 되는 것은 의도다 — 3줄에서 2줄을 칠하면
+    안 칠한 한 줄이 오히려 눈에 띈다.
+    """
+    return min(2, int(row_count * RANK_PAINT_SHARE) // 2)
+
+
+def rank_picks(chunk: pd.DataFrame, axis_field: str,
+               fallback_metric: str | None = None) -> tuple[dict, dict]:
+    """묶음 하나에서 색칠할 **우수·저조 줄**을 고른다(2번 섹션과 같은 규칙).
+
+    예전에는 `CPI` 최저/최고 한 줄씩이었다. 그러면 **집행 규모를 통째로 무시한다** —
+    실측 8월 `Meta·AOS`에서 소진 **₩15,895 · 설치 7건**짜리가 "우수"로 칠해졌고,
+    같은 묶음의 ₩11,175,710짜리는 아무 표시가 없었다. 팀원이 소재 선정에 대해
+    *"소진 비용은 신경 안 쓰고 CPI 좋다고 best로 정한 느낌"* 이라고 한 그 지점이다.
+
+    지금은 소재 우수·저조와 **같은 기계**를 쓴다: `pick_metrics_for`가 그 묶음에서
+    실제로 갈리는 지표를 고르고, `pick_best_worst`가 지표 상위/하위 30% 안에서
+    **소진액이 가장 큰** 줄을 집는다.
+
+    반환: (`{인덱스: 사유지표}`, `{인덱스: 사유지표}`) — `pick_best_worst`와 같은 모양.
+    """
+    empty: tuple[dict, dict] = ({}, {})
+    if chunk is None or getattr(chunk, "empty", True):
+        return empty
+
+    ranked = chunk
+    if axis_field in ranked.columns:
+        ranked = ranked[~ranked[axis_field].astype(str).isin(UNRANKED_VALUES)]
+    # ⚠ **소진이나 설치가 0인 줄은 뺀다.** 실측 `Meta AOS THRILLER & HORROR`가
+    #   소진 ₩0 · 설치 6건이라 CPI ₩0으로 찍혀 1등이 됐다 — 집행하지 않은 것이
+    #   "가장 효율이 좋다"로 읽힌다.
+    for guard in ("cost", "total install"):
+        if guard in ranked.columns:
+            ranked = ranked[pd.to_numeric(ranked[guard], errors="coerce").fillna(0) > 0]
+
+    slots = rank_slots(len(ranked))
+    if not slots:
+        return empty
+
+    if "cost" in ranked.columns:
+        return pick_best_worst(ranked, pick_metrics_for(ranked)[:slots],
+                               spend_quantile=RANK_SPEND_QUANTILE)
+
+    # 소진 컬럼이 없는 표는 볼륨을 볼 수 없다 — 지표 순서만으로 한 줄씩 고른다.
+    # (값 목록에서 소진액을 뺀 표. 드물지만 만들 수 있다.)
+    if not fallback_metric or fallback_metric not in ranked.columns:
+        return empty
+    values = pd.to_numeric(ranked[fallback_metric], errors="coerce").dropna()
+    if len(values) < 2:
+        return empty
+    ordered = values.sort_values(ascending=fallback_metric in LOWER_IS_BETTER)
+    return {ordered.index[0]: fallback_metric}, {ordered.index[-1]: fallback_metric}
+
+
 def sort_within_groups(table: pd.DataFrame, rows: list) -> pd.DataFrame:
     """**마지막 행 축을 그룹 안에서 소진액 순으로** 줄세운다.
 
