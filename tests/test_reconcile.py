@@ -416,3 +416,37 @@ def test_점검_도구가_OS_필터를_진입점과_같이_쓴다():
     source = _audit_source()
     assert "os_values(" in source
     assert 'frame["os"].notna()' not in source
+
+
+def test_원_미만_차이는_소진_차이로_보지_않는다():
+    """소진액은 수천 개 실수를 더한 값이라 **같은 금액이어도 잔차가 남는다.**
+
+    2026-09-29 실측: 9월 ③번 `d_cost = 5.96e-08`원 때문에 `확인 필요`가 떴다.
+    화면에는 `+0`으로 찍히는데 판정만 경고라, 실제로는 누락이 하나도 없는 달이
+    `[X] 확인이 필요한 달`로 보고됐다. 7·8월은 우연히 정확히 0이라 여태 안 걸렸다.
+    판단이 끝난 항목이 매달 경고로 뜨면 **새로 생긴 문제를 못 알아본다** —
+    이 도구의 취지와 정반대다.
+
+    ⚠ 실제 잔차(5.96e-08)는 **더하는 순서**에서 생기는 것이라 테스트로 재현하면
+      깨지기 쉽다. 그래서 규칙 자체를 못 박는다 — **1원 미만 차이는 0으로 본다.**
+    """
+    values = sheet([{"cost": "1000"},
+                    {"최종 AD": "", "cost": "0.004", "install": "40"}])
+    fp = reconcile.build_fingerprint(values)
+    parsed = parsed_frame([{"cost": 1000.0}])
+    step = steps_by_label(reconcile.waterfall(fp, parsed, parsed, 8))["③"]
+    assert step["d_cost"] != 0, "차이가 실제로 심어졌는지 — 0이면 이 테스트는 무의미하다"
+    assert abs(step["d_cost"]) < 1
+    assert step["verdict"] == reconcile.VERDICT_INTENDED
+    assert "소진액이 실린" not in step["reason"]
+
+
+def test_진짜_1원_차이는_여전히_잡는다():
+    """잔차를 흡수하되 **실제 차이는 못 숨긴다.**"""
+    values = sheet([{"cost": "1000"},
+                    {"최종 AD": "", "cost": "1", "install": "3"}])
+    fp = reconcile.build_fingerprint(values)
+    parsed = parsed_frame([{"cost": 1000.0}])
+    step = steps_by_label(reconcile.waterfall(fp, parsed, parsed, 8))["③"]
+    assert step["verdict"] == reconcile.VERDICT_CHECK
+    assert "소진액이 실린" in step["reason"]

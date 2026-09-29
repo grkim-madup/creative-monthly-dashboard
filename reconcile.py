@@ -289,10 +289,17 @@ def waterfall(fingerprint: dict, parsed: pd.DataFrame, scope: pd.DataFrame,
     #
     #    ⚠ 다만 **소진이 실려 있는데 소재명이 빈 행**은 다르다. 그건 집행비가
     #      화면에서 사라지는 것이라 사람이 봐야 한다.
-    if step["d_cost"] != 0:
+    #
+    #    ⚠ **원 단위로 반올림해서 비교한다.** 예전에는 `!= 0` 이었는데, 소진액은 수천 개
+    #      부동소수를 더한 값이라 같은 금액이어도 **잔차가 남는다.** 2026-09-29 실측:
+    #      9월 ③번 `d_cost = 5.96e-08` 원 — 화면에는 `+0`으로 찍히는데 판정만 `확인 필요`로
+    #      떴다. 7·8월은 우연히 정확히 0이라 여태 안 걸렸다. 판단이 끝난 항목이 매달
+    #      경고로 뜨면 **정작 새로 생긴 문제를 못 알아본다** — 이 절의 취지와 정반대다.
+    #      ⑤·⑦은 이미 `round(..., 2)`로 비교하고 있었다. 여기만 빠져 있었다.
+    if round(step["d_cost"], 2) != 0:
         step["verdict"] = VERDICT_CHECK
         step["reason"] += " — 소진액이 실린 행이 버려집니다"
-    elif step["d_install"] != 0:
+    elif round(step["d_install"], 2) != 0:
         step["reason"] += (f" — 설치 {abs(step['d_install']):,.0f}건이 함께 빠집니다"
                            " (소진 ₩0 · 규리님 확정 기준)")
     steps.append(step)
