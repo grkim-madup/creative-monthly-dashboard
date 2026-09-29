@@ -269,6 +269,60 @@ def producer_group(producer: str | None) -> str | None:
     return str(producer)
 
 
+#: 소재명 끝에 붙는 **버전 꼬리표**. 같은 소재를 다시 올리면서 `-v2`를 달아 둔 것이다.
+#: 실측(2026-09-29): `-v2`만 8종 · `-v3` 이상 없음.
+#:
+#: ⚠ `_v2`(밑줄)는 건드리지 않는다. 그건 꼬리표가 아니라 **구형 소재명의 토큰**이고
+#:   (`..._39s_v2`), 실측 5종 모두 짝이 없어 합칠 대상 자체가 없다.
+_AD_VERSION_SUFFIX = re.compile(r"-v\d+$", re.IGNORECASE)
+
+#: 버전 꼬리표를 합칠 **작품코드 허용목록**. 확인받은 작품만 넣는다.
+#:
+#: 규리님(2026-09-29): *"11224 소재에서 v2가 틱톡에만 있는게 맞아. 11224 소재에
+#: 한해서 v2 소재를 병합해."* 실측으로도 11224는 원본이 Meta, `-v2`가 TikTok
+#: 재업로드로 깔끔하게 갈린다.
+#:
+#: ⚠ `8064`에도 같은 표기가 2종 있지만 **넣지 않는다.** 확인을 못 받았고, 그쪽은
+#:   MOLOCO·Appier·TikTok에 3~5월까지 걸쳐 있어 패턴이 다르다 — 같은 표기라는
+#:   이유만으로 합치면 소진액이 엉뚱한 줄로 간다. 다른 작품이 확인되면 여기 더한다.
+VERSION_SUFFIX_TITLES = frozenset({"11224"})
+
+
+def merge_version_suffix(ads: pd.Series) -> pd.Series:
+    """`-v2`가 붙은 소재명을 **짝이 실제로 있을 때만** 원본 이름으로 되돌린다.
+
+    규리님(2026-09-29): *"-v2가 붙어있는 소재들... 동일한 이름에 v2 안 붙은 소재랑
+    동일한 소재야. 동일한 소재로 취급해줘."*
+
+    **확인받은 작품만 합친다**(`VERSION_SUFFIX_TITLES`). 같은 표기라는 이유만으로
+    전 작품에 적용하면, 확인 안 된 작품의 소진액이 엉뚱한 줄로 간다.
+
+    실측(2026-09-29): 11224는 원본이 Meta, `-v2`가 TikTok 재업로드였다 — 매체 축이
+    있는 표에서는 여전히 두 줄로 갈리고, **소재 단위로만** 하나가 된다. 그래서
+    매체별 집행 사실이 사라지지 않는다.
+
+    ⚠ **짝이 없으면 그대로 둔다.** 합칠 상대가 없는데 이름만 바꾸면 시트에 없던
+      소재명이 화면에 생긴다(실측 2종 — `SingleImage_1X1_TITLE1-v2` 등. 이 둘은
+      규격이 `ALL`인 쌍둥이가 따로 있는데, 그건 `ad_group`이 다루는 별개 문제다).
+
+    `ad`를 덮어쓰는 유일한 자리다. `attach_creative_attributes`가 "`ad`는 절대
+    덮어쓰지 않는다"고 못 박은 이유는 **규격이 다른 집행을 합치지 말라**는 것인데
+    (메타 `ALL` vs 틱톡 `9X16`), 버전 꼬리표는 규격이 같아 그 이유에 걸리지 않는다.
+    """
+    names = ads.astype(str)
+    existing = set(names.unique())
+    mapping = {}
+    for name in existing:
+        if name.split("_", 1)[0] not in VERSION_SUFFIX_TITLES:
+            continue
+        if not _AD_VERSION_SUFFIX.search(name):
+            continue
+        base = _AD_VERSION_SUFFIX.sub("", name)
+        if base in existing:
+            mapping[name] = base
+    return names.replace(mapping) if mapping else names
+
+
 def parse_raw_values(values: list[list[str]]) -> pd.DataFrame:
     """Media_RAW 2차원 값 → 정규화된 소재 단위 DataFrame."""
     if not values:
@@ -313,6 +367,10 @@ def parse_raw_values(values: list[list[str]]) -> pd.DataFrame:
     out.loc[is_google & (out["ad"] == ""), "ad"] = "-"
 
     out = out[out["ad"].astype(bool) & (out["ad"] != "nan")]
+    # 버전 꼬리표(`-v2`)를 원본 이름으로 되돌린다 — 아래 모든 집계가 이 이름을 쓴다.
+    # ⚠ 파서를 고쳤으므로 `sheet_loader.PARSER_VERSION`도 함께 올렸다. 안 올리면
+    #   옛 parquet 캐시가 조용히 재사용돼 화면만 예전 그대로다.
+    out["ad"] = merge_version_suffix(out["ad"])
     return out.reset_index(drop=True)
 
 
