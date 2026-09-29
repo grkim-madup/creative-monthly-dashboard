@@ -2037,6 +2037,35 @@ def representative_ads(df: pd.DataFrame) -> pd.DataFrame:
     return picked.drop(columns=["_size_rank", "_cost"])
 
 
+def ad_group_totals(df: pd.DataFrame, metric: str = "cost") -> pd.Series:
+    """소재 묶음마다 `대표 이름 → **묶음 전체 합계**`. 썸네일 카드가 쓴다.
+
+    ⚠ **`representative_ads`로 행을 줄인 뒤에 합계를 내면 안 된다.** 그 함수는
+      묶음마다 **한 행만** 남기므로(`drop_duplicates`), 그 뒤의 `sum()`은 남은
+      한 행의 값이다. 실측 2026-09-29(9월 COMIC 블록): 70행 → 5행으로 줄어
+      카드에 ₩168,033이 찍혔는데 그 소재의 실제 소진은 **₩2,089,631**이었다.
+      카드 5장 합이 ₩499,790으로 블록 KPI ₩3,679,243의 **13.6%**였다.
+
+    그래서 **합계를 먼저 내고, 대표 이름은 Drive 파일 매칭용으로만** 쓴다.
+    카드 한 장 = 소재 묶음 하나이므로 금액도 묶음 전체여야 KPI와 맞는다
+    (`ALL`과 `1X1`은 같은 묶음이다 — 규리님 2026-09-29: *"ALL과 1X1을 합치는 건
+    썸네일 보여줄 때만 적용하면 돼"*).
+    """
+    if df is None or getattr(df, "empty", True) or "ad" not in df.columns:
+        return pd.Series(dtype=float)
+    if metric not in df.columns:
+        return pd.Series(dtype=float)
+    if "ad_group" not in df.columns:
+        return df.groupby("ad")[metric].sum().sort_values(ascending=False)
+
+    totals = df.groupby("ad_group")[metric].sum()
+    picked = representative_ads(df)
+    named = (picked.assign(_total=picked["ad_group"].map(totals))
+             .drop_duplicates(subset=["ad"])
+             .set_index("ad")["_total"])
+    return named.sort_values(ascending=False)
+
+
 def canonical_ad_names(parsed: pd.DataFrame) -> dict[str, str]:
     """`ALL` 소재 → 같은 소재의 실제 규격 소재명. 짝이 없으면 담지 않는다.
 

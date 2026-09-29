@@ -114,4 +114,11 @@ def test_count_uses_ad_group_on_screen():
                   if (root / n).exists()))
     source = entry.read_text(encoding="utf-8")
     assert '_count_key = "ad_group" if "ad_group" in scope_of_block.columns' in source
-    assert "representative_ads(scope)" in source
+    # 썸네일은 `ad_group_totals`가 묶음 중복 제거를 **하면서 금액은 묶음 전체**로
+    # 낸다. 예전에는 화면이 `representative_ads(scope)`를 직접 부른 뒤 합계를 내서
+    # **남은 한 행의 금액**만 찍혔다(2026-09-29 실측: 카드 합이 KPI의 13.6%).
+    # 실제 계산 계약은 `tests/test_ad_group_totals.py`가 못 박는다.
+    assert "ad_group_totals(scope)" in source
+    assert "representative_ads(scope)" not in source, (
+        "썸네일에서 행을 줄인 뒤 합계를 내면 금액이 다시 틀어진다"
+    )

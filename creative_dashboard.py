@@ -73,7 +73,7 @@ from creative_data import (
     google_pick_metrics,
     pick_metrics_for,
     rank_picks,
-    representative_ads,
+    ad_group_totals,
     METRIC_DISPLAY,
     RATIO_METRICS,
     normalize_rows,
@@ -3132,9 +3132,10 @@ def render_thumbs(scope: pd.DataFrame, limit: int = 12) -> None:
     if scope.empty or "ad" not in scope.columns:
         return
     # 썸네일도 소재 묶음 단위다 — 같은 소재의 `ALL`·`9X16`이 같은 그림을 두 번
-    # 보여주던 문제(규리님 스샷). 묶음마다 대표 규격 한 행만 남긴다.
-    scope = representative_ads(scope) if "ad_group" in scope.columns else scope
-    ranked = scope.groupby("ad")["cost"].sum().sort_values(ascending=False)
+    # 보여주던 문제(규리님 스샷). 묶음마다 대표 규격 하나만 보여주되,
+    # **금액은 묶음 전체 합계**다(`ad_group_totals`). 예전에는 대표 행 하나만 남긴
+    # 뒤에 합계를 내서 카드 금액이 실제의 13.6%로 찍혔다(2026-09-29 규리님 지적).
+    ranked = ad_group_totals(scope)
     top = ranked.head(limit)
     try:
         exact, flat = _drive_material_index()
