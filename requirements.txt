@@ -47,3 +47,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — reconcile 소진 비교 허용오차 (2026-09-29)
 # 재시작 마커 — merge_version_suffix / PARSER_VERSION v6 (2026-09-29)
 # 재시작 마커 — creative_data.ad_group_totals 새 심볼 (2026-09-29)
+# 재시작 마커 — 규격 무시 짝 판정 / PARSER_VERSION v7 (2026-09-30)

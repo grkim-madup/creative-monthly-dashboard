@@ -288,6 +288,17 @@ _AD_VERSION_SUFFIX = re.compile(r"-v\d+$", re.IGNORECASE)
 VERSION_SUFFIX_TITLES = frozenset({"11224"})
 
 
+def _match_key(name: str) -> str:
+    """짝을 찾을 때 쓰는 키 — **규격과 버전 꼬리표를 둘 다 뺀** 이름.
+
+    규격만 빼거나(`ad_group_key`) 꼬리표만 빼서는 짝이 안 맞는다. 실측:
+    `SingleImage_ALL_TITLE2` 와 `SingleImage_1X1_TITLE2-v2` 는 같은 소재인데
+    둘 다 빼야 `..._SingleImage_TITLE2` 로 만난다.
+    """
+    stripped = _AD_VERSION_SUFFIX.sub("", str(name))
+    return ad_group_key(stripped, parse_ad_name(stripped).get("size"))
+
+
 def merge_version_suffix(ads: pd.Series) -> pd.Series:
     """`-v2`가 붙은 소재명을 **짝이 실제로 있을 때만** 원본 이름으로 되돌린다.
 
@@ -301,25 +312,28 @@ def merge_version_suffix(ads: pd.Series) -> pd.Series:
     있는 표에서는 여전히 두 줄로 갈리고, **소재 단위로만** 하나가 된다. 그래서
     매체별 집행 사실이 사라지지 않는다.
 
-    ⚠ **짝이 없으면 그대로 둔다.** 합칠 상대가 없는데 이름만 바꾸면 시트에 없던
-      소재명이 화면에 생긴다(실측 2종 — `SingleImage_1X1_TITLE1-v2` 등. 이 둘은
-      규격이 `ALL`인 쌍둥이가 따로 있는데, 그건 `ad_group`이 다루는 별개 문제다).
+    ⚠ **짝은 규격까지 무시하고 찾는다**(규리님 2026-09-29 스샷):
+      `SingleImage_ALL_TITLE2` 와 `SingleImage_1X1_TITLE2-v2` 는 같은 소재인데,
+      꼬리표만 떼면 `SingleImage_1X1_TITLE2` 라는 이름이 없어서 짝을 못 찾는다.
+      규격과 꼬리표를 **둘 다** 뺀 이름으로 비교해야 맞는다(`_match_key`).
+
+    ⚠ **떼는 것은 꼬리표뿐이다 — 규격은 그대로 둔다.** 그래야 성과 표에서는
+      `1X1`과 `ALL`이 따로 남고(규리님: *"ALL과 1X1을 합치는 건 썸네일 보여줄 때만"*),
+      썸네일에서만 `ad_group`이 한 장으로 묶는다.
+
+    ⚠ 짝이 아예 없으면 그대로 둔다 — 합칠 상대가 없는데 이름만 바꿀 이유가 없다.
 
     `ad`를 덮어쓰는 유일한 자리다. `attach_creative_attributes`가 "`ad`는 절대
-    덮어쓰지 않는다"고 못 박은 이유는 **규격이 다른 집행을 합치지 말라**는 것인데
-    (메타 `ALL` vs 틱톡 `9X16`), 버전 꼬리표는 규격이 같아 그 이유에 걸리지 않는다.
+    덮어쓰지 않는다"고 못 박은 이유는 **규격이 다른 집행을 합치지 말라**는 것인데,
+    여기서는 규격을 건드리지 않으므로 그 이유에 걸리지 않는다.
     """
     names = ads.astype(str)
-    existing = set(names.unique())
-    mapping = {}
-    for name in existing:
-        if name.split("_", 1)[0] not in VERSION_SUFFIX_TITLES:
-            continue
-        if not _AD_VERSION_SUFFIX.search(name):
-            continue
-        base = _AD_VERSION_SUFFIX.sub("", name)
-        if base in existing:
-            mapping[name] = base
+    scoped = [n for n in set(names.unique())
+              if n.split("_", 1)[0] in VERSION_SUFFIX_TITLES]
+    # 꼬리표가 **없는** 이름들의 키 — 이것이 "짝이 있다"의 근거다.
+    plain = {_match_key(n) for n in scoped if not _AD_VERSION_SUFFIX.search(n)}
+    mapping = {n: _AD_VERSION_SUFFIX.sub("", n) for n in scoped
+               if _AD_VERSION_SUFFIX.search(n) and _match_key(n) in plain}
     return names.replace(mapping) if mapping else names
 
 
