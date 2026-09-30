@@ -153,14 +153,45 @@ def frozen_months() -> list[int]:
     return sorted(all_meta())
 
 
+def rows_for(frame: pd.DataFrame, month: int, through_date: str | None = None):
+    """고정할 행 — 그 달 **전부**, 그리고 기간 예외가 있으면 그 날짜까지 더.
+
+    ⚠ **기간 예외 블록이 고정 후에 조용히 줄어드는 것을 막는 장치다.**
+    예전에는 `frame["month"] == month` 만 저장해서, 9월을 고정하는 순간 10/1까지 보던
+    표가 9월까지로 줄었다. 에러도 안 났다 — 이 저장소가 가장 두려워하는 유형이다.
+
+    ⚠ 리포트 월보다 **앞선** 날짜는 넣지 않는다. 예외는 "월을 넘겨 더 본다"는 뜻이다.
+    """
+    month = int(month)
+    if "month" not in frame.columns:
+        return frame
+    rows = frame[frame["month"] == month]
+    limit = pd.to_datetime(str(through_date or ""), errors="coerce")
+    if pd.isna(limit) or "date" not in frame.columns:
+        return rows
+    days = pd.to_datetime(frame["date"], errors="coerce")
+    extra = frame[(frame["month"] != month) & days.notna()
+                  & (days <= limit) & (days > _month_end(frame, month))]
+    return pd.concat([rows, extra], ignore_index=True) if not extra.empty else rows
+
+
+def _month_end(frame: pd.DataFrame, month: int):
+    """그 달의 마지막 날. 행이 없으면 아주 이른 날짜를 줘서 아무것도 안 걸리게 한다."""
+    days = pd.to_datetime(frame.loc[frame["month"] == int(month), "date"],
+                          errors="coerce").dropna()
+    return days.max() if not days.empty else pd.Timestamp.min
+
+
 def save(month: int, frame: pd.DataFrame, frozen_at: str | None = None,
-         settings: dict | None = None) -> None:
+         settings: dict | None = None, through_date: str | None = None) -> None:
     """이 달의 `Media_RAW` 행을 고정한다. 실패하면 예전 스냅샷이 그대로 남는다.
 
     `frame`은 **월 필터를 걸기 전 전체 프레임**을 줘도 된다 — 여기서 그 달만 뽑는다.
+
+    `through_date`를 주면 **그 날짜까지** 함께 얼린다(기간 예외 블록용).
     """
     month = int(month)
-    rows = frame[frame["month"] == month] if "month" in frame.columns else frame
+    rows = rows_for(frame, month, through_date)
     if rows.empty:
         raise ValueError(f"{month}월 행이 없어 고정할 수 없습니다.")
 

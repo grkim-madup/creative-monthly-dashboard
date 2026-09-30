@@ -32,18 +32,37 @@ ENCODINGS = ("utf-16", "utf-8-sig", "cp949")
 # 2026-07 실측으로 배율이 정확히 1.0830임을 확인했다(여러 소재에서 소수점까지 일치).
 DEFAULT_COST_MARKUP = 1.0830
 
+#: ⚠ **한글·영문 헤더를 둘 다 받는다.** 담당자가 구글 광고 UI 언어를 바꾸면 내려받는
+#: CSV 헤더가 통째로 영문이 된다. 예전에는 한글 이름만 있어서 **영문 파일 32개가 조용히
+#: 버려졌다** — 9월 구글 애셋 소진 ₩104,234,720(실제의 66%)이 화면에서 통째로 빠져 있었다
+#: (2026-09-30 발견). 에러도 안 났다. `asset_type`·`cost`가 전부 결측이 되고 `month`가
+#: `None`이라 모든 월 필터에서 빠졌을 뿐이다.
+#:
+#: ⚠ `_find`는 공백을 지우고 **정확히** 일치시킨다 — `Asset` / `Asset status` /
+#:   `Asset type` / `Asset name`이 서로 안 섞인다. 부분 일치로 바꾸지 말 것.
 COLUMN_ALIASES = {
-    "asset": ["확장 소재"],
-    "asset_type": ["애셋 유형"],
-    "asset_name": ["애셋 이름"],
-    "rating": ["실적"],
-    "direction": ["방향"],
-    "impression": ["노출수"],
-    "click": ["클릭수"],
-    "cost": ["비용"],
-    "total install": ["설치"],
-    "in_app_action": ["인앱 액션"],
-    "status": ["상태"],
+    "asset": ["확장 소재", "Asset"],
+    "asset_type": ["애셋 유형", "Asset type"],
+    "asset_name": ["애셋 이름", "Asset name"],
+    "rating": ["실적", "Performance"],
+    "direction": ["방향", "Direction"],
+    "impression": ["노출수", "Impr."],
+    "click": ["클릭수", "Clicks"],
+    "cost": ["비용", "Cost"],
+    "total install": ["설치", "Installs"],
+    "in_app_action": ["인앱 액션", "In-app actions"],
+    "status": ["상태", "Status"],
+}
+
+#: 애셋 유형을 **한글 표기로 정규화**한다. 이 한 곳에서만 바꾸면 아래 모든 코드
+#: (`CREATIVE_ASSET_TYPES`·`title_from_asset_name`·화면 라벨)가 그대로 돈다 —
+#: 영문 값을 여기저기서 따로 처리하면 한 곳만 빠뜨렸을 때 조용히 틀린다.
+ASSET_TYPE_ALIASES = {
+    "YouTube video": "YouTube 동영상",
+    "Image": "이미지",
+    "Description": "설명",
+    "Headline": "광고 제목",
+    "App deep link": "앱 딥 링크",
 }
 
 # 구글 표기 → 대시보드 표기
@@ -57,6 +76,16 @@ DIRECTION_ALIASES = {
 CREATIVE_ASSET_TYPES = ("YouTube 동영상", "이미지")
 
 _PERIOD_PATTERN = re.compile(r"(\d{4})년\s*(\d{1,2})월")
+
+#: 영문 보고서의 기간 줄: `"September 1, 2026 - September 27, 2026"`.
+_PERIOD_PATTERN_EN = re.compile(
+    r"(January|February|March|April|May|June|July|August|September|October"
+    r"|November|December)\s+\d{1,2},\s*(\d{4})", re.IGNORECASE)
+_EN_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
 _SIZE_IN_NAME = re.compile(r"(\d{2,4})[xX](\d{2,4})")
 
 
@@ -76,9 +105,21 @@ def _find(columns, target: str):
 
 
 def parse_period_month(text: str) -> int | None:
-    """'2026년 7월 1일 - 2026년 7월 31일' → 7"""
-    match = _PERIOD_PATTERN.search(text or "")
-    return int(match.group(2)) if match else None
+    """기간 줄에서 **시작 월**을 읽는다. 한글·영문 둘 다 받는다.
+
+    `'2026년 7월 1일 - 2026년 7월 31일'` → 7
+    `'"September 1, 2026 - September 27, 2026"'` → 9
+
+    ⚠ **시작 월만 본다.** `9월 1일 ~ 10월 1일` 처럼 달을 걸친 추출은 `9`가 되고,
+      화면은 그 사실을 알 길이 없다. 기간을 늘려 내려받을 때 주의할 것.
+    """
+    korean = _PERIOD_PATTERN.search(text or "")
+    if korean:
+        return int(korean.group(2))
+    english = _PERIOD_PATTERN_EN.search(text or "")
+    if english:
+        return _EN_MONTHS.get(english.group(1).lower())
+    return None
 
 
 def parse_meta_from_path(path: Path) -> dict:
@@ -128,12 +169,27 @@ UNKNOWN_TITLE = "미분류"
 
 _PLACEHOLDER_TITLE = re.compile(r"^\s*$|^[-–—]+$|^\d|^[a-z]+$")
 
+#: 한글이나 한자가 하나라도 있으면 사람이 읽는 작품명이다.
+_HAS_KOREAN_OR_HANJA = re.compile(r"[가-힣㐀-鿿]")
+
 
 def is_placeholder_title(value) -> bool:
-    """이 값이 작품명 자리에 잘못 들어온 것인가."""
+    """이 값이 작품명 자리에 잘못 들어온 것인가.
+
+    ⚠ **숫자로 시작해도 한글·한자가 있으면 작품명이다.** 숫자 접두 규칙은 `365dtg`·
+      `2608 EPUB` 같은 파일명 쓰레기값을 잡으려던 것인데, **`44교시 생존수업`처럼
+      숫자로 시작하는 진짜 작품명까지 걸렸다**(2026-09-30 발견).
+
+      그래서 그 작품이 화면에 중국어 `第44節生存課`로 나가고 있었다 — 정상 작품명을
+      이상값으로 보고 애셋 이름의 중국어로 덮어썼기 때문이다. 9월 소진 ₩33.7M.
+    """
     if value is None or (isinstance(value, float) and value != value):
         return True
-    return bool(_PLACEHOLDER_TITLE.match(str(value).strip()))
+    text = str(value).strip()
+    if _HAS_KOREAN_OR_HANJA.search(text):
+        # 한글·한자가 있으면 빈 값·하이픈만 아니면 작품명으로 본다.
+        return not text or bool(re.match(r"^[-–—]+$", text))
+    return bool(_PLACEHOLDER_TITLE.match(text))
 
 
 #: 이미지 애셋 이름은 `작품명_USP_규격.jpg` 규칙이다 — 첫 토큰이 작품명(한글).
@@ -189,6 +245,83 @@ def title_from_asset_name(asset_name, asset_type) -> str | None:
     return None
 
 
+#: 애셋 이름 안에 들어 있는 **소재명**. `11224_勇者之歌_VID_Webtoon-VS_Trend_16X9_2`
+#: 처럼 작품코드로 시작하는 토큰을 찾는다.
+_CREATIVE_NAME = re.compile(r"(\d{3,6}_[^\s]+)")
+_MEDIA_EXT = re.compile(r"\.(jpg|jpeg|png|gif|mp4|mov)$", re.IGNORECASE)
+
+#: 소재명으로 인정할 최소 토큰 수(`코드_작품명_포맷_제작주체_유형…`).
+#: 낮추면 `1200x1500_2026-03-05.jpg` 같은 파일명 조각이 소재명으로 들어온다.
+CREATIVE_NAME_MIN_TOKENS = 5
+
+
+def creative_name_from_asset(asset_name, asset_type=None) -> str | None:
+    """애셋 이름에서 **소재명**을 뽑는다. 못 뽑으면 None.
+
+    규리님(2026-09-30): *"구글 시트에서 에셋 이름 행을 보면 소재명 유추 가능."*
+
+    ```
+    이미지  11224_勇者之歌_IMG_Madup_SingleImage_4X5_TITLE2.jpg
+    영상    百年後重生的…《勇者之歌》今晚登場！ 11224_勇者之歌_VID_Webtoon-VS_Trend_16X9_2
+    ```
+
+    영상은 애셋 이름이 **중국어 광고 문안**이고 그 **뒤에** 소재명이 붙는 경우가 있다.
+    그래서 문안을 건너뛰고 작품코드로 시작하는 토큰을 찾는다.
+
+    ⚠ **`title_from_asset_name`과 다른 일을 한다.** 그쪽은 *작품명*을 뽑고 영상은
+      《》 안을 본다. 두 함수를 합치지 말 것 — 목적도 규칙도 다르다.
+
+    ⚠ **전 작품에 통하지 않는다.** 9월 창작 애셋 1,765행 중 969행(55%)만 뽑힌다.
+      작품에 따라 담당자가 소재명을 붙이기도, 안 붙이기도 했다. 축으로 쓸 수 있는지는
+      `creative_name_coverage`로 **표마다 재서** 판단한다.
+    """
+    # ⚠ `str(asset_name or "")` 로 쓰면 `pd.NA` 에서 터진다
+    #   (TypeError: boolean value of NA is ambiguous).
+    text = "" if asset_name is None or pd.isna(asset_name) else str(asset_name)
+    found = _CREATIVE_NAME.search(text)
+    if not found:
+        return None
+    name = _MEDIA_EXT.sub("", found.group(1)).strip()
+    if name.count("_") + 1 < CREATIVE_NAME_MIN_TOKENS:
+        return None
+    return name or None
+
+
+#: 소재명 축을 열어 줄 최소 커버리지.
+#:
+#: ⚠ **이 게이트가 없으면 `883600f`와 같은 사고가 난다.** 구글 소재 식별자는 URL이라
+#:   소재명 축이 비면 **가짜 `미분류` 버킷**이 생긴다. 9월 실측으로 작품 31종 중
+#:   90% 이상은 6종뿐이고 전체 평균은 55%다 — 전역으로 열면 절반이 미분류가 된다.
+#:   용사의 발라드는 79행 **100%** 라 통과한다.
+CREATIVE_NAME_MIN_COVERAGE = 0.9
+
+
+def creative_name_coverage(frame: pd.DataFrame) -> float:
+    """이 표에서 소재명이 뽑히는 비율. 창작 애셋(영상·이미지)만 센다."""
+    if frame is None or getattr(frame, "empty", True):
+        return 0.0
+    if "creative_name" not in frame.columns:
+        return 0.0
+    rows = frame
+    if "asset_type" in frame.columns:
+        rows = frame[frame["asset_type"].isin(CREATIVE_ASSET_TYPES)]
+    if rows.empty:
+        return 0.0
+    return float(rows["creative_name"].notna().mean())
+
+
+def google_dimensions_for(frame: pd.DataFrame) -> dict[str, str]:
+    """이 표에서 **실제로 쓸 수 있는** 축 목록.
+
+    소재명은 커버리지가 충분할 때만 넣는다 — 문턱 미만이면 **아예 안 띄운다**
+    (비활성보다 미표시가 맞다는 이 저장소 관행).
+    """
+    dimensions = dict(GOOGLE_DIMENSIONS)
+    if creative_name_coverage(frame) >= CREATIVE_NAME_MIN_COVERAGE:
+        dimensions["creative_name"] = "소재명"
+    return dimensions
+
+
 def _squeeze(value) -> str:
     """공백을 없앤 비교용 키. `쪽팔려 게임`과 `쪽팔려게임`은 같은 작품이다(실측)."""
     return re.sub(r"\s+", "", str(value or ""))
@@ -214,6 +347,41 @@ def tw_to_kr_map(media_raw: pd.DataFrame) -> dict[str, str]:
         if len(chinese) > 1 and len(korean) > 1 and not is_placeholder_title(korean):
             pairs.setdefault(chinese, korean)
     return pairs
+
+
+def canonical_titles(media_raw: pd.DataFrame | None) -> dict[str, str]:
+    """공백을 지운 키 → **Media_RAW의 표기**. 없으면 빈 표.
+
+    구글 쪽 작품명은 **담당자가 지은 파일 이름**에서 온다(`parse_meta_from_path`).
+    그래서 같은 작품이 Media_RAW와 띄어쓰기만 다른 일이 생긴다 — 실측(2026-09-30):
+
+    ```
+    애셋 리포트   44교시 생존 수업   ₩22,096,962   ← 파일명에 공백이 있다
+                 44교시 생존수업    ₩11,624,985
+    Media_RAW    44교시 생존수업    ₩12,882,198   ← 붙여쓰기만 존재
+    ```
+
+    구글 표에서 **한 작품이 두 줄로 갈리고**, Media_RAW와 대조하면 한쪽이 안 맞는다.
+
+    ⚠ 같은 키에 표기가 여럿이면 **소진이 큰 쪽**을 정본으로 본다. 개수로 고르면
+      소액 캠페인의 오타가 정본이 될 수 있다.
+    """
+    if media_raw is None or media_raw.empty or "title_kr" not in media_raw.columns:
+        return {}
+    frame = media_raw[["title_kr"]].copy()
+    frame["_cost"] = (pd.to_numeric(media_raw.get("cost"), errors="coerce").fillna(0.0)
+                      if "cost" in media_raw.columns else 1.0)
+    frame = frame[frame["title_kr"].astype(str).str.strip().astype(bool)]
+    if frame.empty:
+        return {}
+    weight = frame.groupby("title_kr")["_cost"].sum().sort_values(ascending=False)
+    out: dict[str, str] = {}
+    for title in weight.index:
+        text = str(title).strip()
+        if is_placeholder_title(text):
+            continue
+        out.setdefault(_squeeze(text), text)
+    return out
 
 
 def fill_titles(frame: pd.DataFrame, media_raw: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -251,6 +419,13 @@ def fill_titles(frame: pd.DataFrame, media_raw: pd.DataFrame | None = None) -> p
     # 일본만화 프로모션·App store 브랜드 광고로 **애초에 작품 광고가 아니다** —
     # 파일명에서 온 `365dtg` 같은 값을 그대로 두면 광고주가 작품명으로 읽는다.
     out["title_kr"] = [UNKNOWN_TITLE if is_placeholder_title(v) else v for v in filled]
+
+    # 표기를 Media_RAW 쪽으로 맞춘다 — 띄어쓰기만 다른 같은 작품이 두 줄로 갈리지
+    # 않게 한다. ⚠ **Media_RAW에 없는 작품은 건드리지 않는다**(구글에서만 집행한
+    # 작품은 그 이름이 유일하게 정확하다).
+    canonical = canonical_titles(media_raw)
+    if canonical:
+        out["title_kr"] = [canonical.get(_squeeze(v), v) for v in out["title_kr"]]
     return out
 
 
@@ -284,6 +459,31 @@ def read_asset_report(path: Path) -> pd.DataFrame:
             out[target] = raw[column].map(to_number)
         else:
             out[target] = raw[column].astype(str).str.strip()
+
+    # 애셋 유형을 한글 표기로 맞춘다 — 아래 모든 코드가 한글 값을 전제한다.
+    out["asset_type"] = out["asset_type"].map(
+        lambda v: ASSET_TYPE_ALIASES.get(str(v).strip(), v) if pd.notna(v) else v)
+
+    # ⚠ **헤더를 못 읽은 파일을 조용히 넘기지 않는다.** 2026-09-30에 영문 헤더 파일
+    #   32개가 빈 컬럼만 만든 채 통과했고, 9월 구글 애셋 소진 ₩104,234,720이 화면에서
+    #   사라졌다. 에러가 없어서 아무도 몰랐다. 이제는 `failures`로 올라가 화면에 뜬다.
+    unreadable = [name for name in ("asset", "asset_type", "cost")
+                  if out[name].isna().all()]
+    if unreadable:
+        raise ValueError(
+            "헤더를 알아보지 못했습니다(" + ", ".join(unreadable) + ") — 실제 헤더: "
+            + " | ".join(str(c) for c in raw.columns[:8]))
+    if month is None:
+        raise ValueError(
+            "기간 줄에서 월을 읽지 못했습니다: "
+            + (lines[1].strip()[:60] if len(lines) > 1 else "(빈 줄)"))
+
+    # 소재명을 함께 뽑아 둔다. 뽑히지 않으면 `None`이고, 축으로 쓸지는
+    # `google_dimensions_for`가 표마다 커버리지를 재서 판단한다.
+    out["creative_name"] = [
+        creative_name_from_asset(name, kind)
+        for name, kind in zip(out["asset_name"], out["asset_type"])
+    ]
 
     meta = parse_meta_from_path(Path(path))
     for key, value in meta.items():
@@ -397,6 +597,11 @@ GOOGLE_DIMENSIONS = {
     "campaign": "캠페인",
     "asset": "소재 링크",
 }
+
+#: 화면에 찍을 **라벨**. 축으로 고를 수 있는지(`google_dimensions_for`)와는 별개다 —
+#: 이미 저장된 뷰가 `creative_name`을 들고 있을 수 있고, 그때 라벨이 없으면 표 머리에
+#: `creative_name`이 그대로 나온다.
+GOOGLE_DIMENSION_LABELS = {**GOOGLE_DIMENSIONS, "creative_name": "소재명"}
 
 #: 구글 표에서 쓸 수 있는 지표.
 #:

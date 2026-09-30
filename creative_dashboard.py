@@ -100,6 +100,8 @@ from google_ads_report import (
     GOOGLE_ALLOCATION_NOTE,
     GOOGLE_DEFAULT_ROWS,
     GOOGLE_DIMENSIONS,
+    GOOGLE_DIMENSION_LABELS,
+    google_dimensions_for,
     GOOGLE_METRIC_COLUMNS,
     google_pivot,
     GOOGLE_DEFAULT_VALUES,
@@ -2007,6 +2009,26 @@ else:
 live_source_available = dropbox_source.configured() or Path(google_folder).exists()
 
 
+def freeze_through_date(month: int) -> str:
+    """이 달 블록들이 쓰는 **기간 예외 종료일의 최댓값**. 없으면 빈 문자열.
+
+    ⚠ 고정이 이 날짜를 모르면 **기간 예외 블록만 조용히 줄어든다.** 고정은
+    `month == month` 행만 저장하기 때문이다(`media_snapshot.rows_for` 주석 참고).
+    """
+    latest = ""
+    try:
+        state = report_blocks.load_state(month, use_cache=True)
+    except Exception:  # noqa: BLE001 — 고정을 막을 이유는 아니다
+        return ""
+    for slot_blocks in (state or {}).values():
+        for block in slot_blocks or []:
+            for view in (block.get("views") or []):
+                through = str(view.get("through_date") or "")
+                if through > latest:
+                    latest = through
+    return latest
+
+
 def freeze_month(month: int) -> list[str]:
     """이 달을 고정한다 — **메타·틱톡 원본 + 구글 애셋 + 그때의 설정**을 함께.
 
@@ -2031,8 +2053,13 @@ def freeze_month(month: int) -> list[str]:
     done: list[str] = []
 
     # 메타·틱톡이 먼저다. 구글은 폴더가 없을 수 있지만 이쪽은 항상 가능하다.
-    media_snapshot.save(month, _load(sheet_id), settings=settings)
-    done.append("메타·틱톡")
+    # 기간 예외 블록이 보는 날짜까지 함께 얼린다 — 안 그러면 고정 후 그 표만 줄어든다.
+    _through = freeze_through_date(month)
+    if _through:
+        settings["through_date"] = _through
+    media_snapshot.save(month, _load(sheet_id), settings=settings,
+                        through_date=_through or None)
+    done.append("메타·틱톡" + (f" (+{_through}까지)" if _through else ""))
 
     if live_source_available:
         try:
@@ -2991,7 +3018,7 @@ def render_google_view(view: dict, month: int, editing: bool = False) -> None:
 
     keys = [r["field"] if isinstance(r, dict) else r
             for r in (view["g_rows"] or GOOGLE_DEFAULT_ROWS)]
-    labels = {f: GOOGLE_DIMENSIONS.get(f, f) for f in keys}
+    labels = {f: GOOGLE_DIMENSION_LABELS.get(f, f) for f in keys}
     labels.update(COLUMN_LABELS)
     render_table(table.rename(columns=labels), color_columns=["CPI"])
 
@@ -3441,6 +3468,33 @@ def genre_column_of(table: pd.DataFrame, fields: list[str]) -> str | None:
     return None
 
 
+def render_period_note(view: dict, month: int) -> None:
+    """이 표가 **리포트 월과 다른 기간**을 본다는 사실을 표 아래에 찍는다.
+
+    ⚠ **광고주도 본다.** 사이드바 기간 줄과 최하단 각주는 계속 그 달만 말한다
+    (`month_date_span`은 `month ==` 로 센다). 표가 더 보여주는데 화면 어디에도 안
+    적히면, 광고주가 총괄과 대조하다 어긋난 숫자를 보게 된다.
+
+    ⚠ **표마다 찍는다.** 한 블록 안에서 기간이 갈릴 수 있다 — 메타·틱톡은 10/1까지,
+      구글은 리포트 추출 시점(9/27)까지다. 블록 단위로 한 번 적으면 거짓말이 된다.
+    """
+    through = str(view.get("through_date") or "")
+    if not through:
+        return
+    limit = pd.to_datetime(through, errors="coerce")
+    if pd.isna(limit):
+        return
+    # ⚠ 프레임의 실제 날짜 최소·최대를 찍지 않는다. 그건 "그 소재가 집행된 기간"이라
+    #   집계 구간과 다르고, 광고주가 둘을 같은 것으로 읽는다. **요청한 구간**을 적는다.
+    span = f"{int(month)}/1~{limit.month}/{limit.day}"
+    st.markdown(
+        f'<div class="sec-legend">기간 <b>{html.escape(span)}</b> — '
+        "이 표만 리포트 월을 넘겨 집계합니다. 다른 표·총괄 수치와 기간이 다릅니다."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
     """`미분류`가 왜 생기는지 **광고주에게** 설명한다(규리님 2026-09-30 지시).
 
@@ -3471,6 +3525,37 @@ def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
         '여기에 들어갑니다. 신규 작품은 작품 목록에 등재되기 전까지 함께 묶입니다.</div>',
         unsafe_allow_html=True,
     )
+
+
+def through_date_scope(view: dict, month: int, named: bool = True):
+    """`through_date`가 있는 뷰가 볼 프레임 — **리포트 월 1일 ~ 그 날짜**.
+
+    규리님(2026-09-30): *"이 용사의 발라드 섹션만 예외로 10/1일자 데이터까지."*
+    그 작품이 9/19에 시작해 9월 안에 온전히 담기지 않는다.
+
+    `all_months(_named)`를 쓴다 — 사이드바 필터(매체·OS·UA·포맷)가 이미 걸려 있고
+    월 필터만 없는 프레임이다.
+
+    ⚠ **수기 분류를 다시 입힌다.** `all_months`에는 안 걸려 있다(리런마다 달마다 저장소를
+      읽어야 해서 비용이 크다는 이유로 원래 빠져 있다). 안 입히면 같은 소재가 이 표에서만
+      다르게 분류된다. 리포트 월의 지정을 그대로 쓰므로 **월을 넘긴 행에도 그 달 지정이
+      적용된다**.
+
+    ⚠ `date`는 **문자열 컬럼**이다(`creative_data.parse_raw_values`). 매번 파싱한다 —
+      `month_date_span`·`scope_to_day`가 쓰는 방식과 같다.
+    """
+    frame = all_months_named if named else all_months
+    if frame is None or getattr(frame, "empty", True) or "date" not in frame.columns:
+        return frame
+    limit = pd.to_datetime(str(view.get("through_date") or ""), errors="coerce")
+    if pd.isna(limit):
+        return frame
+    year = int(pd.to_datetime(frame["date"], errors="coerce").dt.year.dropna().max()
+               or limit.year)
+    start = pd.Timestamp(year=year, month=int(month), day=1)
+    days = pd.to_datetime(frame["date"], errors="coerce")
+    out = frame[(days >= start) & (days <= limit)]
+    return manual_overrides.apply(out, month)
 
 
 def render_view(view: dict, month: int, key_prefix: str,
@@ -3526,7 +3611,11 @@ def render_view(view: dict, month: int, key_prefix: str,
     # `named_overview`다(`ad == "-"`인 구글 행이 빠진 프레임).
     # ⚠ `view_with_defaults`가 이미 축을 보고 판정해 뒀다 — 여기서 다시 묻지 않는다.
     #   판정이 두 곳이면 갈린다(라벨 딕셔너리와 같은 문제).
-    source = overview if view["title_level"] else named_overview
+    if view["through_date"]:
+        # 이 표만 리포트 월을 넘겨 본다(기간 예외). 아래에서 기간을 표에 찍는다.
+        source = through_date_scope(view, month, named=not view["title_level"])
+    else:
+        source = overview if view["title_level"] else named_overview
     # ⚠ 작품 단위로 **귀속이 안 되는** 행은 뺀다(구글 iOS). 그대로 두면 설치만 있는
     #   `미분류` 줄이 CPI ₩0으로 찍히고, 실제 장르의 iOS는 소진만 남아 CPI가 빈다 —
     #   양방향으로 틀린 숫자가 광고주에게 간다. 매체별로 표를 나눠도 안 없어진다.
@@ -3585,6 +3674,7 @@ def render_view(view: dict, month: int, key_prefix: str,
                 f"(소진 ₩{cost:,.0f}) — {html.escape(why)}.</div>",
                 unsafe_allow_html=True,
             )
+    render_period_note(view, month)
     render_unclassified_note(table, fields)
     if editing and (as_group or view["rank_by"]):
         # 순위표에서만 뜻이 있다 — 색칠하지 않는 표에는 지정할 자리가 없다.
@@ -3751,6 +3841,29 @@ def google_value_options(field: str) -> list[str]:
                   .replace("", pd.NA).dropna().unique())
 
 
+def google_gate_frame(view: dict, view_key: str):
+    """축 사용 가능 여부를 판정할 프레임 — 그 표의 **필터를 건 뒤** 모습.
+
+    필터 위젯보다 먼저 필요하므로 **직전 리런의 세션 값**을 읽는다. 세션에 없으면
+    저장된 값을 쓴다(처음 그릴 때).
+    """
+    frame = google_all
+    if frame is None or getattr(frame, "empty", True):
+        return frame
+    fields = st.session_state.get(f"gvfilters_{view_key}")
+    saved = view.get("g_filters") or {}
+    if fields is None:
+        fields = list(saved)
+    for field in fields:
+        if field not in frame.columns:
+            continue
+        chosen = st.session_state.get(f"gvfval_{view_key}_{field}", saved.get(field))
+        if not chosen:
+            continue
+        frame = frame[frame[field].astype(str).isin([str(v) for v in chosen])]
+    return frame
+
+
 def google_editor(view: dict, view_key: str) -> dict:
     """구글 애셋 표의 행 / 값 / 필터. 피벗 편집기와 **같은 배치**(시안 E3a)다.
 
@@ -3764,6 +3877,16 @@ def google_editor(view: dict, view_key: str) -> dict:
     saved_rows = [r["field"] if isinstance(r, dict) else r
                   for r in (view.get("g_rows") or [])]
 
+    # ⭐ **쓸 수 있는 축은 표마다 다르다.** 소재명은 애셋 이름에서 뽑는데 작품에 따라
+    #    담당자가 붙이기도, 안 붙이기도 했다(9월 전체 55% · 용사의 발라드 100%).
+    #    커버리지가 낮은 표에 축을 열면 절반이 가짜 `미분류`가 된다(`883600f` 유형).
+    #
+    #    ⚠ 게이트는 **필터를 건 뒤의 프레임**에서 잰다 — 작품을 좁히면 비로소 열린다.
+    #      필터 위젯은 아래에서 그려지므로 **직전 리런의 세션 값**을 읽는다(이 저장소가
+    #      `live_view`에서 쓰는 방식과 같다). 그래서 작품 필터를 고르면 다음 리런에
+    #      `소재명`이 목록에 나타난다.
+    dimensions = google_dimensions_for(google_gate_frame(view, view_key))
+
     with st.container(key=f"gv_{view_key}"):
         with st.container(border=True, key=f"gvbox_{view_key}"):
             lab, slot = st.columns([1.05, 8])
@@ -3771,10 +3894,10 @@ def google_editor(view: dict, view_key: str) -> dict:
                 editor_label("행", "묶는 기준")
             with slot:
                 rows = st.multiselect(
-                    "행", list(GOOGLE_DIMENSIONS),
+                    "행", list(dimensions),
                     default=[f for f in (saved_rows or GOOGLE_DEFAULT_ROWS)
-                             if f in GOOGLE_DIMENSIONS],
-                    format_func=lambda f: GOOGLE_DIMENSIONS.get(f, f),
+                             if f in dimensions],
+                    format_func=lambda f: dimensions.get(f, f),
                     key=f"gvrows_{view_key}", label_visibility="collapsed",
                     placeholder="기본 구분 사용 · 작품",
                 )
@@ -3797,10 +3920,10 @@ def google_editor(view: dict, view_key: str) -> dict:
                 editor_label("필터", "담을 범위")
             with slot:
                 filter_fields = st.multiselect(
-                    "필터", list(GOOGLE_DIMENSIONS),
+                    "필터", list(dimensions),
                     default=[f for f in (view.get("g_filters") or {})
-                             if f in GOOGLE_DIMENSIONS],
-                    format_func=lambda f: GOOGLE_DIMENSIONS.get(f, f),
+                             if f in dimensions],
+                    format_func=lambda f: dimensions.get(f, f),
                     key=f"gvfilters_{view_key}", label_visibility="collapsed",
                     placeholder="필터 없음 · 전체 애셋",
                 )
@@ -3810,7 +3933,7 @@ def google_editor(view: dict, view_key: str) -> dict:
                 _pad, name_col, val_col = st.columns([1.05, 1.9, 6.1])
                 with name_col:
                     st.markdown(
-                        f'<div class="pe-sub">{GOOGLE_DIMENSIONS.get(field, field)}</div>',
+                        f'<div class="pe-sub">{dimensions.get(field, field)}</div>',
                         unsafe_allow_html=True)
                 choices = google_value_options(field)
                 with val_col:
@@ -4087,7 +4210,30 @@ def pivot_editor(view: dict, view_key: str) -> dict:
                 unsafe_allow_html=True)
             contrast_field = fixed
 
+    # ── 기간 예외 ───────────────────────────────────────────────────────────
+    # 평소에는 안 보인다 — 매달 쓰는 것이 아니라 예외를 거는 자리다. 켜면 그 표만
+    # 리포트 월을 넘겨 집계하고, 표 아래에 기간이 광고주에게도 찍힌다.
+    through = str(view.get("through_date") or "")
+    _pad, _chk, _date = st.columns([1.05, 1.6, 2.2])
+    with _chk:
+        use_through = st.checkbox(
+            "기간 예외", value=bool(through), key=f"pvthru_on_{view_key}",
+            help="이 표만 리포트 월을 넘겨 집계합니다. 다른 표와 기간이 달라집니다.")
+    if use_through:
+        default = pd.to_datetime(through, errors="coerce")
+        if pd.isna(default):
+            default = pd.Timestamp(year=dt.date.today().year, month=int(month), day=1)                 + pd.offsets.MonthEnd(1)
+        with _date:
+            picked = st.date_input(
+                "기간 예외 종료일", value=default.date(),
+                key=f"pvthru_{view_key}", label_visibility="collapsed",
+                format="YYYY-MM-DD")
+        through = str(picked)
+    else:
+        through = ""
+
     out = {**view, "values": list(metrics), "filters": filters,
+           "through_date": through,
            "include_ads": list(include),
            "contrast": bool(contrast), "thumbs": bool(thumbs),
            "title_level": bool(title_level), "grouped": bool(grouped),
@@ -4915,6 +5061,17 @@ if editor_allowed and edit_mode:
                 st.markdown(
                     f'<div class="recon-head">{html.escape(reconcile.headline(_steps, _gap, _orphans))}</div>',
                     unsafe_allow_html=True)
+
+                # ⚠ **이 점검은 리포트 월만 대조한다**(`reconcile`이 전부 `month ==`
+                #    기준이다). 기간 예외 블록이 있으면 "적합"이라고 말하면서 그 표는
+                #    보지 않은 것이다 — 무엇을 안 봤는지 드러나야 한다.
+                _through = freeze_through_date(month)
+                if _through:
+                    st.markdown(
+                        f'<div class="recon-cap">⚠ 기간 예외 블록이 있습니다'
+                        f'(~{html.escape(_through)}). 이 점검은 <b>{month}월까지만</b> '
+                        "대조하므로 그 표의 월 밖 수치는 여기 안 잡힙니다.</div>",
+                        unsafe_allow_html=True)
 
                 st.markdown('<div class="recon-cap">단계별 — 원본에서 화면까지</div>',
                             unsafe_allow_html=True)

@@ -51,6 +51,15 @@ VIEW_DEFAULTS = {
     #: 규리님(2026-09-09): *"비교대상이 되는 그 그룹에 소재명 룰이 안 맞아서 수기로
     #: 추가해야 될 때 사용하는 용도"*. 필터의 보조라서 화면에서도 필터에 붙어 있다.
     "include_ads": [],
+    #: ── 기간 예외 ────────────────────────────────────────────────────────
+    #: 이 표만 리포트 월을 넘겨 **이 날짜까지** 본다(ISO `YYYY-MM-DD`). 비면 지금 동작.
+    #:
+    #: 규리님(2026-09-30): *"이 용사의 발라드 섹션만 예외로 10/1일자 데이터까지
+    #: 포함시킬 예정이야."* 그 작품이 9/19에 시작해 9월 안에 온전히 담기지 않는다.
+    #:
+    #: ⚠ 날짜 범위를 **일반 필터로 만들지 않는다.** `filtered_scope`는 범주형
+    #:   `isin`이라 31개 날짜를 나열하게 된다. 한 필드로 끝낸다.
+    "through_date": "",
     #: 기간 비교 뷰용. `metrics`는 편집 위젯이 없어 늘 기본값이었다 — 지금은 `values`를
     #: 쓴다. 필드는 지우지 않는다(되돌릴 수 있게).
     "periods": [], "metrics": [],
@@ -145,8 +154,11 @@ def view_with_defaults(view: dict) -> dict:
     if merged["kind"] == "google":
         # 구글 표에는 대조군·썸네일·소재 추가·그래프가 없다. 저장된 값이 남아 있어도
         # 화면이 그걸 보고 메타 경로로 새지 않게 여기서 못 박는다.
+        # ⚠ 구글 애셋 데이터에는 **날짜 컬럼이 아예 없다**(리포트 헤더의 월만 있다).
+        #   기간 예외를 걸어도 지킬 방법이 없으므로 여기서 비운다.
         merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
-                       "include_ads": [], "chart_kind": "", "title_level": False})
+                       "include_ads": [], "chart_kind": "", "title_level": False,
+                       "through_date": ""})
     # ⚠ **작품 단위 집계는 조건을 코드로 건다.** 소재 단위 축이 하나라도 섞이면 구글
     #   행이 전부 `미분류` 한 줄이 되어 표에 가짜 버킷이 생긴다(`883600f`와 같은 사고).
     #   화면에서 토글을 감추는 것만으로는 부족하다 — 축을 나중에 바꾸면 저장된 True가
@@ -196,6 +208,13 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
     merged["grouped"] = bool(take(f"pvgrp_{view_key}", merged["grouped"]))
     merged["title_level"] = bool(take(f"pvtl_{view_key}", merged["title_level"]))
     merged["rank_by"] = str(take(f"pvrank_{view_key}", merged["rank_by"]) or "")
+    # ⚠ **체크박스를 먼저 본다.** 날짜 위젯 값은 체크를 꺼도 세션에 남아서, 그것만
+    #   읽으면 껐는데 저장 때 되살아난다.
+    if take(f"pvthru_on_{view_key}", bool(merged["through_date"])):
+        merged["through_date"] = str(
+            take(f"pvthru_{view_key}", merged["through_date"]) or "")
+    else:
+        merged["through_date"] = ""
 
     # 기간 비교의 기간 두 개. 위젯은 라벨·월을 따로 쓴다.
     periods = []
