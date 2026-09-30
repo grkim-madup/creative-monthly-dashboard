@@ -987,12 +987,31 @@ section[data-testid="stSidebar"] { font-variant-numeric: tabular-nums; }
 /* 표시 옵션 토글 — **스위치를 이름 오른쪽**에 둔다(2026-09-09 규리님 요청).
    Streamlit 기본은 `[스위치] 이름` 순서라 이름이 들쭉날쭉한 위치에서 시작한다.
    순서를 뒤집으면 이름이 왼쪽에 가지런히 서고 스위치가 그 뒤에 붙는다.
-   ⚠ `flex-direction`만 뒤집으면 오른쪽 정렬로 밀리므로 `justify-content`를 함께 준다. */
-[class*="st-key-pvct_"] [data-testid="stCheckbox"] label,
-[class*="st-key-pvth_"] [data-testid="stCheckbox"] label {
+   ⚠ `flex-direction`만 뒤집으면 오른쪽 정렬로 밀리므로 `justify-content`를 함께 준다.
+
+   ⚠ **위젯 키를 하나씩 나열하지 않는다.** 예전에는 `pvct_`·`pvth_` 두 개만 적어
+     뒀는데, 나중에 추가한 `구글 포함`(`pvtl_`)·`묶어 보기`(`pvgrp_`)가 빠져서
+     **같은 줄에서 어떤 토글은 이름이 왼쪽, 어떤 토글은 오른쪽**에 붙었다
+     (규리님 2026-09-30 스샷). 편집기 컨테이너(`pv_<뷰키>`)로 한정하면 앞으로
+     토글을 더 넣어도 저절로 따라온다.
+     `[class*="st-key-pv_"]`는 `st-key-pvct_…` 같은 위젯 키와 겹치지 않는다 —
+     그쪽은 `pv` 다음이 `_`가 아니라 `c`다. */
+[class*="st-key-pv_"] [data-testid="stCheckbox"] label {
   flex-direction: row-reverse !important;
   justify-content: flex-end !important;
   gap: 8px !important;
+}
+
+/* 토글 이름을 리포트 라벨과 **같은 크기·굵기**로. Streamlit 기본은 14px/400이라
+   옆의 `표시` 라벨(12px/600)이나 표 글자보다 크고 흐려서 혼자 떠 보였다
+   (규리님 2026-09-30: *"토글명 폰트가 너무 구려"*). 실측해서 맞춘 값이다.
+   ⚠ `font-family`는 건드리지 않는다 — 주변 글자와 같은 것을 써야 톤이 맞는다. */
+[class*="st-key-pv_"] [data-testid="stCheckbox"] label
+[data-testid="stMarkdownContainer"] p {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--ink) !important;
+  line-height: 1.25 !important;
 }
 
 /* 표(뷰) 요약 줄 — 안 고칠 때는 이 한 줄만 읽으면 된다. */

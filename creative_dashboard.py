@@ -84,6 +84,8 @@ from creative_data import (
     DEFAULT_PIVOT_VALUES,
     spend_pool,
     drop_unattributable,
+    GROUP_ORDER_FIXED,
+    GROUP_ORDER_SPEND,
     sort_within_groups,
     title_level_allowed,
     top_creatives,
@@ -3404,17 +3406,23 @@ def render_view(view: dict, month: int, key_prefix: str,
 
     # 그룹 안에서 줄세우기 — `aggregate_by`는 늘 소진액 내림차순이라 매체·OS가 뒤섞인다.
     # 그러면 "이 매체 안에서 어느 장르가 좋나"를 눈으로 모아 읽어야 한다(규리님 지적).
-    if view["rank_by"]:
-        table = sort_within_groups(table, view["rows"])
+    # `묶어 보기`(규리님 2026-09-30 시안 A) 또는 옛 프리셋(`rank_by`)이면 묶음 표다.
+    # 순서가 갈린다: 프리셋은 **고정 순서**(매달 바뀌면 지난달 리포트와 대조가 안 된다),
+    # 토글은 규리님 지정대로 **소진액이 큰 묶음이 위로**.
+    as_group = bool(view["grouped"]) and len(view["rows"]) >= 2
+    if as_group or view["rank_by"]:
+        table = sort_within_groups(
+            table, view["rows"],
+            order=GROUP_ORDER_FIXED if view["rank_by"] else GROUP_ORDER_SPEND)
 
     fields = [r["field"] for r in view["rows"]]
 
-    if view["rank_by"]:
+    if as_group or view["rank_by"]:
         # 순위표는 **대조군 표와 같은 레이아웃**으로 그린다 — 묶음 칸 세로 병합 +
         # 묶음 안에서만 색칠. `render_table`의 CPI 히트맵은 표 전체에 걸쳐 도는데,
         # 스케일이 3~7배 다른 AOS·iOS를 한 척도로 칠하면 `미분류 ₩25,458`이 가장
         # 진한 초록이 된다(실제로 그렇게 나왔다).
-        render_ranked_table(table, fields, view["rank_by"])
+        render_ranked_table(table, fields, view["rank_by"] or "CPI")
     else:
         render_table(
             table.rename(columns={f: field_label(f) for f in fields}),
@@ -3440,9 +3448,14 @@ def render_view(view: dict, month: int, key_prefix: str,
     render_genre_gap(table, view, fields)
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.
+        # `묶어 보기`의 부작용도 여기서 알린다 — 토글 옆 `?`를 뺀 자리다(규리님
+        # 지적: 짧은 줄에 물음표가 붙으면 노이즈다).
+        tail = (" 묶어 보기를 켠 표에서는 셀을 눌러 강조할 수 없습니다."
+                if as_group else "")
         st.markdown(
             f'<div class="tbl-note">{" · ".join(field_label(f) for f in fields)} 기준 '
-            f"{len(table):,}줄. 행에서 구분을 빼면 그 축을 합쳐 다시 집계합니다.</div>",
+            f"{len(table):,}줄. 행에서 구분을 빼면 그 축을 합쳐 다시 집계합니다."
+            f"{tail}</div>",
             unsafe_allow_html=True,
         )
 
@@ -3829,29 +3842,69 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         on = bool(st.session_state.get(f"pvct_{view_key}", view["contrast"]))
         needs_pick = on and len(creative_filters) > 1
 
-        # ⚠ `구글 포함`도 **다른 토글과 같은 간격**으로 둔다. 예전에는 꼬리 여백
-        #   칸에 그려서 혼자 오른쪽으로 떨어져 있었다(규리님 2026-09-16).
-        #   칸은 켤 수 없을 때도 자리를 잡아 둔다 — 안 그러면 축을 바꿀 때마다
-        #   옆 토글들이 좌우로 흔들린다.
-        if needs_pick:
-            lab, c_ct, c_lb, c_sel, c_th, c_tl, _tail = st.columns(
-                [1.05, 1.7, 1.15, 2.0, 1.2, 1.5, 0.4], vertical_alignment="center")
-        elif on:
-            lab, c_ct, c_lb, c_th, c_tl, _tail = st.columns(
-                [1.05, 1.7, 3.15, 1.2, 1.5, 0.4], vertical_alignment="center")
-            c_sel = None
-        else:
-            lab, c_ct, c_th, c_tl, _tail = st.columns(
-                [1.05, 1.7, 1.2, 1.5, 3.55], vertical_alignment="center")
-            c_lb = c_sel = None
+        # ── 표시 옵션 줄 (시안 A — 규리님 2026-09-30) ──────────────────────
+        #
+        # **쓸 수 있는 토글만 칸을 만든다.** 예전에는 못 쓰는 토글도 자리를 잡아
+        # 뒀다(축을 바꿀 때 옆 토글이 안 흔들리게). 그런데 실제로 얻은 것은 고정이
+        # 아니라 **빈 구멍**이었다 — 규리님 스샷에서 `썸네일`과 `묶어 보기` 사이가
+        # 통째로 비어 보였다. 구글 편집기와 같은 판단이다:
+        # *성립하지 않는 위젯은 아예 그리지 않는다.*
+        #
+        # ⚠ **칸 폭을 전부 같게 둔다.** 예전에는 1.7 / 1.2 / 1.5 / 1.5 로 제각각이라
+        #   글자 수와 무관하게 간격이 들쭉날쭉했다.
+        #
+        # ⚠ **`help=`를 쓰지 않는다.** 이름 옆 `?`는 짧은 줄에서 노이즈다(규리님
+        #   지적). 예전에 대조군·썸네일에서 뺐는데 나중에 추가한 `구글 포함`·
+        #   `묶어 보기`에 다시 넣어 **반만 붙어 있었다.** 설명이 필요한 것은 표
+        #   아래 편집자 안내 줄이 맡는다.
+        #
+        # ⚠ **`뒤집을 기준`은 줄 맨 오른쪽**이다. 예전에는 `대조군 비교` 바로 옆에
+        #   끼어들어, 토글을 하나 켰을 뿐인데 나머지 토글의 x좌표가 전부 밀렸다.
+        can_title = title_level_allowed([{"field": f} for f in row_fields], filters)
+        can_group = len(row_fields) >= 2
+
+        TOGGLE_W = 1.6
+        widths = [1.05] + [TOGGLE_W] * (2 + int(can_title) + int(can_group))
+        pick_widths = [1.15, 2.2] if needs_pick else ([2.2] if on else [])
+        widths += pick_widths
+        widths.append(max(0.4, 9.6 - sum(widths)))      # 꼬리 여백
+        slots = list(st.columns(widths, vertical_alignment="center"))
+
+        lab = slots.pop(0)
+        c_ct = slots.pop(0)
+        c_th = slots.pop(0)
+        c_tl = slots.pop(0) if can_title else None
+        c_gr = slots.pop(0) if can_group else None
+        c_lb = slots.pop(0) if pick_widths else None
+        c_sel = slots.pop(0) if needs_pick else None
 
         with lab:
             editor_label("표시", "보이는 방식")
-        # `help=`를 주면 이름 옆에 `?`가 붙는다 — 짧은 한 줄에 물음표가 둘이면
-        # 노이즈다(규리님 지적). 대조군이 하는 일은 켜졌을 때 나오는 `뒤집을 기준`이
-        # 말해 준다.
         contrast = c_ct.toggle("대조군 비교", value=bool(view["contrast"]),
                                key=f"pvct_{view_key}")
+        thumbs = c_th.toggle("썸네일", value=bool(view["thumbs"]),
+                             key=f"pvth_{view_key}")
+
+        # ── 작품 단위 집계(= 구글 포함) ─────────────────────────────────────
+        # 구글은 `Media_RAW`에 `ad == "-"`로 들어와 소재 단위 프레임(`named_overview`)
+        # 에서 빠져 있다. 장르·작품처럼 **작품 속성** 축만 쓰는 표에서는 소재명이
+        # 없어도 정상 집계되므로, 그때만 켤 수 있게 한다.
+        title_level = bool(view["title_level"])
+        if can_title:
+            title_level = c_tl.toggle("구글 포함", value=title_level,
+                                      key=f"pvtl_{view_key}")
+        else:
+            title_level = False
+
+        # ── 묶어 보기 ──────────────────────────────────────────────────────
+        # 첫 축을 세로 병합해 묶음으로 보여준다. 축이 하나뿐이면 묶을 것이 없다.
+        # 켜면 셀 클릭 강조를 못 쓴다 — 표 아래 편집자 안내 줄이 그 사실을 알린다.
+        grouped = bool(view["grouped"])
+        if can_group:
+            grouped = c_gr.toggle("묶어 보기", value=grouped,
+                                  key=f"pvgrp_{view_key}")
+        else:
+            grouped = False
 
         # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
         # `format=IMG` + `태그=comic`에서 comic을 기준으로 잡으면 같은 IMG 안에서
@@ -3870,39 +3923,19 @@ def pivot_editor(view: dict, view_key: str) -> dict:
                 label_visibility="collapsed",
             )
         elif on:
-            # 고를 게 없으면 **정해진 기준을 사실로 적는다** — 자리를 비우면 레이아웃이
-            # 흔들리고, 안내문을 넣으면 지시문이 된다.
+            # 고를 게 없으면 **정해진 기준을 사실로 적는다** — 안내문을 넣으면
+            # 지시문이 된다.
             fixed = contrast_field if contrast_field in creative_filters else picked
             c_lb.markdown(
                 f'<div class="pe-fact">뒤집을 기준 <b>{field_label(fixed)}</b></div>'
                 if fixed else '<div class="pe-fact">대조 기준이 될 필터가 없습니다</div>',
                 unsafe_allow_html=True)
             contrast_field = fixed
-        thumbs = c_th.toggle("썸네일", value=bool(view["thumbs"]),
-                             key=f"pvth_{view_key}")
-
-        # ── 작품 단위 집계(= 구글 포함) ─────────────────────────────────────
-        # 구글은 `Media_RAW`에 `ad == "-"`로 들어와 소재 단위 프레임(`named_overview`)
-        # 에서 빠져 있다. 장르·작품처럼 **작품 속성** 축만 쓰는 표에서는 소재명이
-        # 없어도 정상 집계되므로, 그때만 켤 수 있게 한다.
-        # ⚠ **소재 단위 축이 섞이면 토글을 아예 그리지 않는다.** 켤 수 없는 토글을
-        #   비활성으로 남기면 "왜 안 되나"를 만든다(구글 편집기와 같은 판단).
-        #   그려도 `view_with_defaults`가 다시 판정하므로 화면은 어느 쪽이든 안전하다.
-        title_level = bool(view["title_level"])
-        if title_level_allowed([{"field": f} for f in row_fields], filters):
-            title_level = c_tl.toggle(
-                "구글 포함", value=title_level, key=f"pvtl_{view_key}",
-                help="구글을 **작품 단위**로 함께 집계합니다. 구글은 소재 단위 태깅이 "
-                     "없어 평소 이 표에서 빠져 있습니다. 켜면 3번 섹션 애셋 표와 달리 "
-                     "**배분되지 않은 진짜 집행액**이 들어옵니다.",
-            )
-        else:
-            title_level = False
 
     out = {**view, "values": list(metrics), "filters": filters,
            "include_ads": list(include),
            "contrast": bool(contrast), "thumbs": bool(thumbs),
-           "title_level": bool(title_level),
+           "title_level": bool(title_level), "grouped": bool(grouped),
            "contrast_field": str(contrast_field or "")}
     if kind == "compare":
         out["periods"] = periods

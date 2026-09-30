@@ -1747,7 +1747,12 @@ def rank_picks(chunk: pd.DataFrame, axis_field: str,
     return {ordered.index[0]: fallback_metric}, {ordered.index[-1]: fallback_metric}
 
 
-def sort_within_groups(table: pd.DataFrame, rows: list) -> pd.DataFrame:
+GROUP_ORDER_FIXED = "fixed"
+GROUP_ORDER_SPEND = "spend"
+
+
+def sort_within_groups(table: pd.DataFrame, rows: list,
+                       order: str = GROUP_ORDER_FIXED) -> pd.DataFrame:
     """**마지막 행 축을 그룹 안에서 소진액 순으로** 줄세운다.
 
     규리님(2026-09-16): *"장르별 성과 테이블은 각 매체별로 어떤 장르가 효율이 좋은가를
@@ -1758,7 +1763,13 @@ def sort_within_groups(table: pd.DataFrame, rows: list) -> pd.DataFrame:
     모아야 한다. 여기서 `[매체, OS, 장르]`를 받아 **매체·OS로 묶고 그 안에서만**
     장르를 지표 순으로 세운다.
 
-    · 그룹 순서는 `MEDIA_ORDER`·`OS_ORDER` 고정. 목록에 없는 값은 뒤에 이름순으로.
+    · 그룹 순서(`order`):
+      - `fixed`(기본) — `MEDIA_ORDER`·`OS_ORDER` 고정. **매달 순서가 바뀌면 지난달
+        리포트와 나란히 놓고 읽을 수가 없다**(규리님 지정). 장르 프리셋 표가 쓴다.
+      - `spend` — **소진액이 큰 묶음이 위로**(규리님 2026-09-30, `묶어 보기` 토글).
+        상위 축부터 차례로 그 축의 합계로 세우므로 매체 칸이 흩어지지 않는다
+        (평평하게 묶음 합계로만 세우면 `Meta·iOS`·`TikTok·AOS`·`Meta·AOS` 처럼
+        섞여서 매체 병합이 깨진다).
     · 그룹 **안**에서는 **소진액 내림차순**(규리님 2026-09-16). 효율 순으로 세워 봤더니
       소진 ₩188,722짜리가 ₩5,642,184짜리보다 위에 와서, 규모가 안 읽혔다.
       **효율은 색이 말한다** — 색칠은 화면(`render_ranked_table`)이 따로 한다.
@@ -1776,10 +1787,18 @@ def sort_within_groups(table: pd.DataFrame, rows: list) -> pd.DataFrame:
 
     out = table.copy()
     for index, field in enumerate(groups):
-        order = _GROUP_ORDER.get(field)
-        if order:
-            rank = {value: position for position, value in enumerate(order)}
-            out[f"_g{index}"] = out[field].map(lambda v: rank.get(v, len(order)))
+        if order == GROUP_ORDER_SPEND:
+            # 상위 축부터 **누적 접두 묶음**의 합계로 세운다. 음수로 두면 오름차순
+            # 정렬에서 큰 것이 위로 온다.
+            prefix = groups[:index + 1]
+            out[f"_g{index}"] = -out.groupby(prefix, dropna=False)["cost"].transform(
+                lambda c: pd.to_numeric(c, errors="coerce").fillna(0.0).sum())
+            out[f"_g{index}b"] = out[field].astype(str)
+            continue
+        fixed = _GROUP_ORDER.get(field)
+        if fixed:
+            rank = {value: position for position, value in enumerate(fixed)}
+            out[f"_g{index}"] = out[field].map(lambda v: rank.get(v, len(fixed)))
             out[f"_g{index}b"] = out[field].astype(str)
         else:
             out[f"_g{index}"] = 0
@@ -1995,10 +2014,6 @@ def google_pick_metrics(table: pd.DataFrame,
                             money_candidates=[GOOGLE_PICK_SECONDARY[0]])
 
 
-#: 소재명에서 규격 자리에 들어가는 "여러 규격을 묶어 돌렸다"는 표기.
-DIMENSION_ALL = "ALL"
-
-
 def _dimension_token(ad_name: str, size: str | None) -> int | None:
     """소재명 토큰 중 규격이 놓인 자리. 못 찾으면 None."""
     if not size:
@@ -2078,45 +2093,6 @@ def ad_group_totals(df: pd.DataFrame, metric: str = "cost") -> pd.Series:
              .drop_duplicates(subset=["ad"])
              .set_index("ad")["_total"])
     return named.sort_values(ascending=False)
-
-
-def canonical_ad_names(parsed: pd.DataFrame) -> dict[str, str]:
-    """`ALL` 소재 → 같은 소재의 실제 규격 소재명. 짝이 없으면 담지 않는다.
-
-    같은 소재인지는 **규격 토큰만 뺀 나머지가 같은가**로 본다. 그래야
-    `..._1X1_TITLE2-comic`과 `..._ALL_TITLE2-comic`이 묶이고, USP·Extra Info가
-    다른 소재는 안 묶인다.
-
-    ⚠ 실제 규격 짝이 **둘 이상**이면(`1X1`과 `9X16`이 다 있는 경우) 어느 쪽으로
-      합쳐야 하는지 데이터가 말해 주지 않는다 — 그때는 `ALL`을 그대로 둔다.
-      추측해서 합치면 소진액이 엉뚱한 규격 줄로 들어간다.
-    """
-    if parsed.empty or "ad" not in parsed.columns or "size" not in parsed.columns:
-        return {}
-
-    groups: dict[str, dict[str, list[str]]] = {}
-    for ad, size in zip(parsed["ad"], parsed["size"]):
-        index = _dimension_token(ad, size)
-        if index is None:
-            continue
-        tokens = str(ad).split("_")
-        tokens[index] = "\x00"          # 규격 자리를 비운 키
-        key = "_".join(tokens)
-        bucket = groups.setdefault(key, {"all": [], "real": []})
-        bucket["all" if str(size).upper() == DIMENSION_ALL else "real"].append(str(ad))
-
-    mapping: dict[str, str] = {}
-    for bucket in groups.values():
-        if not bucket["all"] or not bucket["real"]:
-            continue
-        # 실제 규격이 여러 가지면 합치지 않는다(위 주석 참고).
-        if len({parsed.loc[parsed["ad"] == ad, "size"].iloc[0]
-                for ad in bucket["real"]}) != 1:
-            continue
-        target = sorted(bucket["real"])[0]
-        for ad in bucket["all"]:
-            mapping[ad] = target
-    return mapping
 
 
 def describe_media_raw(df: pd.DataFrame, month: int | None = None) -> str:

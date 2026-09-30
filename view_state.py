@@ -42,6 +42,11 @@ VIEW_DEFAULTS = {
     "contrast_field": "",
     #: 표 위에 소재 썸네일 줄을 보여줄지.
     "thumbs": False,
+    #: 첫 축을 **세로 병합**해서 묶음으로 보여줄지(규리님 2026-09-30 시안 A).
+    #: 켜면 묶음 안에서 소진액 순으로 세우고, 묶음이 큰 것부터 위로 온다.
+    #: ⚠ 켜면 **셀 클릭 강조를 못 쓴다** — 병합 표는 HTML로 직접 그려서
+    #:   `st.dataframe`의 선택 이벤트가 없다. 그래서 표마다 켜고 끈다.
+    "grouped": False,
     #: **소재명 규칙이 안 맞아 필터로는 안 잡히는 소재**를 이 그룹에 손으로 넣는 자리.
     #: 규리님(2026-09-09): *"비교대상이 되는 그 그룹에 소재명 룰이 안 맞아서 수기로
     #: 추가해야 될 때 사용하는 용도"*. 필터의 보조라서 화면에서도 필터에 붙어 있다.
@@ -130,6 +135,10 @@ def view_with_defaults(view: dict) -> dict:
     """
     merged = copy.deepcopy(VIEW_DEFAULTS)
     source = migrate_view(dict(view or {}))
+    # `묶어 보기` 토글이 생기기 전의 프리셋 뷰는 `rank_by`만으로 묶음 표가 됐다.
+    # **읽을 때만** 켜진 것으로 본다 — 저장 원본은 건드리지 않는다(`migrate_view`와 같은 방식).
+    if source.get("rank_by") and "grouped" not in source:
+        source["grouped"] = True
     merged.update({k: v for k, v in source.items()
                    if v is not None and k not in LEGACY_VIEW_FIELDS})
     merged["rows"] = normalize_rows(merged["rows"])
@@ -184,6 +193,7 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
     merged["contrast_field"] = str(
         take(f"pvctf_{view_key}", merged["contrast_field"]) or "")
     merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
+    merged["grouped"] = bool(take(f"pvgrp_{view_key}", merged["grouped"]))
     merged["title_level"] = bool(take(f"pvtl_{view_key}", merged["title_level"]))
     merged["rank_by"] = str(take(f"pvrank_{view_key}", merged["rank_by"]) or "")
 

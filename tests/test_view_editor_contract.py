@@ -213,3 +213,34 @@ def test_기본값을_고쳐도_다른_뷰가_오염되지_않는다():
     assert b["filters"] == {}
     assert b["values"] == []
     assert VIEW_DEFAULTS["filters"] == {}
+
+
+# ---------------------------------------------- 묶어 보기 (2026-09-30 시안 A)
+
+def test_묶어_보기는_기본이_꺼짐이다():
+    """기존 표가 하나도 안 바뀌어야 한다 — 그게 시안 A를 고른 이유다."""
+    assert VIEW_DEFAULTS["grouped"] is False
+    assert view_with_defaults({})["grouped"] is False
+
+
+def test_묶어_보기_토글이_저장된다():
+    out = view_from_widgets(saved(), KEY, {f"pvgrp_{KEY}": True})
+    assert out["grouped"] is True
+
+
+def test_옛_프리셋_뷰는_켜진_것으로_읽는다():
+    """`묶어 보기`가 생기기 전 프리셋은 `rank_by`만으로 묶음 표였다.
+
+    읽을 때만 켜고 **저장 원본은 건드리지 않는다**(`migrate_view`와 같은 방식).
+    """
+    stored = {"id": "v1", "rows": [{"field": "media"}, {"field": "os"}],
+              "rank_by": "CPI"}
+    assert view_with_defaults(stored)["grouped"] is True
+    assert "grouped" not in stored, "저장 원본이 바뀌면 안 된다"
+
+
+def test_토글을_끈_것은_그대로_꺼진다():
+    """`rank_by`가 있어도 사용자가 끈 표는 꺼진 채로 읽어야 한다."""
+    stored = {"id": "v1", "rows": [{"field": "media"}], "rank_by": "CPI",
+              "grouped": False}
+    assert view_with_defaults(stored)["grouped"] is False

@@ -163,3 +163,54 @@ def test_행_수와_합계가_변하지_않는다():
     ])
     got = sort_within_groups(table, ROWS)
     assert len(got) == 3 and got["cost"].sum() == 600.0
+
+
+# ------------------------------------------- 소진액 순 묶음 (`묶어 보기` 토글)
+
+def test_소진액_순이면_큰_묶음이_위로():
+    """규리님(2026-09-30): *"소진액 큰 매체가 위로."* `묶어 보기` 토글이 쓴다."""
+    from creative_data import GROUP_ORDER_SPEND
+
+    table = _table([
+        ("TikTok", "AOS", "A",   10_000.0, 20.0),
+        ("Meta",   "AOS", "A", 9_000_000.0, 10.0),
+    ])
+    got = sort_within_groups(table, ROWS, order=GROUP_ORDER_SPEND)
+    assert list(got["media"]) == ["Meta", "TikTok"]
+
+
+def test_소진액_순에서도_매체가_흩어지지_않는다():
+    """평평하게 묶음 합계로만 세우면 `Meta·iOS`·`TikTok·AOS`·`Meta·AOS` 처럼
+    섞여서 **매체 병합(rowspan)이 깨진다.** 상위 축부터 차례로 세워야 한다."""
+    from creative_data import GROUP_ORDER_SPEND
+
+    table = _table([
+        ("Meta",   "AOS", "A",   100.0, 10.0),   # Meta 합계 700
+        ("Meta",   "iOS", "A",   600.0, 10.0),
+        ("TikTok", "AOS", "A",   500.0, 10.0),   # TikTok 합계 500
+    ])
+    got = sort_within_groups(table, ROWS, order=GROUP_ORDER_SPEND)
+    assert list(got["media"]) == ["Meta", "Meta", "TikTok"], "매체가 연속이어야 한다"
+    assert list(got["os"])[:2] == ["iOS", "AOS"], "묶음 안에서도 소진 큰 쪽이 먼저"
+
+
+def test_기본값은_고정_순서다():
+    """토글을 안 켠 표·장르 프리셋은 예전 그대로여야 한다."""
+    table = _table([
+        ("Meta",   "AOS", "A", 9_000_000.0, 10.0),
+        ("TikTok", "AOS", "A",    10_000.0, 20.0),
+    ])
+    assert list(sort_within_groups(table, ROWS)["media"]) == ["TikTok", "Meta"]
+
+
+def test_소진액_순도_행_수와_합계를_안_바꾼다():
+    from creative_data import GROUP_ORDER_SPEND
+
+    table = _table([
+        ("Meta",   "AOS", "A", 100.0, 10.0),
+        ("TikTok", "iOS", "B", 200.0, 20.0),
+        ("TikTok", "AOS", "미분류", 300.0, 30.0),
+    ])
+    got = sort_within_groups(table, ROWS, order=GROUP_ORDER_SPEND)
+    assert len(got) == len(table)
+    assert got["cost"].sum() == table["cost"].sum()
