@@ -31,14 +31,14 @@ def media_of(df: pd.DataFrame, picks: dict) -> set:
 # AOS에서 TikTok CPI는 1,039~1,690인데 Meta는 3,080~4,127로 구간이 아예 겹치지 않는다.
 # 이러면 표 전체로 견줄 때 한 매체가 우수 슬롯을, 다른 매체가 저조 슬롯을 통째로 가져간다.
 MIXED = [
-    {"ad": "tt_a", "media": "TikTok", "cost": 10_000_000, "CPI": 1_700, "CTR": 2.4},
-    {"ad": "tt_b", "media": "TikTok", "cost": 8_000_000, "CPI": 1_500, "CTR": 2.9},
-    {"ad": "tt_c", "media": "TikTok", "cost": 6_000_000, "CPI": 1_600, "CTR": 1.9},
-    {"ad": "tt_d", "media": "TikTok", "cost": 4_000_000, "CPI": 1_400, "CTR": 2.5},
-    {"ad": "mt_a", "media": "Meta", "cost": 9_000_000, "CPI": 4_100, "CTR": 1.2},
-    {"ad": "mt_b", "media": "Meta", "cost": 7_000_000, "CPI": 3_600, "CTR": 1.4},
-    {"ad": "mt_c", "media": "Meta", "cost": 5_000_000, "CPI": 3_900, "CTR": 1.1},
-    {"ad": "mt_d", "media": "Meta", "cost": 3_000_000, "CPI": 3_100, "CTR": 1.3},
+    {"ad": "tt_a", "media": "TikTok", "cost": 10_000_000, "CPI": 1_700, "CTR": 40.0},
+    {"ad": "tt_b", "media": "TikTok", "cost": 8_000_000, "CPI": 1_500, "CTR": 52.0},
+    {"ad": "tt_c", "media": "TikTok", "cost": 6_000_000, "CPI": 1_600, "CTR": 44.0},
+    {"ad": "tt_d", "media": "TikTok", "cost": 4_000_000, "CPI": 1_400, "CTR": 48.0},
+    {"ad": "mt_a", "media": "Meta", "cost": 9_000_000, "CPI": 4_100, "CTR": 38.0},
+    {"ad": "mt_b", "media": "Meta", "cost": 7_000_000, "CPI": 3_600, "CTR": 50.0},
+    {"ad": "mt_c", "media": "Meta", "cost": 5_000_000, "CPI": 3_900, "CTR": 42.0},
+    {"ad": "mt_d", "media": "Meta", "cost": 3_000_000, "CPI": 3_100, "CTR": 46.0},
 ]
 
 
@@ -63,18 +63,17 @@ def test_두_매체가_모두_칠해진다():
 def test_매체_안에서만_견준다():
     """Meta의 우수·저조는 **Meta 안에서** 정해진다.
 
-    ⚠ `mt_d`(CPI 3,100 최저)가 아니라 `mt_b`(CPI 3,600)가 우수다 — 기존 규칙이
-    **CPI 상위 30% 구간 안에서 소진액이 가장 큰 줄**을 집기 때문이다(`mt_d` ₩3.0M
-    vs `mt_b` ₩7.0M). 이 함수는 그 산식을 안 바꾸고 **적용 범위만** 매체로 좁힌다.
-    최저 CPI로 고쳐 쓰고 싶어지면 `PICK_CANDIDATE_SHARE` 주석을 먼저 읽을 것.
+    2026-09-30부터 **소진액이 지표 순위를 뒤집지 않으므로** CPI 최저가 그대로 우수다.
     """
     df = frame(MIXED)
     best, worst = pick_by_media(df)
 
-    meta_best = [i for i in best if df.loc[i, "media"] == "Meta"]
-    meta_worst = [i for i in worst if df.loc[i, "media"] == "Meta"]
-    assert df.loc[meta_best[0], "ad"] == "mt_b"
-    assert df.loc[meta_worst[0], "ad"] == "mt_a"   # CPI 4,100 · 소진 ₩9.0M
+    meta_best = [i for i in best if df.loc[i, "media"] == "Meta"
+                 and best[i] == "CPI"]
+    meta_worst = [i for i in worst if df.loc[i, "media"] == "Meta"
+                  and worst[i] == "CPI"]
+    assert df.loc[meta_best[0], "ad"] == "mt_d"   # CPI 3,100 — Meta 안에서 최저
+    assert df.loc[meta_worst[0], "ad"] == "mt_a"  # CPI 4,100 — Meta 안에서 최고
 
 
 # ------------------------------------------- 칠하는 줄 수가 늘어나지 않는가

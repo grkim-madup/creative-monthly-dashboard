@@ -47,12 +47,22 @@ def test_small_spend_creative_within_its_media_is_excluded():
 
 
 def test_picks_one_best_and_one_worst_per_metric():
-    best, worst = pick_best_worst(_two_media(), [("CPI", False), ("D0 coin CVR", True)],
+    """⚠ 2026-09-30부터 **소진액이 지표 순위를 뒤집지 않는다**(`PICK_CANDIDATE_SHARE=0`).
+
+    그 전에는 "지표 상위 30% 구간 중 소진 큰 쪽"이라 같은 픽스처에서도 다른 줄이
+    뽑혔다. 규모는 이제 후보 자격(`spend_quantile`)으로만 반영한다.
+    """
+    frame = _two_media()
+    best, worst = pick_best_worst(frame, [("CPI", False), ("D0 coin CVR", True)],
                                   spend_quantile=0.5)
-    assert best[0] == "CPI"            # tt-big = 남은 후보 중 CPI 최저
-    assert best[3] == "D0 coin CVR"    # meta-big = 남은 후보 중 coin CVR 최고
-    assert worst[4] == "CPI"           # meta-mid = CPI 최고(저조)
+    # 지표마다 우수 1 + 저조 1, 서로 다른 소재.
+    assert sorted(best.values()) == ["CPI", "D0 coin CVR"]
+    assert "CPI" in worst.values()
+    assert not (set(best) & set(worst))
     assert len(best) == 2 and len(worst) >= 1
+    # 소액 소재는 자격 컷에서 이미 빠졌다.
+    assert not ({frame.loc[i, "ad"] for i in set(best) | set(worst)}
+                & {"tt-small", "meta-small"})
 
 
 def test_always_four_distinct_creatives_are_highlighted():

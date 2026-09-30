@@ -720,7 +720,32 @@ def spend_pool(
 #: 40%에서도 71%였다. 넓힐수록 "지표가 좋다"는 뜻이 흐려지므로 71%가 되는
 #: 가장 좁은 값을 쓴다. 개선분은 **전부 이 규모 규칙에서 온다** — 뒷단 지표를
 #: 표에 맞춰 고르는 것만으로는 재현율이 오르지 않았다(그건 판정의 뜻을 지키는 장치다).
-PICK_CANDIDATE_SHARE = 0.30
+#: ⚠ **2026-09-30 규리님 지시로 0이 됐다 — 소진액은 지표 순위를 뒤집지 않는다.**
+#:
+#: 9월 AOS·인스톨에서 `10398`(CPI ₩1,039)이 `10944`(CPI ₩1,424)에 밀렸다. **CPI는
+#: 27% 좋은데 소진이 5% 적어서** 진 것이다. 규리님: *"소진 예산도 더 적고 CPI도
+#: 저조한데 (왜 이게 우수냐)."*
+#:
+#: 후보 표 자체가 이미 **볼륨 상위 N개**라 규모는 그 단계에서 반영된다 —
+#: 여기서 또 반영하면 두 번 걸리고, 지표가 뜻을 잃는다.
+#:
+#: ⚠ 0이 아닌 값으로 되돌리면 팀원 픽 재현율이 오르지만(8월 17건 기준 71%),
+#:   **규리님이 실제 화면을 보고 반려한 동작**이다. 재현율만 보고 되돌리지 말 것.
+PICK_CANDIDATE_SHARE = 0.0
+
+#: **볼륨 게이트** — 표 총소진의 이 비중에 못 미치는 줄은 우수·저조 후보에서 뺀다.
+#:
+#: 규리님 2026-09-30: *"**소진 볼륨 높은 애들 중** CPI가 1순위…"*
+#: 소진을 순위 계산에서 뺀 대신(`PICK_CANDIDATE_SHARE = 0`), 규모는 **후보 자격**으로
+#: 남긴다. 둘 다 없애면 소액 소재가 그대로 우수가 된다 — 9월 `AOS·D0 Coin`에서 소진
+#: **₩194,915**(표의 1.3%)짜리가 우수로 올라왔다.
+#:
+#: ⚠ **분위수(하위 30% 컷)로 만들지 말 것.** 그렇게 했더니 소진이 작은 매체가 통째로
+#:   잘려 나가 매체별 선정이 무력해졌다 — 실측에서 Meta가 2줄만 남아 선정에서 빠졌다
+#:   (`PICK_MIN_ROWS_PER_MEDIA` 미달). 비중 기준은 **진짜 소액만** 걸러낸다.
+#: ⚠ 2%인 이유: 9월 `AOS·D0 Coin`의 ₩108,538(0.7%)·₩194,915(1.3%)를 걸러내고,
+#:   `AOS·인스톨`은 가장 작은 줄도 5.9%라 아무것도 안 잘린다.
+PICK_MIN_SPEND_SHARE = 0.02
 
 #: 앞단(유입) 지표. 나머지는 뒷단(열람·결제)으로 본다.
 #:
@@ -735,6 +760,17 @@ def same_funnel_stage(one: str, other: str) -> bool:
 #: 뒷단 지표 후보. 앞에서부터 **그 표에 값이 있는 것**을 고른다.
 #: AOS는 D0 Coin CVR이 0.00~0.05%라 사실상 무의미해서, 그걸로 뽑으면 아무 뜻이 없는
 #: 소재가 우수로 올라간다 — 팀원은 그 표에서 CTR을 봤다.
+#: 보조 지표 **우선순위**. 규리님 2026-09-30 지정:
+#: *"보조 지표 순위를 CPI → Coin CVR → CTR 로 가자."*
+#:
+#: ⚠ **스프레드가 큰 것이 아니라 순서대로 먼저 쓸 수 있는 것**을 쓴다 — 지정된
+#:   우선순위이기 때문이다. 예전에는 "가장 크게 갈리는 지표"를 골랐다.
+#:
+#: ⚠ **CTR이 CPI를 이기지는 못한다.** 규리님: *"CTR이 CPI를 이기면 어떡해."*
+#:   CTR은 여전히 후보지만, 우수로 뽑히려면 **CPI가 중앙값 이하**여야 한다
+#:   (`pick_best_worst`의 주 지표 자격). 9월 AOS·인스톨에서 CPI 1등(₩1,039)이
+#:   무표시였던 것은 CTR 때문이 아니라 **소진액이 CPI 순위를 뒤집었기** 때문이고,
+#:   그건 `PICK_CANDIDATE_SHARE = 0`으로 따로 고쳤다.
 BACK_PICK_CANDIDATES = [("D0 coin CVR", True), ("CTR", True)]
 
 
@@ -793,15 +829,18 @@ def pick_metrics_for(table: pd.DataFrame, min_coverage: float = 0.5,
             metrics.append((column, higher_is_better))
             return metrics
 
-    # ③ 비율 보조 — 커버리지 + 스프레드를 함께 본다. 가장 크게 갈리는 것을 쓴다.
+    # ③ 비율 보조 — **우선순위 순서대로** 쓸 수 있는 첫 번째를 쓴다(규리님 지정).
+    #    쓸 수 있다 = 표의 절반 이상에 값이 있고, 실제로 의미 있게 갈린다.
+    #    9월 AOS 표는 `D0 coin CVR`이 10줄 중 9줄이 0.00%라 여기서 걸러지고
+    #    `D0 read CVR`로 넘어간다.
     best: tuple[str, bool] | None = None
-    best_spread = 0.0
     for column, higher_is_better in BACK_PICK_CANDIDATES:
         if not _covered(table, column, min_coverage):
             continue
-        gap = metric_spread(table, column)
-        if gap >= MEANINGFUL_RATIO_POINTS and gap > best_spread:
-            best, best_spread = (column, higher_is_better), gap
+        if metric_spread(table, column) < MEANINGFUL_RATIO_POINTS:
+            continue
+        best = (column, higher_is_better)
+        break
 
     # ④ 쓸 보조가 없으면 CPI를 한 번 더 — 슬롯을 2:2로 유지한다.
     metrics.append(best or primary)
@@ -910,15 +949,15 @@ def pick_best_worst(
 
     # 지표마다 우수 1개 + 저조 1개 = 총 4개 소재가 서로 겹치지 않게 뽑힌다.
     # (한 소재가 여러 슬롯의 1등이면 뒤 슬롯은 차순위로 밀려난다)
-    def gate(column: str, allowed: set | None) -> set | None:
-        return allowed if same_funnel_stage(column, primary_column) else None
-
+    # 자격은 **모든 슬롯**에 건다. 보조 후보에서 CTR을 뺀 뒤로 보조는 전부 뒷단
+    # (코인·열람)인데, 규리님이 고른 B안이 *"Read CVR 1위 — 단 CPI 중앙값 이하에서"*
+    # 였다. 퍼널 단계로 가르던 예외는 그래서 사라졌다.
     for column, higher_is_better in metrics:
         claim(column, ascending=not higher_is_better, target=best,
-              eligible=gate(column, eligible_best))
+              eligible=eligible_best)
     for column, higher_is_better in metrics:
         claim(column, ascending=higher_is_better, target=worst,
-              eligible=gate(column, eligible_worst))
+              eligible=eligible_worst)
 
     return best, worst
 
@@ -980,6 +1019,18 @@ def pick_by_media(
     chooser = metrics_for or pick_metrics_for
     if df is None or getattr(df, "empty", True):
         return {}, {}
+
+    # 볼륨 게이트는 **표 전체 기준**으로 한 번만 건다.
+    # ⚠ 매체별로 걸면 소용이 없다 — 9월 `AOS·D0 Coin`의 TikTok은 4줄뿐이라 그 안에서
+    #   하위 30%를 잘라도 소진 ₩194,915 짜리가 살아남았다. 규모는 매체가 아니라
+    #   **그 표 안에서** 큰지 작은지를 보는 것이다.
+    if "cost" in df.columns and len(df) > 2:
+        costs = pd.to_numeric(df["cost"], errors="coerce").fillna(0.0)
+        total = float(costs.sum())
+        if total > 0:
+            gated = df[costs >= total * PICK_MIN_SPEND_SHARE]
+            if len(gated) >= 2:
+                df = gated
 
     def whole() -> tuple[dict, dict]:
         return pick_best_worst(df, chooser(df), **kwargs)
