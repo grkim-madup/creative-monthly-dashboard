@@ -16,7 +16,6 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTE = "render_unclassified_note"
-GAP = "render_genre_gap"
 
 
 #: 진입점 이름만 파라미터로 쓴다 — 소스를 파라미터에 실으면 pytest가 테스트 id에
@@ -70,20 +69,11 @@ def test_표를_그린_뒤_편집_블록_밖에서_부른다(name):
 
 
 @pytest.mark.parametrize("name", ENTRYPOINTS)
-def test_편집자_경고는_여전히_권한으로_막힌다(name):
-    """각주를 열었다고 편집자 전용 경고까지 광고주에게 새면 안 된다."""
-    source = read(name)
-    node = _function(ast.parse(source), GAP)
-    assert node is not None, f"{name}: {GAP} 를 찾지 못했습니다"
-    assert "can_edit" in ast.unparse(node), f"{name}: {GAP} 가 권한을 보지 않습니다"
-
-
-@pytest.mark.parametrize("name", ENTRYPOINTS)
 def test_장르_컬럼을_두_이름으로_찾는다(name):
     """순위표는 필드 이름(`genre_group`), 일반 표는 라벨(`장르`)로 컬럼을 들고 온다.
 
-    예전에는 라벨만 찾아서 **장르 프리셋 표(항상 순위표다)에서는 경고가 한 번도 뜨지
-    않았다.** `genre_column_of` 한 곳에서 둘 다 본다.
+    한쪽만 보면 **장르 프리셋 표(항상 순위표다)에서 각주가 조용히 안 뜬다** — 예전
+    편집자 경고가 정확히 그래서 한 번도 뜨지 않았다. `genre_column_of`가 둘 다 본다.
     """
     source = read(name)
     node = _function(ast.parse(source), "genre_column_of")
@@ -92,8 +82,7 @@ def test_장르_컬럼을_두_이름으로_찾는다(name):
     assert "GENRE_COLUMN" in body and "field_label" in body, (
         f"{name}: 필드 이름과 라벨 중 한쪽만 봅니다"
     )
-    for user in (NOTE, GAP):
-        target = _function(ast.parse(source), user)
-        assert "genre_column_of" in ast.unparse(target), (
-            f"{name}: {user} 가 컬럼 탐색을 따로 하고 있습니다 — 두 벌이 되면 갈립니다"
-        )
+    target = _function(ast.parse(source), NOTE)
+    assert "genre_column_of" in ast.unparse(target), (
+        f"{name}: {NOTE} 가 컬럼 탐색을 따로 하고 있습니다 — 두 벌이 되면 갈립니다"
+    )

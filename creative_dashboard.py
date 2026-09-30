@@ -3306,8 +3306,8 @@ def genre_column_of(table: pd.DataFrame, fields: list[str]) -> str | None:
 
     ⚠ **표의 컬럼 이름이 경로마다 다르다.** 순위표(`render_ranked_table`)는 필드 이름
     그대로(`genre_group`) 받고, 일반 표는 그리기 직전에 라벨(`장르`)로 바꾼다.
-    예전에는 라벨만 찾아서, **정작 장르 프리셋 표(항상 순위표다)에서는 경고가 한 번도
-    뜨지 않았다.** 두 이름을 다 본다.
+    한쪽만 보면 **장르 프리셋 표(항상 순위표다)에서 조용히 건너뛴다** — 예전 편집자
+    경고가 정확히 그래서 한 번도 뜨지 않았다. 두 이름을 다 본다.
     """
     if title_genre.GENRE_COLUMN not in fields:
         return None
@@ -3345,43 +3345,6 @@ def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
         '작품 하나로 귀속되지 않는 집행입니다. 여러 작품을 한 캠페인에 묶어 집행한 '
         '믹스 캠페인과, 특정 작품이 아닌 테마·시즌 캠페인(개학·중추절·신작 소개 등)이 '
         '여기에 들어갑니다. 신규 작품은 작품 목록에 등재되기 전까지 함께 묶입니다.</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def render_genre_gap(table: pd.DataFrame, view: dict, fields: list[str]) -> None:
-    """장르가 아직 안 붙은 작품을 **편집자에게만** 알린다.
-
-    광고주는 작품을 런칭 전에 먼저 등재하고 CLUSTER는 나중에 채운다(실측 2026-09-16:
-    10월 런칭 44건 중 CLUSTER 0건). 그래서 신규 작품은 한동안 `미분류`로 뜬다 —
-    발송 전에 규리님이 "광고주에게 등재를 요청할지"를 판단할 수 있어야 한다.
-
-    ⚠ **`auth.can_edit()`로 가린다.** `editor_allowed`는 권한이지 모드가 아니다 —
-      규리님은 편집 권한이 있어 **보기 모드에서도 보이고, 그 화면을 광고주에게
-      공유한다**(`test_editor_only_panels.py`가 잡는 사고 유형이다).
-    """
-    if not auth.can_edit():
-        return
-    label = genre_column_of(table, fields)
-    if label is None or "cost" not in table.columns:
-        return
-
-    rows = table[table[label] == title_genre.UNKNOWN_GENRE]
-    if rows.empty:
-        return
-    missing = float(rows["cost"].sum())
-    total = float(table["cost"].sum())
-    share = missing / total if total else 0.0
-    # 매달 같은 경고는 곧 안 읽힌다 — 일본 라이선스 작품처럼 영구 미등록인 것들이
-    # 계속 뜨기 때문이다. 비중이 작으면 조용히 넘어간다.
-    if share < 0.005:
-        return
-    st.markdown(
-        f'<div class="tbl-note">미분류 소진 ₩{missing:,.0f} ({share:.1%}) — '
-        "대부분은 믹스·테마 캠페인이라 작품 단위가 없습니다. 다만 광고주 PM 시트 "
-        "<code>title_info</code>에 <b>행 자체가 없는 작품</b>도 여기 섞입니다"
-        "(9월 실측: 일본 라이선스작 3종 ₩621,106). 요청할 것은 "
-        "<b>CLUSTER를 채워달라</b>가 아니라 <b>이 코드를 등재해달라</b>입니다.</div>",
         unsafe_allow_html=True,
     )
 
@@ -3495,9 +3458,7 @@ def render_view(view: dict, month: int, key_prefix: str,
                 f"(소진 ₩{cost:,.0f}) — {html.escape(why)}.</div>",
                 unsafe_allow_html=True,
             )
-    # 광고주도 보는 각주가 먼저, 편집자 전용 경고가 그 다음이다.
     render_unclassified_note(table, fields)
-    render_genre_gap(table, view, fields)
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.
         # `묶어 보기`의 부작용도 여기서 알린다 — 토글 옆 `?`를 뺀 자리다(규리님

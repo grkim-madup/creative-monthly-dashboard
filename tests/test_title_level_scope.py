@@ -278,11 +278,22 @@ def test_고정된_장르표를_읽는다():
         assert "genre_table" in ast.unparse(fn), name
 
 
-def test_미등록_경고는_권한으로_가린다():
-    """`editor_allowed`는 권한이지 모드가 아니다 — 규리님은 보기 모드에서도 보이고
-    그 화면을 광고주에게 공유한다."""
+def test_편집자용_미등록_경고는_없앴다():
+    """규리님 2026-09-30: *"이 문구는 삭제해줘."*
+
+    `render_genre_gap`이 편집자에게 *"미분류 소진 ₩N — … 이 코드를 등재해달라"* 를
+    띄웠다. 없앤 이유는 **같은 것을 두 번 말했기 때문**이다 — 같은 표 아래에 이미
+    광고주용 각주(`render_unclassified_note`)가 미분류의 실체를 설명한다.
+
+    등재 요청 자체가 필요 없어진 것은 아니다. 다만 그건 **매달 뜨는 알림이 아니라
+    광고주와 시트 얘기를 할 때 한 번 처리할 일**이고(9월 기준 일본 라이선스작 3종
+    ₩621,106 = 소진의 0.2%), 화면에 상주시키면 곧 안 읽힌다.
+
+    되살린다면 **권한 게이트(`auth.can_edit()`)를 반드시 다시 붙일 것** —
+    `editor_allowed`는 권한이지 모드가 아니라서, 규리님은 보기 모드에서도 보이고
+    그 화면을 광고주에게 그대로 공유한다.
+    """
     for name, source in entrypoints():
-        fn = next(n for n in ast.walk(ast.parse(source))
-                  if isinstance(n, ast.FunctionDef) and n.name == "render_genre_gap")
-        body = ast.unparse(fn)
-        assert "auth.can_edit()" in body, f"{name}: 미등록 경고에 권한 게이트가 없다"
+        assert "render_genre_gap" not in source, (
+            f"{name}: 편집자용 미등록 경고가 되살아났습니다"
+        )
