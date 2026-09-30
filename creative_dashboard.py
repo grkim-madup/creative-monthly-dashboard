@@ -63,7 +63,7 @@ from creative_data import (
     compare_periods,
     explode_extra_info,
     month_options,
-    pick_best_worst,
+    pick_basis,
     pick_by_media,
     PICK_MIN_ROWS_PER_MEDIA,
     CREATIVE_FIELDS,
@@ -73,8 +73,6 @@ from creative_data import (
     contrast_split,
     default_contrast_field,
     filtered_scope,
-    google_pick_metrics,
-    pick_metrics_for,
     rank_picks,
     ad_group_totals,
     METRIC_DISPLAY,
@@ -85,7 +83,6 @@ from creative_data import (
     METRIC_COLUMNS,
     DEFAULT_PIVOT_ROWS,
     DEFAULT_PIVOT_VALUES,
-    spend_pool,
     drop_unattributable,
     GROUP_ORDER_FIXED,
     GROUP_ORDER_SPEND,
@@ -741,17 +738,15 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
                         ) -> tuple[dict, dict]:
     """구글 표 — 소재 식별자가 URL이라 링크 컬럼이 필요해서 별도 렌더러를 쓴다.
 
-    강조 규칙은 매체별 TOP 소재와 동일하게 우수/저조 행 단위. 다만 구글은 Coin CVR이
-    없어 CPI를 주 기준으로 쓰고, 두 번째 지표는 **그 표에 값이 있는 것**을 고른다
-    (`google_pick_metrics`) — 예전에는 `인앱 CPA`로 고정돼 있어서 설치 목적(ACi)
-    캠페인 표에서는 슬롯이 비고 색칠이 3개만 나왔다.
+    강조 규칙은 매체별 TOP 소재와 **같은 함수**(`pick_by_media`)다. 정렬 기준이 점수
+    지표를 정하고(인스톨 = CPI > Read CVR > CTR, 인앱 액션 = 인앱 CPA > CPI > CTR),
+    구글 표에 없는 지표(Read CVR)는 자동으로 빠진다.
     """
     view = df[[c for c in GOOGLE_COLUMNS if c in df.columns]].copy()
-    metrics = google_pick_metrics(view)
-    # 구글 표는 매체가 하나뿐이라 `pick_by_media`가 지금 동작으로 떨어진다. 그래도
-    # 같은 창구를 쓴다 — 두 벌이 되면 한쪽만 고쳐져 갈린다(`google_pick_metrics`가
-    # `pick_metrics_for`로 합쳐진 것과 같은 이유).
-    best, worst = (pick_by_media(view, metrics_for=google_pick_metrics)
+    basis = pick_basis(view, rank_metric)
+    # 구글 표는 매체 컬럼이 없어 표 전체가 한 묶음이다. 그래도 같은 창구를 쓴다 —
+    # 두 벌이 되면 한쪽만 고쳐져 갈린다.
+    best, worst = (pick_by_media(view, rank_metric=rank_metric)
                    if highlight else ({}, {}))
 
     # 수기 지정이 자동 선정을 덮어쓴다(메타·틱톡과 같은 규칙). 구글은 소재 식별자가
@@ -798,14 +793,14 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
             unsafe_allow_html=True,
         )
     elif highlight:
-        # 무슨 기준으로 칠했는지 각주로 남긴다. 구글은 표마다 두 번째 지표가 달라질
-        # 수 있어서(설치 목적 표는 인앱 CPA가 없다) 안 적으면 읽는 사람이 못 맞춘다.
+        # 무슨 기준으로 칠했는지 각주로 남긴다. 정렬 기준마다 지표가 달라서
+        # 안 적으면 읽는 사람이 못 맞춘다.
         names = " · ".join(
             html.escape(GOOGLE_LABELS.get(m, METRIC_LABELS.get(m, m)))
-            for m, _ in metrics)
+            for m in basis)
         st.markdown(
             f'<div class="sec-legend">녹색 = 우수 · 붉은색 = 저조 — 위 표에 보이는 '
-            f"소재 중 {names} 기준 각 1개씩 선정</div>",
+            f"소재 중 {names}을 함께 보고 선정</div>",
             unsafe_allow_html=True,
         )
         note = shared_pick_note(view, best, worst, "asset", "objective")
@@ -1070,11 +1065,11 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
     def show(ident: str) -> str:
         return labels.get(ident, ident)
 
-    # 실제로 쓰인 선정 기준을 헤더에 찍는다 — 표마다 다르다(`pick_metrics_for`).
+    # 실제로 쓰인 선정 기준을 헤더에 찍는다 — 정렬 기준·표마다 다르다(`pick_basis`).
     # 이게 없으면 "왜 이게 우수야"를 표만 보고는 알 수 없다.
     def _metric_names(frame) -> str:
         return " · ".join(METRIC_LABELS.get(column, column)
-                          for column, _ in pick_metrics_for(frame))
+                          for column in pick_basis(frame, rank_metric))
 
     # 기준은 이제 **매체마다 갈린다**(`pick_by_media`) — 하나로 뭉뚱그려 적으면
     # 표에 찍힌 `선정` 컬럼과 어긋나 보인다.
@@ -1119,7 +1114,7 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
             #   순위표(`rank_picks`: 슬롯 수 + 소진 중위값 문턱)와 규칙이 달라져
             #   `자동` 컬럼이 화면의 색칠과 어긋난다.
             auto_best, auto_worst = (auto if auto is not None
-                                     else pick_by_media(table))
+                                     else pick_by_media(table, rank_metric=rank_metric))
             columns: dict[str, list] = {}
             # 매체가 섞인 표에서는 **어느 줄을 찍는지** 구분돼야 한다 — 같은 소재가
             # 두 매체에 각각 한 줄씩 있을 수 있다(9월 실측).
@@ -1211,7 +1206,7 @@ MANUAL_PICK_REASON = "직접 지정"
 def pick_reason(position, best: dict, worst: dict, manual: bool = False) -> str:
     """그 줄이 `우수 · CPI` 인지 `저조 · CTR` 인지. 안 칠해진 줄은 빈 칸이다.
 
-    `pick_best_worst`·`rank_picks`가 이미 `{행: 사유지표}` 를 돌려주는데 화면이 그 값을
+    `pick_by_media`·`rank_picks`가 이미 `{행: 사유지표}` 를 돌려주는데 화면이 그 값을
     버리고 "뽑혔는가"만 보고 있었다 — 버리지 않고 찍기만 한다.
 
     `manual=True` 면 지표 대신 `직접 지정`이라고 쓴다. 수기 지정은 자동 선정을 **통째로**
@@ -1228,7 +1223,7 @@ def pick_reason(position, best: dict, worst: dict, manual: bool = False) -> str:
 
 
 def render_table_best_worst(
-    df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False,
+    df: pd.DataFrame, link_materials: bool = False,
     rank_metric: str | None = None, os_name: str | None = None,
     month: int | None = None,
 ):
@@ -1240,14 +1235,10 @@ def render_table_best_worst(
     `os_name`·`month`를 주면 **수기 지정이 자동 선정을 덮어쓴다**(2026-09-08).
     자동 규칙이 팀원 판단과 어긋나는 동안에도 리포트가 사람 판단대로 나가야 한다.
     """
-    # 기준은 **그 표에 값이 있는 지표**로 고른다(`pick_metrics_for`).
-    # 넘겨받은 `metrics`는 기본값일 뿐이다 — AOS 표는 D0 Coin CVR이 0.00~0.05%라
-    # 그걸로 뽑으면 아무 뜻 없는 소재가 우수로 올라간다.
-    metrics = pick_metrics_for(df) or metrics
-    # 매체 안에서만 견준다(규리님 2026-09-30) — 이 표는 매체가 섞여 있는데 CPI 스케일이
-    # 매체마다 통째로 달라서, 표 전체로 견주면 한 매체가 우수를·다른 매체가 저조를
-    # 통째로 가져간다(9월 실측). 매체가 하나뿐인 표는 지금 동작 그대로다.
-    best, worst = pick_by_media(df)
+    # 정렬 기준이 점수 지표를 정하고, 매체 안에서만 견준다(`pick_by_media`).
+    # 이 표는 매체가 섞여 있는데 CPI 스케일이 매체마다 통째로 달라서, 표 전체로
+    # 견주면 한 매체가 우수를·다른 매체가 저조를 통째로 가져간다(9월 실측).
+    best, worst = pick_by_media(df, rank_metric=rank_metric)
     manual_used = False
     if os_name is not None and month is not None and rank_metric is not None:
         picked_best, picked_worst = manual_picks.apply(
@@ -1871,7 +1862,6 @@ for rank_metric in rank_metrics:
         table_title(f"{os_name} — {RANK_METRICS[rank_metric]} 기준 TOP {int(top_n)}")
         render_table_best_worst(
             top,
-            metrics=[("CPI", False), ("D0 coin CVR", True)],
             link_materials=True,
             rank_metric=rank_metric,
             os_name=os_name,
@@ -1886,10 +1876,11 @@ for rank_metric in rank_metrics:
 st.markdown(
     '<div class="sec-legend">'
     f"녹색 = 우수 · 붉은색 = 저조 — <b>매체 안에서만</b> 견줍니다. "
-    f"매체마다 CPI 수준이 통째로 달라 한 표에서 견주면 한 매체가 우수를, 다른 매체가 "
-    f"저조를 통째로 가져갑니다. 기준 지표는 그 매체 표에 값이 있는 것으로 고르며"
-    f"(<b>선정</b> 컬럼에 표시), 지표 상위·하위 30% 안에서 소진액이 큰 소재를 "
-    f"선정합니다 · 소재가 {PICK_MIN_ROWS_PER_MEDIA}개 미만인 매체는 선정에서 제외 · "
+    f"정렬 기준에 따라 지표를 함께 봅니다(인스톨·소진액 = CPI › Read CVR › CTR, "
+    f"D0 Coin = Coin CVR › CPI › CTR, D0 Read = Read CVR › CPI › CTR). "
+    f"주요 지표 하나라도 크게 부족하면 우수에서, 크게 좋으면 저조에서 제외합니다"
+    f"(<b>선정</b> 컬럼에 가장 두드러진 지표 표시) · 소진이 작은 소재와 "
+    f"소재가 {PICK_MIN_ROWS_PER_MEDIA}개 미만인 매체는 선정에서 제외 · "
     f"최소 소진 ₩{min_cost:,.0f} 이상"
     "</div>",
     unsafe_allow_html=True,

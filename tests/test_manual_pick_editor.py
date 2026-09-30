@@ -154,7 +154,7 @@ def test_지정_칩을_접힌_줄_위에_그리지_않는다():
 
 
 def test_선정_기준을_헤더에_찍는다():
-    """기준은 표마다 다르다(`pick_metrics_for`) — 안 찍으면 표만 보고는 알 수 없다.
+    """기준은 정렬 기준·표마다 다르다(`pick_basis`) — 안 찍으면 표만 보고는 알 수 없다.
 
     2026-09-30부터 기준은 **매체마다도 갈린다**(`pick_by_media`). 하나로 뭉뚱그려
     적으면 표에 찍힌 `선정` 컬럼과 어긋나 보이므로, 매체가 섞인 표는 매체별로 적는다.
@@ -163,7 +163,7 @@ def test_선정_기준을_헤더에_찍는다():
         fn = next(n for n in ast.walk(ast.parse(source))
                   if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
         body = ast.unparse(fn)
-        assert "pick_metrics_for" in body, name
+        assert "pick_basis" in body, name
         assert "groupby('media'" in body or 'groupby("media"' in body, (
             f"{name}: 매체가 섞인 표에서 기준을 매체별로 적지 않습니다")
         assert "mp-basis" in body, name

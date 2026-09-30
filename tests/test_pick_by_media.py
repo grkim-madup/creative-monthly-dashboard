@@ -12,10 +12,13 @@ import pytest
 
 from creative_data import (
     PICK_MIN_ROWS_PER_MEDIA,
-    pick_best_worst,
     pick_by_media,
-    pick_metrics_for,
 )
+
+
+def whole_table(df: pd.DataFrame):
+    """매체 구분 없이 표 전체를 한 묶음으로 본 결과(옛 동작 비교용)."""
+    return pick_by_media(df.drop(columns=["media"]))
 
 
 def frame(rows: list[dict]) -> pd.DataFrame:
@@ -48,7 +51,7 @@ def test_두_매체가_모두_칠해진다():
     """지금 규칙은 **한 매체가 우수를, 다른 매체가 저조를** 통째로 가져간다."""
     df = frame(MIXED)
 
-    old_best, old_worst = pick_best_worst(df, pick_metrics_for(df))
+    old_best, old_worst = whole_table(df)
     new_best, new_worst = pick_by_media(df)
 
     # 옛 규칙: "TikTok은 다 우수, Meta는 다 저조" — 소재가 아니라 매체를 칠한 셈이다.
@@ -85,10 +88,7 @@ def test_칠하는_줄이_늘어나지_않는다():
     칠해지면 색이 강조가 아니라 배경이다. 유효 매체 수로 지표 예산을 나눠야 한다.
     """
     df = frame(MIXED)
-    old = pick_best_worst(df, pick_metrics_for(df))
     new = pick_by_media(df)
-
-    assert len(new[0]) + len(new[1]) <= len(old[0]) + len(old[1])
     assert len(new[0]) + len(new[1]) <= 4
 
 
@@ -130,55 +130,47 @@ def test_문턱은_상수로_조절된다():
 
 # ------------------------------------------------------------- 폴백 경로
 
-def test_매체_컬럼이_없으면_지금_동작이다():
+def test_매체_컬럼이_없으면_표_전체가_한_묶음이다():
     """구글 애셋 표와 매체 축이 없는 피벗 표가 여기 해당한다."""
     df = frame(MIXED).drop(columns=["media"])
-    assert pick_by_media(df) == pick_best_worst(df, pick_metrics_for(df))
+    best, worst = pick_by_media(df)
+    assert best and worst
 
 
 def test_유효_매체가_하나도_없으면_표_전체에서_뽑는다():
-    """전부 2줄짜리 매체뿐이어도 표를 빈 채로 두지 않는다."""
+    """전부 3줄 미만 매체뿐이어도 표를 빈 채로 두지 않는다."""
     df = frame([
         {"ad": "a", "media": "TikTok", "cost": 3_000_000, "CPI": 1_500, "CTR": 2.0},
         {"ad": "b", "media": "TikTok", "cost": 2_000_000, "CPI": 1_700, "CTR": 1.5},
         {"ad": "c", "media": "Meta", "cost": 1_000_000, "CPI": 4_000, "CTR": 1.1},
     ])
-    assert pick_by_media(df) == pick_best_worst(df, pick_metrics_for(df))
+    assert pick_by_media(df) == whole_table(df)
 
 
-def test_매체가_하나뿐이면_지금과_같다():
-    """구글 표(매체 하나)는 동작이 달라지면 안 된다."""
+def test_매체가_하나뿐이면_표_전체와_같다():
+    """구글 표(매체 하나)는 매체 구분 유무로 결과가 달라지면 안 된다."""
     df = frame([r for r in MIXED if r["media"] == "Meta"])
-    assert pick_by_media(df) == pick_best_worst(df, pick_metrics_for(df))
+    assert pick_by_media(df) == whole_table(df)
+
+
+def test_최소_줄_수는_게이트_전에_센다():
+    """9월 AOS·D0 Coin의 TikTok은 4줄인데 2% 게이트로 2줄이 남았다. 게이트 **뒤**로
+    세면 TikTok이 통째로 선정에서 빠졌다."""
+    rows = [r for r in MIXED if r["media"] == "Meta"]
+    rows += [
+        {"ad": "tt_big1", "media": "TikTok", "cost": 6_000_000, "CPI": 1_400, "CTR": 50.0},
+        {"ad": "tt_big2", "media": "TikTok", "cost": 5_000_000, "CPI": 1_900, "CTR": 40.0},
+        {"ad": "tt_tiny1", "media": "TikTok", "cost": 100_000, "CPI": 1_500, "CTR": 45.0},
+        {"ad": "tt_tiny2", "media": "TikTok", "cost": 90_000, "CPI": 1_600, "CTR": 44.0},
+    ]
+    df = frame(rows)
+    best, worst = pick_by_media(df)
+    assert "TikTok" in media_of(df, best) | media_of(df, worst)
 
 
 def test_빈_표는_조용히_빈_결과():
     assert pick_by_media(pd.DataFrame()) == ({}, {})
     assert pick_by_media(None) == ({}, {})
-
-
-# --------------------------------------------------------- 기준 지표 선택
-
-def test_매체마다_기준_지표를_따로_고른다():
-    """AOS는 Coin CVR이 0에 가까워 CTR로 넘어가고, iOS는 Coin이 살아 있다 —
-    그 판단(`pick_metrics_for`)을 **매체별 부분표에** 적용해야 뜻이 맞는다."""
-    seen = []
-
-    def chooser(part):
-        seen.append(set(part["media"]))
-        return pick_metrics_for(part)
-
-    pick_by_media(frame(MIXED), metrics_for=chooser)
-    assert {"TikTok"} in seen and {"Meta"} in seen
-
-
-def test_넘긴_인자가_pick_best_worst로_전달된다():
-    """`spend_quantile` 같은 인자는 그대로 흘러야 한다 — 순위표가 0.5를 쓴다."""
-    df = frame(MIXED)
-    loose = pick_by_media(df, spend_quantile=0.0)
-    tight = pick_by_media(df, spend_quantile=0.9)
-    # 값이 실제로 쓰이면 후보가 좁아져 결과가 달라지거나 줄어든다.
-    assert loose != tight or len(tight[0]) <= len(loose[0])
 
 
 def test_사유가_실제_컬럼_이름이다():
