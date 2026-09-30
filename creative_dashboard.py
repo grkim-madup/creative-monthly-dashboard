@@ -4637,9 +4637,12 @@ def cancel_confirm(block: dict, month: int, owner: str) -> None:
         "인사이트 초안이 사라집니다.</b></div>",
         unsafe_allow_html=True,
     )
-    # 버튼을 오른쪽에 작게 모은다 — `취소`/`완료`가 있던 자리 바로 아래라
+    # 버튼을 오른쪽에 작게 모은다 — `취소`/`완료`가 **있던 그 자리**를 그대로 쓰므로
     # 눈이 움직이지 않는다. 안전한 쪽(`계속 편집`)을 오른쪽 끝에 둔다.
-    _, discard_col, keep_col = st.columns([4, 1.6, 1.3], vertical_alignment="center")
+    # ⚠ 폭 합(7.6)과 마지막 칸(1.3)을 헤더의 `[5, 1.3, 1.3]`과 맞춘다 —
+    #   다르면 확인창이 뜰 때 버튼이 좌우로 튄다.
+    _, discard_col, keep_col = st.columns([4.4, 1.9, 1.3],
+                                          vertical_alignment="center")
     if keep_col.button("계속 편집", key=f"cancel_no_{block_id}",
                        use_container_width=True):
         st.session_state.pop(f"askcancel_{block_id}", None)
@@ -4686,18 +4689,23 @@ def render_query_block(block: dict, month: int, edit_mode: bool,
         # 완료 = 저장이다. 예전엔 "작성 완료"(잠금만 해제)와 "저장"(내용만 저장)이
         # 따로 있어서, 완료를 먼저 누르면 저장 안 된 글이 그대로 날아갔다.
         # 폭을 **똑같이** 준다 — 다르면 두 버튼이 서로 다른 크기로 보인다.
-        _, cancel, action = st.columns([5, 1.3, 1.3], vertical_alignment="center")
-        asking = bool(st.session_state.get(f"askcancel_{block_id}"))
-        if cancel.button("취소", key=f"cancel_{block_id}",
-                         use_container_width=True, disabled=asking):
-            # 한 번 물어본다 — 누르는 순간 되돌릴 수 없이 날아가기 때문이다.
-            st.session_state[f"askcancel_{block_id}"] = True
-            rerun_local()
-        if action.button("완료", type="primary", key=f"save_{block_id}",
-                         disabled=taken_over or asking, use_container_width=True):
-            save_block(block, month, views, owner)
-        if asking:
+        # ⚠ 확인을 물을 때는 `취소`·`완료`를 **그리지 않고 그 자리를 내준다.**
+        # 예전에는 둘을 비활성으로 남긴 채 확인 버튼 둘을 아래에 더 그려서
+        # 버튼이 한 화면에 넷이 됐다(규리님 2026-10-01 스샷). 비활성 버튼은
+        # 지금 누를 수 없는데도 시선을 가져가므로, 물어보는 동안 남길 이유가 없다.
+        if st.session_state.get(f"askcancel_{block_id}"):
             cancel_confirm(block, month, owner)
+        else:
+            _, cancel, action = st.columns([5, 1.3, 1.3],
+                                           vertical_alignment="center")
+            if cancel.button("취소", key=f"cancel_{block_id}",
+                             use_container_width=True):
+                # 한 번 물어본다 — 누르는 순간 되돌릴 수 없이 날아가기 때문이다.
+                st.session_state[f"askcancel_{block_id}"] = True
+                rerun_local()
+            if action.button("완료", type="primary", key=f"save_{block_id}",
+                             disabled=taken_over, use_container_width=True):
+                save_block(block, month, views, owner)
 
     if views:
         # 편집 중에는 **화면 위젯의 현재 값**으로 카드를 계산한다.
