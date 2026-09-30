@@ -57,6 +57,7 @@ from creative_data import (
     relative_change,
     scope_to_day,
     add_derived_metrics,
+    attach_creative_attributes,
     aggregate_by,
     aggregate_by_axis,
     compare_periods,
@@ -102,6 +103,7 @@ from google_ads_report import (
     GOOGLE_DIMENSIONS,
     GOOGLE_DIMENSION_LABELS,
     google_dimensions_for,
+    as_creative_rows as google_ads_as_creative_rows,
     GOOGLE_METRIC_COLUMNS,
     google_pivot,
     GOOGLE_DEFAULT_VALUES,
@@ -1955,6 +1957,25 @@ google = pd.DataFrame()
 if not google_all.empty:
     google = creative_assets(google_all)
 
+# ── 구글 소재 행 — 소재명 축 표에서 쓴다 (규리님 2026-10-01) ────────────────
+# 규리님: *"소재명으로 묶어도 구글이 나와야 해. 구글은 에셋 이름에서 소재명을 뽑아 올 수
+# 있어."* 뽑은 이름이 메타·틱톡과 같은 명명 규칙이라 포맷·유형·규격이 그대로 파싱된다.
+#
+# ⚠ **자동으로 합치지 않는다.** `구글 포함`을 켠 표에만 붙인다. 늘 합치면 3번 섹션의
+#   모든 표·KPI 카드·우수 선정이 한꺼번에 바뀐다.
+#
+# ⚠ **구글 집행의 일부만 담긴다.** 소진의 64%가 텍스트 애셋(광고 제목·설명·앱 딥 링크)에
+#   얹혀 있는데 그건 소재명이 없다. 9월 실측으로 소재 단위로 보이는 것은 ₩32,198,057 —
+#   창작 애셋 ₩61,069,983의 53%이고(나머지는 담당자가 소재명을 안 붙인 작품),
+#   구글 전체 ₩167,675,081의 19%다. 화면이 각주로 이 사실을 밝힌다.
+google_creative = pd.DataFrame()
+if not google_all.empty:
+    try:
+        google_creative = attach_creative_attributes(
+            google_ads_as_creative_rows(google_all, month))
+    except Exception as _error:  # noqa: BLE001 — 구글이 안 붙어도 리포트는 떠야 한다
+        google_creative = pd.DataFrame()
+
 def _viewer_data_rows() -> None:
     """광고주 `데이터` 카드 — 아래 고정 패널과 **같은 행 모양**(A안).
 
@@ -3611,11 +3632,19 @@ def render_view(view: dict, month: int, key_prefix: str,
     # `named_overview`다(`ad == "-"`인 구글 행이 빠진 프레임).
     # ⚠ `view_with_defaults`가 이미 축을 보고 판정해 뒀다 — 여기서 다시 묻지 않는다.
     #   판정이 두 곳이면 갈린다(라벨 딕셔너리와 같은 문제).
+    # ⚠ 판정은 `view_with_defaults`가 이미 했다 — 여기서 다시 묻지 않는다.
+    add_google_creative = bool(view["google_creative"])
+
     if view["through_date"]:
         # 이 표만 리포트 월을 넘겨 본다(기간 예외). 아래에서 기간을 표에 찍는다.
         source = through_date_scope(view, month, named=not view["title_level"])
     else:
         source = overview if view["title_level"] else named_overview
+
+    if add_google_creative and not google_creative.empty:
+        # ⚠ 구글 소재 행에는 `D0 read`·`D0 coin`이 **없다**(구조적 부재). 0으로 채우지
+        #   않는다 — CVR이 0%로 찍히면 "전환이 없었다"로 읽힌다.
+        source = pd.concat([source, google_creative], ignore_index=True)
     # ⚠ 작품 단위로 **귀속이 안 되는** 행은 뺀다(구글 iOS). 그대로 두면 설치만 있는
     #   `미분류` 줄이 CPI ₩0으로 찍히고, 실제 장르의 iOS는 소진만 남아 CPI가 빈다 —
     #   양방향으로 틀린 숫자가 광고주에게 간다. 매체별로 표를 나눠도 안 없어진다.
@@ -3674,6 +3703,17 @@ def render_view(view: dict, month: int, key_prefix: str,
                 f"(소진 ₩{cost:,.0f}) — {html.escape(why)}.</div>",
                 unsafe_allow_html=True,
             )
+    if add_google_creative and not google_creative.empty:
+        # ⚠ **광고주도 본다.** 이 표의 구글 숫자는 집행 전체가 아니다 — 소진의 상당수가
+        #    텍스트 애셋(광고 제목·설명·앱 딥 링크)에 배분돼 있고 그건 소재명이 없다.
+        #    밝히지 않으면 광고주가 2번 섹션·매체 성과 표와 대조하며 어긋난 숫자를 본다.
+        st.markdown(
+            '<div class="sec-legend">구글은 <b>애셋 이름에서 뽑은 소재명</b>으로 '
+            '합쳤습니다. 영상·이미지 애셋만 잡히며, 광고 제목·설명·앱 딥 링크에 배분된 '
+            '소진은 이 표에 포함되지 않아 <b>구글 집행 전체보다 작습니다</b>. '
+            'CPI도 애셋 배분 기준이라 메타·틱톡과 직접 비교하지 마세요.</div>',
+            unsafe_allow_html=True,
+        )
     render_period_note(view, month)
     render_unclassified_note(table, fields)
     if editing and (as_group or view["rank_by"]):
@@ -4139,10 +4179,16 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         # ⚠ **`뒤집을 기준`은 줄 맨 오른쪽**이다. 예전에는 `대조군 비교` 바로 옆에
         #   끼어들어, 토글을 하나 켰을 뿐인데 나머지 토글의 x좌표가 전부 밀렸다.
         can_title = title_level_allowed([{"field": f} for f in row_fields], filters)
+        # ⭐ 소재 축 표에는 **애셋 이름에서 뽑은 구글 소재 행**을 합칠 수 있다
+        #    (규리님 2026-10-01: *"소재명으로 묶어도 구글이 나와야 해"*).
+        #    ⚠ `구글 포함`(작품 단위)과 **동시에 켤 수 없다** — 둘 다 켜면 구글이
+        #      캠페인 단위로 한 번, 소재 단위로 또 한 번 들어와 이중 집계가 된다.
+        can_gcre = (not can_title) and not google_creative.empty
         can_group = len(row_fields) >= 2
 
         TOGGLE_W = 1.6
-        widths = [1.05] + [TOGGLE_W] * (2 + int(can_title) + int(can_group))
+        widths = ([1.05]
+                  + [TOGGLE_W] * (3 + int(can_title) + int(can_gcre) + int(can_group)))
         pick_widths = [1.15, 2.2] if needs_pick else ([2.2] if on else [])
         widths += pick_widths
         widths.append(max(0.4, 9.6 - sum(widths)))      # 꼬리 여백
@@ -4152,7 +4198,9 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         c_ct = slots.pop(0)
         c_th = slots.pop(0)
         c_tl = slots.pop(0) if can_title else None
+        c_gc = slots.pop(0) if can_gcre else None
         c_gr = slots.pop(0) if can_group else None
+        c_thru = slots.pop(0)
         c_lb = slots.pop(0) if pick_widths else None
         c_sel = slots.pop(0) if needs_pick else None
 
@@ -4174,6 +4222,15 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         else:
             title_level = False
 
+        # ── 구글 소재 포함 ─────────────────────────────────────────────────
+        # 구글 애셋 이름에서 뽑은 소재명으로 소재 단위 행을 만들어 합친다.
+        google_creative_on = bool(view["google_creative"])
+        if can_gcre:
+            google_creative_on = c_gc.toggle("구글 소재", value=google_creative_on,
+                                             key=f"pvgc_{view_key}")
+        else:
+            google_creative_on = False
+
         # ── 묶어 보기 ──────────────────────────────────────────────────────
         # 첫 축을 세로 병합해 묶음으로 보여준다. 축이 하나뿐이면 묶을 것이 없다.
         # 켜면 셀 클릭 강조를 못 쓴다 — 표 아래 편집자 안내 줄이 그 사실을 알린다.
@@ -4183,6 +4240,15 @@ def pivot_editor(view: dict, view_key: str) -> dict:
                                   key=f"pvgrp_{view_key}")
         else:
             grouped = False
+
+        # ── 기간 예외 ──────────────────────────────────────────────────────
+        # 이 표만 리포트 월을 넘겨 집계한다. 매달 쓰는 것이 아니라 예외를 거는
+        # 자리이고, 켜면 표 아래에 기간이 **광고주에게도** 찍힌다.
+        # ⚠ 예전에는 이 줄 **아래 별도 체크박스**로 붙여서, 토글 넷과 정렬이 어긋났다
+        #   (규리님 지적 2026-10-01). 같은 줄·같은 폭으로 둔다.
+        through = str(view.get("through_date") or "")
+        use_through = c_thru.toggle("기간 예외", value=bool(through),
+                                    key=f"pvthru_on_{view_key}")
 
         # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
         # `format=IMG` + `태그=comic`에서 comic을 기준으로 잡으면 같은 IMG 안에서
@@ -4210,30 +4276,23 @@ def pivot_editor(view: dict, view_key: str) -> dict:
                 unsafe_allow_html=True)
             contrast_field = fixed
 
-    # ── 기간 예외 ───────────────────────────────────────────────────────────
-    # 평소에는 안 보인다 — 매달 쓰는 것이 아니라 예외를 거는 자리다. 켜면 그 표만
-    # 리포트 월을 넘겨 집계하고, 표 아래에 기간이 광고주에게도 찍힌다.
-    through = str(view.get("through_date") or "")
-    _pad, _chk, _date = st.columns([1.05, 1.6, 2.2])
-    with _chk:
-        use_through = st.checkbox(
-            "기간 예외", value=bool(through), key=f"pvthru_on_{view_key}",
-            help="이 표만 리포트 월을 넘겨 집계합니다. 다른 표와 기간이 달라집니다.")
     if use_through:
+        # 날짜는 토글 아래 한 줄로 들여쓴다 — 라벨 칸을 비워 왼쪽 선을 맞춘다.
+        _pad, _date = st.columns([1.05, 2.4])
         default = pd.to_datetime(through, errors="coerce")
         if pd.isna(default):
-            default = pd.Timestamp(year=dt.date.today().year, month=int(month), day=1)                 + pd.offsets.MonthEnd(1)
+            default = (pd.Timestamp(year=dt.date.today().year, month=int(month), day=1)
+                       + pd.offsets.MonthEnd(1))
         with _date:
-            picked = st.date_input(
+            through = str(st.date_input(
                 "기간 예외 종료일", value=default.date(),
                 key=f"pvthru_{view_key}", label_visibility="collapsed",
-                format="YYYY-MM-DD")
-        through = str(picked)
+                format="YYYY-MM-DD"))
     else:
         through = ""
 
     out = {**view, "values": list(metrics), "filters": filters,
-           "through_date": through,
+           "through_date": through, "google_creative": bool(google_creative_on),
            "include_ads": list(include),
            "contrast": bool(contrast), "thumbs": bool(thumbs),
            "title_level": bool(title_level), "grouped": bool(grouped),

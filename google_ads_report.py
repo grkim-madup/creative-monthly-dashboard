@@ -322,6 +322,66 @@ def google_dimensions_for(frame: pd.DataFrame) -> dict[str, str]:
     return dimensions
 
 
+#: 구글 창작 애셋을 **소재 단위 프레임 모양**으로 바꿀 때 쓰는 컬럼 대응.
+#: 구글 애셋에는 없는 지표(`D0 read`·`D0 coin`·`D7 coin`)는 **비운다** —
+#: 0으로 채우면 "전환이 0건이었다"로 읽혀 CVR이 0%로 찍힌다(구조적 부재와 실제 0은 다르다).
+_CREATIVE_ROW_METRICS = ("impression", "click", "cost", "total install")
+
+
+def as_creative_rows(frame: pd.DataFrame, month: int | None = None) -> pd.DataFrame:
+    """구글 **영상·이미지** 애셋을 소재 단위 프레임(`named_overview`) 모양으로.
+
+    규리님(2026-10-01): *"소재명으로 묶어도 구글이 나와야 해."*
+
+    소재명은 애셋 이름에서 온다(`creative_name_from_asset`). 그 이름이 메타·틱톡과
+    **같은 명명 규칙**이라, 붙여 놓으면 `attach_creative_attributes`가 포맷·유형·규격을
+    그대로 파싱한다.
+
+    ## ⚠ 이 프레임은 구글 집행의 일부만 담는다 (실측 2026-09-30)
+
+    구글은 캠페인 비용을 **애셋 유형별로 배분**하는데, 소재명이 있는 것은 영상·이미지뿐이다:
+
+    | 애셋 유형 | 9월 소진 | 소재명 |
+    |---|---|---|
+    | YouTube 동영상 | ₩55,875,766 (33%) | ✅ |
+    | 광고 제목·설명·앱 딥 링크 | ₩106,605,098 (64%) | ❌ |
+    | 이미지 | ₩5,194,217 (3%) | ✅ |
+
+    즉 소재 단위로 넣으면 **구글 소진의 36%만** 보인다(용사의 발라드는 26%).
+    규리님이 그 대가를 알고 선택했다 — 화면은 각주로 그 사실을 밝혀야 한다.
+
+    ⚠ **CPI도 배분 왜곡을 탄다**(애셋 단위가 실제보다 33% 낮다). 메타·틱톡 소재와 한
+      표에서 CPI로 줄세우면 구글이 부당하게 좋아 보인다.
+    """
+    if frame is None or getattr(frame, "empty", True):
+        return pd.DataFrame()
+    rows = frame
+    if month is not None and "month" in rows.columns:
+        rows = rows[rows["month"] == int(month)]
+    if "asset_type" in rows.columns:
+        rows = rows[rows["asset_type"].isin(CREATIVE_ASSET_TYPES)]
+    if "creative_name" not in rows.columns:
+        return pd.DataFrame()
+    rows = rows[rows["creative_name"].notna()]
+    if rows.empty:
+        return pd.DataFrame()
+
+    # 같은 소재가 캠페인·파일별로 여러 줄이다 — 소재 × OS로 합친다.
+    keys = [k for k in ("creative_name", "os") if k in rows.columns]
+    out = rows.groupby(keys, as_index=False)[
+        [m for m in _CREATIVE_ROW_METRICS if m in rows.columns]].sum()
+    out = out.rename(columns={"creative_name": "ad"})
+    out["media"] = "Google"
+    out["ua_type"] = "UA"
+    if month is not None:
+        out["month"] = float(month)
+    # 구글 애셋 데이터에는 날짜가 없다(리포트 헤더의 월만) — 비워 둔다.
+    out["date"] = ""
+    for missing in ("D0 read", "D0 coin", "D7 coin", "D7 read"):
+        out[missing] = pd.NA
+    return out
+
+
 def _squeeze(value) -> str:
     """공백을 없앤 비교용 키. `쪽팔려 게임`과 `쪽팔려게임`은 같은 작품이다(실측)."""
     return re.sub(r"\s+", "", str(value or ""))

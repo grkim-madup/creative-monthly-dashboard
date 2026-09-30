@@ -152,3 +152,68 @@ def test_고정이_기간_예외를_넘긴다(name):
                 if isinstance(n, ast.FunctionDef) and n.name == "freeze_month")
     assert "through_date" in ast.unparse(node), (
         f"{name}: 고정이 기간 예외를 모르면 그 표만 줄어든다")
+
+
+# ------------------------- 구글 소재 행 합치기 (규리님 2026-10-01)
+
+def test_구글_소재_필드_기본값():
+    """비면 지금 동작 그대로 — 레거시 뷰가 전부 여기 해당한다."""
+    assert VIEW_DEFAULTS["google_creative"] is False
+
+
+def test_작품_단위와_동시에_켜지지_않는다():
+    """⚠ 둘 다 켜면 구글이 캠페인 단위로 한 번, 소재 단위로 또 한 번 들어와
+    **이중 집계**가 된다."""
+    view = view_with_defaults({
+        "rows": [{"field": "media"}, {"field": "os"}],
+        "title_level": True, "google_creative": True})
+    assert view["title_level"] is True
+    assert view["google_creative"] is False
+
+
+def test_구글_표에서는_꺼진다():
+    view = view_with_defaults({"kind": "google", "google_creative": True})
+    assert view["google_creative"] is False
+
+
+@pytest.mark.parametrize("name", ENTRYPOINTS)
+def test_켠_표에만_합친다(name):
+    """⚠ 늘 합치면 3번 섹션의 모든 표·KPI·우수 선정이 한꺼번에 바뀐다."""
+    node = next(n for n in ast.walk(ast.parse(read(name)))
+                if isinstance(n, ast.FunctionDef) and n.name == "render_view")
+    body = ast.unparse(node)
+    # ⚠ `ast.unparse`가 괄호를 넣어 정규화한다 — 원문 그대로 비교하지 않는다.
+    assert "add_google_creative = bool(view['google_creative'])" in body, name
+    assert "add_google_creative and" in body, name
+    assert "google_creative.empty" in body, name
+    assert "pd.concat([source, google_creative]" in body, name
+
+
+@pytest.mark.parametrize("name", ENTRYPOINTS)
+def test_합친_표에_각주를_단다(name):
+    """⚠ **광고주도 본다.** 구글 소진의 상당수가 텍스트 애셋에 배분돼 있어 이 표의
+    구글 숫자는 집행 전체보다 작다 — 밝히지 않으면 2번 섹션과 대조하다 어긋난다."""
+    source_text = read(name)
+    node = next(n for n in ast.walk(ast.parse(source_text))
+                if isinstance(n, ast.FunctionDef) and n.name == "render_view")
+    body = ast.unparse(node)
+    assert "애셋 이름에서 뽑은 소재명" in body, name
+    assert "sec-legend" in body, f"{name}: 편집자 전용으로 그리면 광고주가 못 본다"
+
+
+def test_구글_소재_행은_전환_지표를_비운다():
+    """0으로 채우면 '전환이 0건이었다'로 읽혀 CVR이 0%로 찍힌다 —
+    구조적 부재와 실제 0은 다르다."""
+    import pandas as pd
+    import google_ads_report as g
+    frame = pd.DataFrame({
+        "month": [9, 9], "asset_type": ["이미지", "설명"],
+        "creative_name": ["11224_가_IMG_Madup_SingleImage_1X1_TITLE1", None],
+        "os": ["AOS", "AOS"], "cost": [100.0, 900.0],
+        "impression": [10, 90], "click": [1, 9], "total install": [1, 9],
+    })
+    rows = g.as_creative_rows(frame, 9)
+    assert len(rows) == 1                       # 텍스트 애셋은 빠진다
+    assert rows["cost"].iat[0] == 100.0
+    assert pd.isna(rows["D0 coin"].iat[0])
+    assert rows["media"].iat[0] == "Google"

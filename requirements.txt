@@ -53,3 +53,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — pick_by_media / same_funnel_stage / manual_picks.identities (2026-09-30)
 # 재시작 마커 — PICK_CANDIDATE_SHARE 0 / PICK_MIN_SPEND_SHARE 새 상수 (2026-09-30)
 # 재시작 마커 — 구글 영문 헤더 / 소재명 축 / through_date (2026-10-01)
+# 재시작 마커 — as_creative_rows / view_state.google_creative (2026-10-01)

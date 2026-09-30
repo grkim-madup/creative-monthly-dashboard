@@ -60,9 +60,23 @@ def test_칸_폭이_균일하다():
     """글자 수가 달라도 간격은 같아야 한 줄로 읽힌다."""
     text = source()
     assert "TOGGLE_W = " in text, "토글 칸 폭을 상수 하나로 두세요"
-    assert "[TOGGLE_W] * (2 + int(can_title) + int(can_group))" in text, (
-        "토글 칸은 **쓸 수 있는 개수만큼** 같은 폭으로 만들어야 합니다"
+    assert ("[TOGGLE_W] * (3 + int(can_title) + int(can_gcre) + int(can_group))"
+            in text), (
+        "토글 칸은 **쓸 수 있는 개수만큼** 같은 폭으로 만들어야 합니다 "
+        "(항상 있는 셋: 대조군 비교 · 썸네일 · 기간 예외)"
     )
+
+
+def test_기간_예외도_같은_줄_토글이다():
+    """⚠ 처음에 이 줄 **아래 별도 체크박스**로 붙였다가 토글들과 정렬이 어긋났다
+    (규리님 지적 2026-10-01: *"토글들 위치가 제멋대로야"*).
+
+    같은 `st.columns` 슬롯을 쓰고, 다른 토글과 같은 폭이어야 한 줄로 읽힌다.
+    """
+    text = source()
+    assert "c_thru = slots.pop(0)" in text, "기간 예외가 토글 줄 슬롯을 안 쓴다"
+    assert "c_thru.toggle(" in text, "체크박스가 아니라 토글이어야 줄이 맞는다"
+    # 체크박스로 되돌리면 위 두 단정이 깨진다 — 무의미한 `or True` 단정을 두지 않는다.
 
 
 def test_못_쓰는_토글은_칸을_안_만든다():
@@ -72,7 +86,16 @@ def test_못_쓰는_토글은_칸을_안_만든다():
     """
     text = source()
     assert 'c_tl = slots.pop(0) if can_title else None' in text
+    assert 'c_gc = slots.pop(0) if can_gcre else None' in text
     assert 'c_gr = slots.pop(0) if can_group else None' in text
+
+
+def test_구글_토글_둘을_동시에_못_켠다():
+    """⚠ `구글 포함`(캠페인 단위)과 `구글 소재`(애셋 단위)를 함께 켜면 구글이 두 번
+    들어와 **이중 집계**가 된다. 화면에서 둘 중 하나만 그린다."""
+    text = source()
+    assert "can_gcre = (not can_title)" in text, (
+        "구글 토글 둘이 동시에 뜨면 이중 집계가 된다")
 
 
 def test_뒤집을_기준은_토글보다_뒤에_온다():

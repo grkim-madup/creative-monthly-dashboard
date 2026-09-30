@@ -51,6 +51,10 @@ VIEW_DEFAULTS = {
     #: 규리님(2026-09-09): *"비교대상이 되는 그 그룹에 소재명 룰이 안 맞아서 수기로
     #: 추가해야 될 때 사용하는 용도"*. 필터의 보조라서 화면에서도 필터에 붙어 있다.
     "include_ads": [],
+    #: 구글 **소재 단위** 행을 합칠지(애셋 이름에서 뽑은 소재명). `title_level`과
+    #: 다른 축이다 — 그쪽은 `Media_RAW`의 캠페인 단위 구글이고, 이쪽은 애셋 단위다.
+    #: ⚠ **둘을 동시에 켜지 않는다** — 구글이 두 번 들어와 이중 집계가 된다.
+    "google_creative": False,
     #: ── 기간 예외 ────────────────────────────────────────────────────────
     #: 이 표만 리포트 월을 넘겨 **이 날짜까지** 본다(ISO `YYYY-MM-DD`). 비면 지금 동작.
     #:
@@ -158,7 +162,7 @@ def view_with_defaults(view: dict) -> dict:
         #   기간 예외를 걸어도 지킬 방법이 없으므로 여기서 비운다.
         merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
                        "include_ads": [], "chart_kind": "", "title_level": False,
-                       "through_date": ""})
+                       "through_date": "", "google_creative": False})
     # ⚠ **작품 단위 집계는 조건을 코드로 건다.** 소재 단위 축이 하나라도 섞이면 구글
     #   행이 전부 `미분류` 한 줄이 되어 표에 가짜 버킷이 생긴다(`883600f`와 같은 사고).
     #   화면에서 토글을 감추는 것만으로는 부족하다 — 축을 나중에 바꾸면 저장된 True가
@@ -169,6 +173,8 @@ def view_with_defaults(view: dict) -> dict:
     if merged["title_level"]:
         merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
                        "include_ads": []})
+        # 작품 단위(캠페인 구글)와 소재 단위(애셋 구글)를 동시에 켜면 이중 집계다.
+        merged["google_creative"] = False
     if not merged.get("id"):
         merged["id"] = uuid4().hex[:6]
     return merged
@@ -207,6 +213,8 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
     merged["thumbs"] = bool(take(f"pvth_{view_key}", merged["thumbs"]))
     merged["grouped"] = bool(take(f"pvgrp_{view_key}", merged["grouped"]))
     merged["title_level"] = bool(take(f"pvtl_{view_key}", merged["title_level"]))
+    merged["google_creative"] = bool(
+        take(f"pvgc_{view_key}", merged["google_creative"]))
     merged["rank_by"] = str(take(f"pvrank_{view_key}", merged["rank_by"]) or "")
     # ⚠ **체크박스를 먼저 본다.** 날짜 위젯 값은 체크를 꺼도 세션에 남아서, 그것만
     #   읽으면 껐는데 저장 때 되살아난다.
