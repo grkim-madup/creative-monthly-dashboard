@@ -240,3 +240,101 @@ def test_화면이_구글_표에_수기_지정을_적용한다():
         assert "manual_picks.google_os(os_name)" in source, name
         checked += 1
     assert checked
+
+
+# ------------------------------------------- 매체까지 담는 식별자 (2026-09-30)
+
+class TestIdentity:
+    """표는 **소재 × 매체** 단위다 — 소재명만으로는 한 줄을 가리킬 수 없다.
+
+    9월 실측: `iOS · 인스톨` 표에 `8230_第44節生存課_..._KRLabB-return2` 가
+    Meta(₩5.4M)·TikTok(₩2.0M) **두 줄**로 있었다.
+    """
+
+    def frame(self):
+        return pd.DataFrame({
+            "ad": ["같은소재", "같은소재", "다른소재"],
+            "media": ["Meta", "TikTok", "Meta"],
+            "cost": [5_400_000, 2_000_000, 1_000_000],
+            "CPI": [6_356, 6_513, 7_000],
+        })
+
+    def test_매체가_식별자에_들어간다(self):
+        assert manual_picks.identities(self.frame()) == [
+            "Meta|같은소재", "TikTok|같은소재", "Meta|다른소재"]
+
+    def test_키를_왕복해도_안_깨진다(self):
+        """식별자 칸은 `split(_SEP, 2)` 라 `|` 를 품어도 된다."""
+        key = manual_picks.row_key("iOS", "total install", "Meta|같은소재")
+        assert manual_picks.split_key(key) == ("iOS", "total install", "Meta|같은소재")
+
+    def test_한_매체만_칠해진다(self):
+        """③ 회귀 방지 — 예전에는 같은 소재의 **두 줄이 다** 칠해졌다."""
+        manual_picks.invalidate(7)
+        df = self.frame()
+        ok, _ = manual_picks.save(7, "iOS", "total install", "Meta|같은소재", manual_picks.BEST)
+        assert ok
+        best, worst = manual_picks.apply(df, 7, "iOS", "total install", {}, {})
+        assert list(best) == [0]          # Meta 줄만
+        assert 1 not in best and 1 not in worst
+
+    def test_옛_형식_지정이_계속_맞는다(self):
+        """8·9월에 저장된 지정은 소재명만 들고 있다. **읽기 전용 승격**이라
+        저장된 원본을 안 고쳐도 계속 맞아야 한다."""
+        manual_picks.invalidate(7)
+        df = self.frame()
+        ok, _ = manual_picks.save(7, "iOS", "total install", "다른소재", manual_picks.WORST)
+        assert ok
+        _best, worst = manual_picks.apply(df, 7, "iOS", "total install", {}, {})
+        assert list(worst) == [2]
+
+    def test_매체_컬럼이_없으면_소재명_그대로다(self):
+        df = self.frame().drop(columns=["media"])
+        assert manual_picks.identities(df) == ["같은소재", "같은소재", "다른소재"]
+
+    def test_include_media_False면_붙이지_않는다(self):
+        """피벗 식별자는 이미 매체를 담고 있다 — 또 붙이면 `Meta|Meta|…` 가 된다."""
+        assert manual_picks.identities(self.frame(), include_media=False) == [
+            "같은소재", "같은소재", "다른소재"]
+
+
+class TestPivotIdentity:
+    """장르·피벗 표 — 행 축 값을 이어 붙인 것이 식별자다."""
+
+    def frame(self):
+        return pd.DataFrame({
+            "media": ["Meta", "Meta", "TikTok"],
+            "os": ["AOS", "iOS", "AOS"],
+            "genre_group": ["[A-3] ROMANCE FANTASY", "[C] THRILLER", "[A-3] ROMANCE FANTASY"],
+            "cost": [3_000_000, 2_000_000, 1_000_000],
+            "CPI": [3_656, 8_302, 1_742],
+        })
+
+    def test_행_축을_이어_붙인다(self):
+        ids = manual_picks.pivot_ids(self.frame(), ["media", "os", "genre_group"])
+        assert ids[0] == "Meta|AOS|[A-3] ROMANCE FANTASY"
+        assert len(set(ids)) == 3
+
+    def test_표마다_키_공간이_나뉜다(self):
+        assert manual_picks.pivot_os("abc123") != manual_picks.pivot_os("def456")
+        assert manual_picks.pivot_os("abc123").startswith(manual_picks.PIVOT_PREFIX)
+        # 2번 섹션·구글과도 안 겹친다.
+        assert not manual_picks.pivot_os("abc123").startswith(manual_picks.GOOGLE_PREFIX)
+
+    def test_표에_없는_축은_건너뛴다(self):
+        ids = manual_picks.pivot_ids(self.frame(), ["media", "없는축"])
+        assert ids[0] == "Meta"
+
+    def test_빈_표는_빈_목록(self):
+        assert manual_picks.pivot_ids(pd.DataFrame(), ["media"]) == []
+
+    def test_지정이_피벗_표에_붙는다(self):
+        manual_picks.invalidate(9)
+        df = self.frame()
+        df[manual_picks.PIVOT_ID_COLUMN] = manual_picks.pivot_ids(df, ["media", "os", "genre_group"])
+        ok, _ = manual_picks.save(9, manual_picks.pivot_os("v1"), "CPI",
+                       "TikTok|AOS|[A-3] ROMANCE FANTASY", manual_picks.BEST)
+        assert ok
+        best, _worst = manual_picks.apply(df, 9, manual_picks.pivot_os("v1"), "CPI", {}, {},
+                               id_column=manual_picks.PIVOT_ID_COLUMN)
+        assert list(best) == [2]

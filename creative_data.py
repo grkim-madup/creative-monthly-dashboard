@@ -722,6 +722,16 @@ def spend_pool(
 #: 표에 맞춰 고르는 것만으로는 재현율이 오르지 않았다(그건 판정의 뜻을 지키는 장치다).
 PICK_CANDIDATE_SHARE = 0.30
 
+#: 앞단(유입) 지표. 나머지는 뒷단(열람·결제)으로 본다.
+#:
+#: 우수·저조 선정에서 **주 지표 자격을 같은 단계 안에서만** 적용하는 데 쓴다.
+FRONT_STAGE_METRICS = frozenset({"CPI", "CTR", "CPC", "CPM"})
+
+
+def same_funnel_stage(one: str, other: str) -> bool:
+    """두 지표가 같은 퍼널 단계인가. 앞단(유입) / 뒷단(열람·결제)."""
+    return (one in FRONT_STAGE_METRICS) == (other in FRONT_STAGE_METRICS)
+
 #: 뒷단 지표 후보. 앞에서부터 **그 표에 값이 있는 것**을 고른다.
 #: AOS는 D0 Coin CVR이 0.00~0.05%라 사실상 무의미해서, 그걸로 뽑으면 아무 뜻이 없는
 #: 소재가 우수로 올라간다 — 팀원은 그 표에서 CTR을 봤다.
@@ -829,7 +839,41 @@ def pick_best_worst(
     window = max(2, round(len(pool) * candidate_share)) if candidate_share else 1
     spend = pd.to_numeric(pool.get("cost"), errors="coerce").fillna(0.0)
 
-    def claim(column: str, ascending: bool, target: dict) -> None:
+    # ⭐ **주 지표 자격 — 우수는 주 지표가 중앙값보다 좋아야 한다**
+    #    (규리님 2026-09-30: *"우수인데 CPI가 안 좋다"*)
+    #
+    #    지표를 둘(주 + 보조) 쓰기 때문에, 보조로 뽑힌 우수가 주 지표에서는 저조보다
+    #    나쁠 수 있었다. 9월 AOS·인스톨 실측: 우수 CPI ₩1,690인데 저조가 ₩1,573·₩1,603.
+    #    CPI 컬럼만 보는 사람에게는 규칙이 틀린 것처럼 읽힌다.
+    #
+    #    ⚠ **같은 퍼널 단계인 슬롯에만 건다.** 뒷단(코인·열람) 슬롯까지 CPI로 묶으면
+    #      "코인을 가장 잘 만든 소재"를 CPI 때문에 못 뽑는다. 팀원 픽 실측이 근거다:
+    #      인스톨 기준 표 2개는 교차가 0건인데, **코인 기준 표 2개는 교차가 있다**
+    #      (8월 iOS·D0Coin: BEST CPI ₩8,313 vs WORST ₩5,340). 사람도 코인 표에서는
+    #      CPI를 우선하지 않는다 — 전부 묶으면 재현율이 71% → 47%로 무너진다.
+    #
+    #    ⚠ **"교차 금지"로 만들지 말 것.** 주 지표 슬롯을 기준선으로 잡아 보조 슬롯이
+    #      그 선을 못 넘게 하는 방식도 만들어 재봤는데 **59%**로 더 나빴고 9월 교차도
+    #      오히려 3건으로 늘었다(중앙값 방식은 65% · 교차 2건).
+    #
+    #    ⚠ 자격을 만족하는 후보가 없으면 **자격을 풀고 뽑는다.** 색칠이 4개가 아니라
+    #      3개만 나오는 것이 더 나쁘다(실측으로 겪은 회귀다).
+    primary_column = metrics[0][0] if metrics else ""
+    eligible_best: set | None = None
+    eligible_worst: set | None = None
+    if primary_column and primary_column in pool.columns:
+        primary_higher = metrics[0][1]
+        primary_values = pd.to_numeric(pool[primary_column], errors="coerce").dropna()
+        primary_values = primary_values[primary_values > 0]
+        if len(primary_values) >= 2:
+            middle = primary_values.median()
+            better = (primary_values >= middle if primary_higher
+                      else primary_values <= middle)
+            eligible_best = set(primary_values[better].index)
+            eligible_worst = set(primary_values[~better].index)
+
+    def claim(column: str, ascending: bool, target: dict,
+              eligible: set | None = None) -> None:
         """지표 상위/하위 구간에서 **소진액이 가장 큰** 소재를 고른다.
 
         예전에는 지표 1등만 집었다. 그러면 소진 ₩100,000짜리가 ₩12,000,000짜리를
@@ -842,15 +886,22 @@ def pick_best_worst(
         values = values[values > 0]
         if values.empty:
             return
-        candidates = [index for index in
-                      values.sort_values(ascending=ascending).head(window).index
-                      if index not in claimed]
-        if not candidates:
+        ordered = values.sort_values(ascending=ascending)
+
+        def pick_from(allowed: set | None) -> list:
+            band = [index for index in ordered.head(window).index
+                    if index not in claimed
+                    and (allowed is None or index in allowed)]
+            if band:
+                return band
             # 구간이 전부 다른 슬롯에 넘어갔으면 구간 밖에서 이어 고른다 —
             # 색칠이 4개가 아니라 3개만 나오는 것보다는 낫다(실측으로 겪었다).
-            candidates = [index for index in
-                          values.sort_values(ascending=ascending).index
-                          if index not in claimed][:1]
+            return [index for index in ordered.index
+                    if index not in claimed
+                    and (allowed is None or index in allowed)][:1]
+
+        # 자격을 먼저 적용하고, 만족하는 후보가 없을 때만 자격을 푼다.
+        candidates = pick_from(eligible) or pick_from(None)
         if not candidates:
             return
         index = max(candidates, key=lambda i: spend.get(i, 0.0))
@@ -859,11 +910,103 @@ def pick_best_worst(
 
     # 지표마다 우수 1개 + 저조 1개 = 총 4개 소재가 서로 겹치지 않게 뽑힌다.
     # (한 소재가 여러 슬롯의 1등이면 뒤 슬롯은 차순위로 밀려난다)
-    for column, higher_is_better in metrics:
-        claim(column, ascending=not higher_is_better, target=best)
-    for column, higher_is_better in metrics:
-        claim(column, ascending=higher_is_better, target=worst)
+    def gate(column: str, allowed: set | None) -> set | None:
+        return allowed if same_funnel_stage(column, primary_column) else None
 
+    for column, higher_is_better in metrics:
+        claim(column, ascending=not higher_is_better, target=best,
+              eligible=gate(column, eligible_best))
+    for column, higher_is_better in metrics:
+        claim(column, ascending=higher_is_better, target=worst,
+              eligible=gate(column, eligible_worst))
+
+    return best, worst
+
+
+#: 선정을 돌리기에 너무 작은 매체. 이 줄 수 미만이면 **그 매체는 선정에서 뺀다.**
+#:
+#: 9월 실측이 이유다 — `iOS · 인스톨` 표는 Meta 9줄 / TikTok **1줄**이었다. 매체별로
+#: 뽑으면 그 한 줄이 자동으로 우수(그리고 동시에 저조)가 된다. "TikTok에서 가장 좋은
+#: 소재"라고 쓸 수 없는 것을 그렇게 쓰는 셈이다.
+PICK_MIN_ROWS_PER_MEDIA = 3
+
+
+def pick_by_media(
+    df: pd.DataFrame,
+    metrics_for=None,
+    min_rows: int = PICK_MIN_ROWS_PER_MEDIA,
+    **kwargs,
+) -> tuple[dict, dict]:
+    """우수·저조를 **매체 안에서만** 고른다. `pick_best_worst`와 같은 모양을 돌려준다.
+
+    규리님(2026-09-30): *"모든 worst/best 컬러링 규칙이 다시 들어가야 할 것 같아.
+    각 매체별 특성이 강해서."*
+
+    ## 왜 필요한가 (9월 실측)
+
+    2번 섹션 표는 `OS × 정렬기준` 4개이고 매체는 표 안의 한 컬럼이다. TOP N을 **볼륨순**
+    으로 자르니 매체 비중이 극단적으로 기운다:
+
+    | 표 | TikTok | Meta |
+    |---|---|---|
+    | AOS · 인스톨 | 10줄 | 0줄 |
+    | iOS · 인스톨 | 1줄 | 9줄 |
+    | AOS · D0 Coin | 4줄 | 6줄 |
+    | iOS · D0 Coin | 0줄 | 10줄 |
+
+    한 표에서 CPI를 견주면 **소진이 큰 매체가 네 슬롯을 다 가져간다.** 실제로 `AOS·D0 Coin`
+    에서 네 슬롯 중 셋이 Meta였다. 매체 안에서만 견주면 두 매체가 각각 칠해진다.
+
+    ## ⚠ 지표 예산을 매체 수로 나눈다 — 이게 핵심이다
+
+    매체마다 2지표(우수 2 + 저조 2)를 주면 **칠하는 줄이 4 → 8로 두 배가 된다**(실측).
+    10줄 표의 80%가 칠해지면 색이 "우수/저조"가 아니라 배경이다 — `RANK_PAINT_SHARE`
+    (40%)를 두고 있는 이유와 같다. 그래서 **유효 매체 1개면 2지표, 2개면 각 1지표**로
+    나눈다. 9월 네 표 모두 칠하는 줄이 4줄로 유지된다.
+
+    ## 인자
+
+    `metrics_for` — 부분표에서 기준 지표를 고르는 함수. 기본은 `pick_metrics_for`이고,
+    구글처럼 돈 지표 후보가 다른 표는 `lambda t: pick_metrics_for(t, money_candidates=…)`
+    를 넘긴다. `kwargs`는 `pick_best_worst`에 그대로 전달한다(`spend_quantile` 등).
+
+    ⚠ `pick_best_worst`의 `group_column="media"`와 **다른 층이다.** 그건 `spend_pool`이
+    소진 분위수를 매체별로 자를 때 쓰는 인자이고(2번 섹션은 `spend_quantile=0`이라 지금
+    아무 일도 안 한다), 이 함수는 **선정 자체를 매체별로 돌린다.**
+
+    매체 컬럼이 없거나 유효 매체가 하나도 없으면 **표 전체에서 뽑는 지금 동작**으로
+    떨어진다 — 구글 표(매체가 하나뿐)와 매체 축이 없는 피벗 표가 여기 해당한다.
+    """
+    chooser = metrics_for or pick_metrics_for
+    if df is None or getattr(df, "empty", True):
+        return {}, {}
+
+    def whole() -> tuple[dict, dict]:
+        return pick_best_worst(df, chooser(df), **kwargs)
+
+    if "media" not in df.columns:
+        return whole()
+
+    groups = [(media, part) for media, part in df.groupby("media", sort=False)
+              if len(part) >= min_rows]
+    if not groups:
+        return whole()
+    if len(groups) == 1 and len(groups[0][1]) == len(df):
+        # 매체가 하나뿐이고 버려진 줄도 없다 — 나눌 것이 없으니 지금 경로 그대로.
+        return whole()
+
+    # 예산: 전체 2지표를 유효 매체가 나눠 갖는다. 최소 1개는 보장한다.
+    per_media = max(1, 2 // len(groups))
+
+    best: dict = {}
+    worst: dict = {}
+    for _media, part in groups:
+        metrics = chooser(part)[:per_media]
+        if not metrics:
+            continue
+        part_best, part_worst = pick_best_worst(part, metrics, **kwargs)
+        best.update(part_best)
+        worst.update(part_worst)
     return best, worst
 
 
@@ -1733,8 +1876,12 @@ def rank_picks(chunk: pd.DataFrame, axis_field: str,
         return empty
 
     if "cost" in ranked.columns:
-        return pick_best_worst(ranked, pick_metrics_for(ranked)[:slots],
-                               spend_quantile=RANK_SPEND_QUANTILE)
+        # 매체 안에서만 견준다(규리님 2026-09-30). 묶음에 매체가 하나뿐이면
+        # `pick_by_media`가 지금 동작으로 떨어지므로, 장르 프리셋처럼 이미
+        # `매체·OS`로 묶인 표는 결과가 안 바뀐다.
+        return pick_by_media(ranked,
+                             metrics_for=lambda part: pick_metrics_for(part)[:slots],
+                             spend_quantile=RANK_SPEND_QUANTILE)
 
     # 소진 컬럼이 없는 표는 볼륨을 볼 수 없다 — 지표 순서만으로 한 줄씩 고른다.
     # (값 목록에서 소진액을 뺀 표. 드물지만 만들 수 있다.)

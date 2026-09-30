@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from creative_data import (
+    same_funnel_stage,
     BACK_PICK_CANDIDATES,
     PICK_CANDIDATE_SHARE,
     pick_best_worst,
@@ -153,3 +154,61 @@ def test_화면이_이_헬퍼를_실제로_쓴다():
             continue
         source = path.read_text(encoding="utf-8")
         assert "pick_metrics_for(df)" in source, name
+
+
+# --------------------------------- 주 지표 자격 (규리님 2026-09-30: "우수인데 CPI가 안 좋다")
+
+def _front_table():
+    """앞단 보조 지표(CTR)를 쓰는 표. CPI와 CTR이 서로 반대로 간다."""
+    # ⚠ `f` 에 소진을 가장 크게 준다 — 이 규칙은 "지표 상위 30% 구간에서 **소진이 큰**
+    #   줄"을 집으므로, 소진이 작으면 자격과 무관하게 애초에 안 뽑혀 검사가 무의미해진다.
+    return pd.DataFrame({
+        "ad": ["a", "b", "c", "d", "e", "f"],
+        "cost": [9_000_000, 8_000_000, 7_000_000, 6_000_000, 5_000_000, 10_000_000],
+        "CPI": [1_200, 1_300, 1_500, 1_600, 1_800, 1_900],
+        # 보조 지표 1등(`f`)이 CPI로는 꼴찌다 — 자격이 없으면 이 줄이 우수로 올라온다.
+        "CTR": [1.0, 1.2, 1.4, 1.6, 1.8, 3.0],
+        "total install": [7_500, 6_100, 4_600, 3_700, 2_700, 2_100],
+    })
+
+
+def test_우수의_주_지표가_저조보다_나쁘지_않다():
+    """9월 AOS·인스톨 실측: 우수 CPI ₩1,690인데 저조가 ₩1,573·₩1,603이었다.
+
+    CPI 컬럼만 보는 사람에게는 규칙이 틀린 것처럼 읽힌다.
+    """
+    table = _front_table()
+    best, worst = pick_best_worst(table, [("CPI", False), ("CTR", True)])
+    assert best and worst
+    assert max(table.loc[i, "CPI"] for i in best) < min(table.loc[i, "CPI"] for i in worst)
+
+
+def test_앞단_보조로도_주_지표_자격을_지킨다():
+    """CTR 1등(`f`)은 CPI가 꼴찌라 우수가 될 수 없다."""
+    table = _front_table()
+    best, _worst = pick_best_worst(table, [("CPI", False), ("CTR", True)])
+    assert "f" not in {table.loc[i, "ad"] for i in best}
+
+
+def test_뒷단_슬롯에는_자격을_걸지_않는다():
+    """**팀원도 코인 기준 표에서는 CPI를 우선하지 않는다**(8월 iOS·D0Coin 실측:
+    BEST CPI ₩8,313 vs WORST ₩5,340). 전부 묶으면 재현율이 71% → 47%로 무너진다.
+    """
+    table = _front_table().rename(columns={"CTR": "D0 coin CVR"})
+    # 코인 1등(`f`)은 CPI가 꼴찌지만 뒷단이므로 우수로 뽑힐 수 있어야 한다.
+    best, _worst = pick_best_worst(
+        table, [("CPI", False), ("D0 coin CVR", True)])
+    assert "f" in {table.loc[i, "ad"] for i in best}
+
+
+def test_퍼널_단계_구분():
+    assert same_funnel_stage("CPI", "CTR")
+    assert same_funnel_stage("D0 coin CVR", "D0 read CVR")
+    assert not same_funnel_stage("CPI", "D0 coin CVR")
+
+
+def test_자격을_만족하는_후보가_없으면_자격을_푼다():
+    """색칠이 4개가 아니라 3개만 나오는 것이 더 나쁘다(실측으로 겪은 회귀다)."""
+    table = _front_table()
+    best, worst = pick_best_worst(table, [("CPI", False), ("CTR", True)])
+    assert len(best) == 2 and len(worst) == 2

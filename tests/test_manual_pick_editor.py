@@ -39,18 +39,29 @@ def test_두_섹션_모두_편집기를_붙인다():
 @pytest.mark.parametrize("call", ["manual_pick_editor(top, month, os_name, rank_metric,",
                                   "manual_pick_editor("])
 def test_편집기는_편집_모드에서만_보인다(call):
-    """광고주에게 그대로 공유하는 화면이다 — 보기 모드에 편집 도구가 있으면 안 된다."""
+    """광고주에게 그대로 공유하는 화면이다 — 보기 모드에 편집 도구가 있으면 안 된다.
+
+    ⚠ **호출부를 전부 센다.** 예전에는 "게이트 안에 있는 호출이 하나라도 있으면 통과"라
+    2026-09-30에 장르·피벗 표 편집기를 새로 붙였을 때 **검사되지 않았다.** 게이트 이름은
+    두 가지다 — 섹션은 `edit_mode`, 블록 안은 `editing`(= `lock_gate`가 돌려준 값).
+    """
+    gates = ("edit_mode", "editing")
     for name, source in entrypoints():
         tree = ast.parse(source)
-        found = False
+        guarded = 0
         for node in ast.walk(tree):
             if not isinstance(node, ast.If):
                 continue
-            if "edit_mode" not in ast.unparse(node.test):
+            if not any(g in ast.unparse(node.test) for g in gates):
                 continue
-            if "manual_pick_editor" in ast.unparse(node.body):
-                found = True
-        assert found, f"{name}: `if edit_mode:` 안에 있어야 한다"
+            guarded += ast.unparse(node.body).count("manual_pick_editor(")
+
+        calls = sum(1 for n in ast.walk(tree)
+                    if isinstance(n, ast.Call)
+                    and getattr(n.func, "id", "") == "manual_pick_editor")
+        assert calls, f"{name}: 편집기 호출을 찾지 못했습니다"
+        assert guarded >= calls, (
+            f"{name}: 편집기 호출 {calls}개 중 {guarded}개만 편집 모드 안에 있습니다")
 
 
 def test_구글_라벨은_URL이_아니라_읽을_수_있는_문구다():
@@ -143,12 +154,18 @@ def test_지정_칩을_접힌_줄_위에_그리지_않는다():
 
 
 def test_선정_기준을_헤더에_찍는다():
-    """기준은 표마다 다르다(`pick_metrics_for`) — 안 찍으면 표만 보고는 알 수 없다."""
+    """기준은 표마다 다르다(`pick_metrics_for`) — 안 찍으면 표만 보고는 알 수 없다.
+
+    2026-09-30부터 기준은 **매체마다도 갈린다**(`pick_by_media`). 하나로 뭉뚱그려
+    적으면 표에 찍힌 `선정` 컬럼과 어긋나 보이므로, 매체가 섞인 표는 매체별로 적는다.
+    """
     for name, source in entrypoints():
         fn = next(n for n in ast.walk(ast.parse(source))
                   if isinstance(n, ast.FunctionDef) and n.name == "manual_pick_editor")
         body = ast.unparse(fn)
-        assert "pick_metrics_for(table)" in body, name
+        assert "pick_metrics_for" in body, name
+        assert "groupby('media'" in body or 'groupby("media"' in body, (
+            f"{name}: 매체가 섞인 표에서 기준을 매체별로 적지 않습니다")
         assert "mp-basis" in body, name
         # 수기 지정이 살아 있으면 자동 선정이 버려진다는 사실을 알려야 한다.
         # 3안에서 이 문구는 **접힌 헤더**로 옮겼다 — 펼치지 않아도 보여야 한다.

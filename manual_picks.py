@@ -58,6 +58,78 @@ def row_key(os_name: str, rank_metric: str, ad: str) -> str:
     return _SEP.join([str(os_name), str(rank_metric), str(ad)])
 
 
+#: 식별자에 매체를 함께 담을 때 쓰는 컬럼. 표가 **소재 × 매체** 단위라 소재명만으로는
+#: 한 줄을 가리킬 수 없다.
+_MEDIA_COLUMN = "media"
+
+
+def identity(row, id_column: str = "ad") -> str:
+    """표의 한 줄을 가리키는 식별자. 매체가 있으면 `매체|소재명`.
+
+    ## 왜 매체가 들어가나 (2026-09-30 실측 버그)
+
+    2번 섹션 표는 `top_creatives`가 **소재 × 매체**로 집계한 것이라, 같은 소재가 두
+    매체에 걸쳐 있으면 **두 줄**이 된다. 9월 `iOS · 인스톨` 표에
+    `8230_第44節生存課_..._KRLabB-return2` 가 Meta(₩5.4M)·TikTok(₩2.0M) 두 줄로 있었다.
+    식별자가 소재명뿐이면 한쪽만 우수로 찍어도 **두 줄이 다 칠해진다.**
+
+    ⚠ `row_key`의 세 번째 칸은 `split(_SEP, 2)` 로 잘라서 **`|`를 품어도 안전하다**
+      (`tests/test_manual_picks.py::test_round_trip`이 이미 고정한다).
+    """
+    value = str(row[id_column]) if id_column in getattr(row, "index", row) else ""
+    media = ""
+    try:
+        if _MEDIA_COLUMN in getattr(row, "index", row):
+            media = str(row[_MEDIA_COLUMN])
+    except TypeError:  # dict 가 아닌 것이 들어와도 죽지 않는다
+        media = ""
+    return f"{media}{_SEP}{value}" if media and media != "nan" else value
+
+
+def identities(table, id_column: str = "ad",
+               include_media: bool = True) -> list[str]:
+    """표 전체의 식별자. 화면이 `options` 로 쓰는 순서와 같다.
+
+    `include_media=False` — 식별자가 **이미 매체를 담고 있을 때** 쓴다. 피벗·장르 표는
+    행 축 값을 이어 붙인 것이 식별자라(`Meta|AOS|[A-3] ROMANCE FANTASY`) 여기서 또
+    붙이면 `Meta|Meta|AOS|…` 가 된다.
+    """
+    if table is None or getattr(table, "empty", True):
+        return []
+    if id_column not in table.columns:
+        return []
+    if not include_media or _MEDIA_COLUMN not in table.columns:
+        return [str(value) for value in table[id_column]]
+    return [f"{media}{_SEP}{value}" if str(media) and str(media) != "nan"
+            else str(value)
+            for media, value in zip(table[_MEDIA_COLUMN], table[id_column])]
+
+
+#: 피벗·장르 표에서 한 줄을 가리키는 임시 컬럼. 행 축 값을 이어 붙인다.
+#: ⚠ **행 축을 바꾸면 그 표의 지정이 안 맞는다.** 2번 섹션에서 정렬 기준을 바꾸면
+#:   지정이 조용히 무시되는 것과 같은 성질이고, `apply`가 "표에 없는 지정은 무시"한다.
+PIVOT_ID_COLUMN = "_pick_id"
+
+#: 피벗 표의 키 공간. 구글이 `google:` 을 쓰는 것과 같은 방식이다.
+PIVOT_PREFIX = "pivot:"
+
+
+def pivot_os(view_id: str) -> str:
+    """피벗 표 하나를 가리키는 `os_name` 자리 값. 뷰 `id`는 uuid 6자로 안정적이다."""
+    return f"{PIVOT_PREFIX}{view_id}"
+
+
+def pivot_ids(table, fields: list[str]) -> list[str]:
+    """행 축 값을 이어 붙인 식별자 목록."""
+    if table is None or getattr(table, "empty", True):
+        return []
+    usable = [f for f in fields if f in table.columns]
+    if not usable:
+        return []
+    return [_SEP.join(str(row[f]) for f in usable)
+            for _, row in table.iterrows()]
+
+
 def split_key(key: str) -> tuple[str, str, str] | None:
     parts = str(key).split(_SEP, 2)
     return (parts[0], parts[1], parts[2]) if len(parts) == 3 else None
@@ -236,8 +308,12 @@ def apply(table, month: int, os_name: str, rank_metric: str,
     column = label_column(table, rank_metric)
     new_best: dict = {}
     new_worst: dict = {}
-    for index, ad in table[id_column].items():
-        verdict = manual.get(str(ad))
+    # ⚠ **옛 형식(소재명만)을 계속 받아들인다.** 8·9월에 저장된 지정이 여기 해당한다 —
+    #   `blocks.promote_views`와 같은 **읽기 전용 승격**이라 저장된 원본은 안 건드리고,
+    #   다음 저장 때 자연스럽게 새 형식이 된다. 코드를 되돌리면 그대로 복구된다.
+    keys = identities(table, id_column)
+    for position, (index, ad) in enumerate(table[id_column].items()):
+        verdict = manual.get(keys[position]) or manual.get(str(ad))
         if verdict == BEST:
             new_best[index] = column
         elif verdict == WORST:

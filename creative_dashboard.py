@@ -63,6 +63,8 @@ from creative_data import (
     explode_extra_info,
     month_options,
     pick_best_worst,
+    pick_by_media,
+    PICK_MIN_ROWS_PER_MEDIA,
     CREATIVE_FIELDS,
     LOWER_IS_BETTER,
     contrast_by_media,
@@ -221,7 +223,7 @@ SUMMARY_COLUMN_ORDER = [
 
 # 지표 묶음이 바뀌는 지점 — 이 컬럼 왼쪽에만 세로 구분선을 넣어 "규모"와 "효율"을
 # 눈으로 가른다. 컬럼이 없으면 그냥 무시된다.
-GROUP_START_COLUMNS = {"소진액", "CTR"}
+GROUP_START_COLUMNS = {"소진액", "CTR", "선정"}
 
 
 def format_cell(label: str, value) -> str:
@@ -742,7 +744,11 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
     """
     view = df[[c for c in GOOGLE_COLUMNS if c in df.columns]].copy()
     metrics = google_pick_metrics(view)
-    best, worst = pick_best_worst(view, metrics) if highlight else ({}, {})
+    # 구글 표는 매체가 하나뿐이라 `pick_by_media`가 지금 동작으로 떨어진다. 그래도
+    # 같은 창구를 쓴다 — 두 벌이 되면 한쪽만 고쳐져 갈린다(`google_pick_metrics`가
+    # `pick_metrics_for`로 합쳐진 것과 같은 이유).
+    best, worst = (pick_by_media(view, metrics_for=google_pick_metrics)
+                   if highlight else ({}, {}))
 
     # 수기 지정이 자동 선정을 덮어쓴다(메타·틱톡과 같은 규칙). 구글은 소재 식별자가
     # URL이라 `id_column="asset"`이고, 키 공간도 `google:` 로 나눈다.
@@ -762,10 +768,13 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
     # 구글 표도 다른 표와 같은 HTML 렌더를 쓴다(2026-08-29) — st.dataframe으로는 헤더를
     # 가운데 정렬하거나 굵게 할 수 없다. 이 표는 셀 클릭 강조를 쓰지 않아 잃는 게 없다.
     # 소재 식별자가 URL이라 '소재 링크'만 실제 링크로 심는다.
-    headers = list(renamed.columns)
+    headers = list(renamed.columns) + ([PICK_REASON_COLUMN] if highlight else [])
     rows = [
-        [format_cell(name, value) for name, value in zip(headers, record)]
-        for record in renamed.itertuples(index=False, name=None)
+        [format_cell(name, value)
+         for name, value in zip(renamed.columns, record)]
+        + ([pick_reason(idx, best, worst, manual=manual_used)] if highlight else [])
+        for idx, record in zip(renamed.index,
+                               renamed.itertuples(index=False, name=None))
     ]
     row_classes = [
         "is-good" if idx in best else "is-bad" if idx in worst else ""
@@ -1025,7 +1034,9 @@ def ad_pick_label(row) -> str:
 
 def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
                        rank_metric: str, id_column: str = "ad",
-                       label_fn=None, title: str | None = None) -> None:
+                       label_fn=None, title: str | None = None,
+                       auto: tuple[dict, dict] | None = None,
+                       include_media: bool = True) -> None:
     """이 표의 우수·저조를 손으로 고른다. **편집 모드에서만 보인다.**
 
     자동 선정이 기본이고 이건 **덮어쓰기**다(규리님: *"너가 자동으로 선택하되, 내가
@@ -1040,7 +1051,11 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
         return
     key = f"{month}_{os_name}_{rank_metric}"
     current = manual_picks.for_table(month, os_name, rank_metric)
-    options = [str(a) for a in table[id_column]]
+    # 식별자에 **매체를 함께 담는다** — 표가 소재 × 매체 단위라 소재명만으로는 한 줄을
+    # 가리킬 수 없다(9월 실측: 같은 소재가 Meta·TikTok 두 줄). `manual_picks.identities`
+    # 가 그 판단을 전담한다.
+    options = manual_picks.identities(table, id_column,
+                                      include_media=include_media)
     # 라벨은 **보여주기 전용**이다. 저장 키는 언제나 식별자(`options`)다 —
     # 라벨로 저장하면 소진액이 바뀌는 다음 달에 지정이 통째로 끊긴다.
     labels = {}
@@ -1053,8 +1068,19 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
 
     # 실제로 쓰인 선정 기준을 헤더에 찍는다 — 표마다 다르다(`pick_metrics_for`).
     # 이게 없으면 "왜 이게 우수야"를 표만 보고는 알 수 없다.
-    basis = " · ".join(METRIC_LABELS.get(column, column)
-                       for column, _ in pick_metrics_for(table))
+    def _metric_names(frame) -> str:
+        return " · ".join(METRIC_LABELS.get(column, column)
+                          for column, _ in pick_metrics_for(frame))
+
+    # 기준은 이제 **매체마다 갈린다**(`pick_by_media`) — 하나로 뭉뚱그려 적으면
+    # 표에 찍힌 `선정` 컬럼과 어긋나 보인다.
+    if "media" in table.columns and table["media"].nunique() > 1:
+        basis = " / ".join(
+            f"{media} {_metric_names(part)}"
+            for media, part in table.groupby("media", sort=False)
+            if len(part) >= PICK_MIN_ROWS_PER_MEDIA)
+    else:
+        basis = _metric_names(table)
 
     heading = title or f"우수·저조 수기 지정 ({os_name})"
 
@@ -1079,19 +1105,49 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
             #
             # 이 방식은 폭을 다 쓰므로 소재명이 잘리지 않고, 위 표와 순서가 같아
             # "표 3번째 줄"을 눈으로 찾아 체크할 수 있다.
-            picker = pd.DataFrame({
-                "소재": [show(ident) for ident in options],
-                "우수": [current.get(ident) == manual_picks.BEST for ident in options],
-                "저조": [current.get(ident) == manual_picks.WORST for ident in options],
-            })
+            # ⭐ 판단 재료를 **이 표 안에** 둔다(A안, 규리님 승인 2026-09-30).
+            #    예전에는 소재명만 있어서 소진액·자동 선정을 보려면 반드시 위 성과표로
+            #    눈을 올려야 했다. 표가 6개면 그 왕복이 6번이다.
+            #    ⚠ `st.data_editor`는 **행 배경을 못 칠한다**(2026-09-09 실측) —
+            #      그래서 색칠은 위 HTML 표가 계속 맡고, 여기는 `자동` 컬럼이 글자로
+            #      대신한다. 이 분업을 뒤집으려 하지 말 것.
+            # ⚠ **표가 실제로 쓴 자동 선정을 그대로 받는다.** 여기서 다시 계산하면
+            #   순위표(`rank_picks`: 슬롯 수 + 소진 중위값 문턱)와 규칙이 달라져
+            #   `자동` 컬럼이 화면의 색칠과 어긋난다.
+            auto_best, auto_worst = (auto if auto is not None
+                                     else pick_by_media(table))
+            columns: dict[str, list] = {}
+            # 매체가 섞인 표에서는 **어느 줄을 찍는지** 구분돼야 한다 — 같은 소재가
+            # 두 매체에 각각 한 줄씩 있을 수 있다(9월 실측).
+            if "media" in table.columns and table["media"].nunique() > 1:
+                columns["매체"] = list(table["media"].astype(str))
+            columns["소재"] = [show(ident) for ident in options]
+            if "cost" in table.columns:
+                columns["소진액"] = [float(v or 0) for v in table["cost"]]
+            columns["자동"] = [pick_reason(idx, auto_best, auto_worst) or "-"
+                              for idx in table.index]   # 자동 선정만(수기 아님)
+            columns["우수"] = [current.get(ident) == manual_picks.BEST
+                              for ident in options]
+            columns["저조"] = [current.get(ident) == manual_picks.WORST
+                              for ident in options]
+            picker = pd.DataFrame(columns)
+
+            config = {
+                "매체": st.column_config.TextColumn("매체", width="small"),
+                "소재": st.column_config.TextColumn("소재", width="large"),
+                "소진액": st.column_config.NumberColumn("소진액", format="₩%d",
+                                                     width="small"),
+                "자동": st.column_config.TextColumn(
+                    "자동", width="small",
+                    help="지정을 하나라도 저장하면 이 표의 자동 선정은 통째로 버려집니다"),
+                "우수": st.column_config.CheckboxColumn("우수", width="small"),
+                "저조": st.column_config.CheckboxColumn("저조", width="small"),
+            }
             edited = st.data_editor(
                 picker, key=f"pickedit_{key}", hide_index=True, width="stretch",
-                disabled=["소재"],
-                column_config={
-                    "소재": st.column_config.TextColumn("소재", width="large"),
-                    "우수": st.column_config.CheckboxColumn("우수", width="small"),
-                    "저조": st.column_config.CheckboxColumn("저조", width="small"),
-                },
+                disabled=[c for c in picker.columns if c not in ("우수", "저조")],
+                column_config={k: v for k, v in config.items()
+                               if k in picker.columns},
             )
             # 인덱스가 곧 `options` 순서다 — 라벨이 아니라 **식별자**로 되받는다.
             best = [options[i] for i in range(len(options))
@@ -1127,6 +1183,46 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
                     rerun_local()
 
 
+#: 왜 칠해졌는지 적는 컬럼. **광고주도 본다.**
+#:
+#: 규리님 2026-09-30 지적의 뿌리다 — 지표를 둘(CPI + 보조) 쓰는데 표에는 어느 지표로
+#: 뽑혔는지가 없었다. 9월 AOS·인스톨에서 **우수의 CPI(1,690)가 저조의 CPI(1,573)보다
+#: 나빴고**, CPI 컬럼만 보는 사람에게는 규칙이 틀린 것처럼 읽혔다.
+#:
+#: ⚠ **문장을 넣지 말 것.** 적합성 점검 표에서 `사유` 컬럼을 한 번 걷어낸 적이 있다 —
+#:   긴 문장이 들어가 표가 밀렸다(`ui.py`의 표 안티패턴 절 참고). 여기는 지표 이름만 쓴다.
+#: ⚠ 툴팁으로 처리하지 말 것 — 이 리포트는 PDF로도 나간다(`tools/export_pdf.py`).
+PICK_REASON_COLUMN = "선정"
+
+
+#: 수기 지정된 줄의 사유 자리에 쓰는 문구.
+#:
+#: ⚠ **`manual_picks.apply`가 넣는 값을 그대로 찍으면 안 된다.** 그 값은 사유가 아니라
+#:   `label_column`(그 표의 정렬 기준 컬럼)이다 — 카드가 `df.loc[index, 값]` 으로 숫자를
+#:   꺼내 쓰려고 넣는 것이라, 화면에는 `우수 · 설치` 처럼 뜻 없는 문구로 나온다
+#:   (2026-09-30 로컬 확인).
+MANUAL_PICK_REASON = "직접 지정"
+
+
+def pick_reason(position, best: dict, worst: dict, manual: bool = False) -> str:
+    """그 줄이 `우수 · CPI` 인지 `저조 · CTR` 인지. 안 칠해진 줄은 빈 칸이다.
+
+    `pick_best_worst`·`rank_picks`가 이미 `{행: 사유지표}` 를 돌려주는데 화면이 그 값을
+    버리고 "뽑혔는가"만 보고 있었다 — 버리지 않고 찍기만 한다.
+
+    `manual=True` 면 지표 대신 `직접 지정`이라고 쓴다. 수기 지정은 자동 선정을 **통째로**
+    버리므로 그 표에는 지표 기준이 아예 없다.
+    """
+    for verdict, picks in (("우수", best), ("저조", worst)):
+        if position in picks:
+            if manual:
+                return f"{verdict} · {MANUAL_PICK_REASON}"
+            column = picks[position]
+            label = METRIC_LABELS.get(column, COLUMN_LABELS.get(column, column))
+            return f"{verdict} · {label}" if label else verdict
+    return ""
+
+
 def render_table_best_worst(
     df: pd.DataFrame, metrics: list[tuple[str, bool]], link_materials: bool = False,
     rank_metric: str | None = None, os_name: str | None = None,
@@ -1144,7 +1240,10 @@ def render_table_best_worst(
     # 넘겨받은 `metrics`는 기본값일 뿐이다 — AOS 표는 D0 Coin CVR이 0.00~0.05%라
     # 그걸로 뽑으면 아무 뜻 없는 소재가 우수로 올라간다.
     metrics = pick_metrics_for(df) or metrics
-    best, worst = pick_best_worst(df, metrics)
+    # 매체 안에서만 견준다(규리님 2026-09-30) — 이 표는 매체가 섞여 있는데 CPI 스케일이
+    # 매체마다 통째로 달라서, 표 전체로 견주면 한 매체가 우수를·다른 매체가 저조를
+    # 통째로 가져간다(9월 실측). 매체가 하나뿐인 표는 지금 동작 그대로다.
+    best, worst = pick_by_media(df)
     manual_used = False
     if os_name is not None and month is not None and rank_metric is not None:
         picked_best, picked_worst = manual_picks.apply(
@@ -1158,10 +1257,13 @@ def render_table_best_worst(
 
     # 이 표는 셀 클릭 강조를 쓰지 않으므로 HTML로 직접 그린다 — st.dataframe으로는
     # 헤더를 가운데 정렬하거나 굵게 할 수 없고 지표 묶음 구분선도 못 넣는다.
-    headers = list(renamed.columns)
+    headers = list(renamed.columns) + [PICK_REASON_COLUMN]
     rows = [
-        [format_cell(name, value) for name, value in zip(headers, record)]
-        for record in renamed.itertuples(index=False, name=None)
+        [format_cell(name, value)
+         for name, value in zip(renamed.columns, record)]
+        + [pick_reason(idx, best, worst, manual=manual_used)]
+        for idx, record in zip(renamed.index,
+                               renamed.itertuples(index=False, name=None))
     ]
     row_classes = [
         "is-good" if idx in best else "is-bad" if idx in worst else ""
@@ -1779,11 +1881,11 @@ for rank_metric in rank_metrics:
 # 우측 구석에 붙는 옅은 각주 한 줄로 낮춘다 — 굳이 안 읽어도 되는 보조 정보로 취급.
 st.markdown(
     '<div class="sec-legend">'
-    f"녹색 = 우수 · 붉은색 = 저조 — 위 표에 보이는 소재 중 "
-    f"{html.escape(METRIC_LABELS.get('CPI', 'CPI'))} · "
-    f"{html.escape(METRIC_LABELS.get('D0 coin CVR', 'D0 coin CVR'))}"
-    f"(코인 전환이 거의 없는 표는 {html.escape(METRIC_LABELS.get('CTR', 'CTR'))}) "
-    f"기준 각 1개씩 — 지표 상위·하위 30% 안에서 소진액이 큰 소재를 선정 · "
+    f"녹색 = 우수 · 붉은색 = 저조 — <b>매체 안에서만</b> 견줍니다. "
+    f"매체마다 CPI 수준이 통째로 달라 한 표에서 견주면 한 매체가 우수를, 다른 매체가 "
+    f"저조를 통째로 가져갑니다. 기준 지표는 그 매체 표에 값이 있는 것으로 고르며"
+    f"(<b>선정</b> 컬럼에 표시), 지표 상위·하위 30% 안에서 소진액이 큰 소재를 "
+    f"선정합니다 · 소재가 {PICK_MIN_ROWS_PER_MEDIA}개 미만인 매체는 선정에서 제외 · "
     f"최소 소진 ₩{min_cost:,.0f} 이상"
     "</div>",
     unsafe_allow_html=True,
@@ -3201,7 +3303,9 @@ RANK_BEST_STYLE = "background:#eefaf4;color:#0b5c38;font-weight:700"
 RANK_WORST_STYLE = "background:#fdf3f3;color:#8c2b2b;font-weight:700"
 
 
-def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> None:
+def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str,
+                        month: int | None = None,
+                        view_id: str | None = None) -> tuple[dict, dict]:
     """묶음별 순위표 — **대조군 표와 같은 레이아웃**(규리님 2026-09-16).
 
     `render_table`(st.dataframe)로 그리면 묶음 칸이 줄마다 반복되고 CPI 히트맵이
@@ -3225,10 +3329,13 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
     group_fields = fields[:-1]
     labels = [field_label(f) for f in fields]
     headers = [field_label(f) for f in fields] + [
-        COLUMN_LABELS.get(c, c) for c in table.columns if c not in fields]
+        COLUMN_LABELS.get(c, c) for c in table.columns if c not in fields
+    ] + [PICK_REASON_COLUMN]
     value_columns = [c for c in table.columns if c not in fields]
     # 칠할 칸 = 마지막 축(장르 등) + 모든 지표 칸. 묶음 축은 병합이라 제외한다.
-    paint_columns = [labels[-1]] + [COLUMN_LABELS.get(c, c) for c in value_columns]
+    paint_columns = ([labels[-1]]
+                     + [COLUMN_LABELS.get(c, c) for c in value_columns]
+                     + [PICK_REASON_COLUMN])
 
     rows: list[list[str]] = []
     row_classes: list[str] = []
@@ -3265,10 +3372,26 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
         best_at.update(picked_best)
         worst_at.update(picked_worst)
 
+    # 수기 지정이 자동 선정을 덮어쓴다 — 2·3번 섹션과 같은 규칙이다(규리님 2026-09-30:
+    # *"장르·피벗 표에도 수기 지정을 넣는다"*). 식별자는 **행 축 값을 이어 붙인 것**이라
+    # 행 축을 바꾸면 그 표의 지정은 조용히 무시된다(`apply`가 표에 없는 지정을 버린다).
+    # 편집기가 `자동` 컬럼에 쓸 값 — 수기 지정으로 덮기 **전**의 결과다.
+    auto_picks = (dict(best_at), dict(worst_at))
+    manual_used = False
+    if month is not None and view_id:
+        marked = table.copy()
+        marked[manual_picks.PIVOT_ID_COLUMN] = manual_picks.pivot_ids(table, fields)
+        picked_best, picked_worst = manual_picks.apply(
+            marked, month, manual_picks.pivot_os(view_id), metric,
+            best_at, worst_at, id_column=manual_picks.PIVOT_ID_COLUMN)
+        manual_used = (picked_best, picked_worst) != (best_at, worst_at)
+        best_at, worst_at = picked_best, picked_worst
+
     for index, (position, row) in enumerate(table.iterrows()):
         line = [str(row[f]) for f in fields]
         for column in value_columns:
             line.append(fmt_metric(column, row[column]))
+        line.append(pick_reason(position, best_at, worst_at, manual=manual_used))
         rows.append(line)
         row_classes.append("ct-grp" if (start_of[index] and index) else "")
         # 색은 **축 이름부터 오른쪽 끝까지** 한 줄로 칠한다(규리님 2026-09-16).
@@ -3299,6 +3422,7 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
         # 잘리면 맨 뒤 묶음(구글)이 통째로 안 보인다.
         full_height=True,
     )
+    return auto_picks
 
 
 def genre_column_of(table: pd.DataFrame, fields: list[str]) -> str | None:
@@ -3423,6 +3547,8 @@ def render_view(view: dict, month: int, key_prefix: str,
     # 순서가 갈린다: 프리셋은 **고정 순서**(매달 바뀌면 지난달 리포트와 대조가 안 된다),
     # 토글은 규리님 지정대로 **소진액이 큰 묶음이 위로**.
     as_group = bool(view["grouped"]) and len(view["rows"]) >= 2
+    # 순위표가 아니면 자동 선정이 없다 — 편집기도 안 뜬다.
+    ranked_auto: tuple[dict, dict] = ({}, {})
     if as_group or view["rank_by"]:
         table = sort_within_groups(
             table, view["rows"],
@@ -3435,7 +3561,8 @@ def render_view(view: dict, month: int, key_prefix: str,
         # 묶음 안에서만 색칠. `render_table`의 CPI 히트맵은 표 전체에 걸쳐 도는데,
         # 스케일이 3~7배 다른 AOS·iOS를 한 척도로 칠하면 `미분류 ₩25,458`이 가장
         # 진한 초록이 된다(실제로 그렇게 나왔다).
-        render_ranked_table(table, fields, view["rank_by"] or "CPI")
+        ranked_auto = render_ranked_table(table, fields, view["rank_by"] or "CPI",
+                                          month=month, view_id=view["id"])
     else:
         render_table(
             table.rename(columns={f: field_label(f) for f in fields}),
@@ -3459,6 +3586,21 @@ def render_view(view: dict, month: int, key_prefix: str,
                 unsafe_allow_html=True,
             )
     render_unclassified_note(table, fields)
+    if editing and (as_group or view["rank_by"]):
+        # 순위표에서만 뜻이 있다 — 색칠하지 않는 표에는 지정할 자리가 없다.
+        marked = table.copy()
+        marked[manual_picks.PIVOT_ID_COLUMN] = manual_picks.pivot_ids(table, fields)
+        manual_pick_editor(
+            marked, month, manual_picks.pivot_os(view["id"]),
+            view["rank_by"] or "CPI",
+            id_column=manual_picks.PIVOT_ID_COLUMN,
+            label_fn=lambda row: " · ".join(str(row[f]) for f in fields
+                                            if f in row.index),
+            title="우수·저조 수기 지정",
+            auto=ranked_auto,
+            # 식별자가 이미 매체를 담고 있다 — 또 붙이면 `Meta|Meta|AOS|…` 가 된다.
+            include_media=False,
+        )
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.
         # `묶어 보기`의 부작용도 여기서 알린다 — 토글 옆 `?`를 뺀 자리다(규리님
