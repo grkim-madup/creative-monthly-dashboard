@@ -3516,7 +3516,28 @@ def render_period_note(view: dict, month: int) -> None:
     )
 
 
-def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
+def drop_unclassified_genre(table, fields: list[str]):
+    """장르 축 표에서 **`미분류` 줄을 뺀다.** `(남은 표, 뺀 줄)`.
+
+    규리님(2026-10-01): *"미분류 장르는 테이블에서 제외하고 각주만 달아줘."*
+
+    ⚠ **뺀 금액은 반드시 각주에 찍는다**(`render_unclassified_note`). 말없이 빼면
+      광고주가 1번 총괄·블록 KPI 카드와 대조하며 어긋난 금액을 본다 —
+      `drop_unattributable`(구글 iOS)이 같은 이유로 사유와 금액을 함께 찍는다.
+
+    ⚠ 장르 축이 없는 표는 건드리지 않는다. `미분류`는 다른 축에서도 나오지만
+      (소재명 파싱 실패 등) 그건 이 지시의 대상이 아니다.
+    """
+    column = genre_column_of(table, fields)
+    if column is None:
+        return table, None
+    hit = table[column] == title_genre.UNKNOWN_GENRE
+    if not hit.any():
+        return table, None
+    return table[~hit], table[hit]
+
+
+def render_unclassified_note(dropped) -> None:
     """`미분류`가 왜 생기는지 **광고주에게** 설명한다(규리님 2026-09-30 지시).
 
     ⚠ **`editing` 안에 감싸지 말 것.** 광고주가 보는 표에 `미분류` 줄이 그대로 나가는데,
@@ -3534,16 +3555,18 @@ def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
     즉 **89.6%가 원리적으로 장르가 없는 집행**이고, 분류 실패는 나머지다.
     나머지 ₩2,447,474(`화산귀환 2부`)는 이름 매칭 결함이라 고쳤다(`title_genre`).
     """
-    column = genre_column_of(table, fields)
-    if column is None:
+    if dropped is None or getattr(dropped, "empty", True):
         return
-    if not (table[column] == title_genre.UNKNOWN_GENRE).any():
-        return
+    amount = ""
+    if "cost" in dropped.columns:
+        spent = float(pd.to_numeric(dropped["cost"], errors="coerce").fillna(0).sum())
+        amount = f" 소진 ₩{spent:,.0f}"
     st.markdown(
-        '<div class="sec-legend"><b>미분류</b>는 장르를 정하지 못한 것이 아니라, '
-        '작품 하나로 귀속되지 않는 집행입니다. 여러 작품을 한 캠페인에 묶어 집행한 '
-        '믹스 캠페인과, 특정 작품이 아닌 테마·시즌 캠페인(개학·중추절·신작 소개 등)이 '
-        '여기에 들어갑니다. 신규 작품은 작품 목록에 등재되기 전까지 함께 묶입니다.</div>',
+        f'<div class="sec-legend"><b>미분류 {len(dropped)}줄 제외</b>{html.escape(amount)} — '
+        "장르를 정하지 못한 것이 아니라 <b>작품 하나로 귀속되지 않는 집행</b>입니다. "
+        "여러 작품을 한 캠페인에 묶은 믹스 캠페인과, 특정 작품이 아닌 테마·시즌 "
+        "캠페인(개학·중추절·신작 소개 등)이 여기에 들어갑니다. "
+        "이 표의 합계에는 포함되지 않습니다.</div>",
         unsafe_allow_html=True,
     )
 
@@ -3673,6 +3696,12 @@ def render_view(view: dict, month: int, key_prefix: str,
             order=GROUP_ORDER_FIXED if view["rank_by"] else GROUP_ORDER_SPEND)
 
     fields = [r["field"] for r in view["rows"]]
+    # 장르 축 표에서는 `미분류`를 빼고 그린다(규리님 2026-10-01). 뺀 금액은 각주로.
+    table, unclassified = drop_unclassified_genre(table, fields)
+    if table.empty:
+        status_row("warn", "미분류를 빼면 남는 줄이 없습니다",
+                   "이 표는 전부 작품 단위로 귀속되지 않는 집행입니다.")
+        return
 
     if as_group or view["rank_by"]:
         # 순위표는 **대조군 표와 같은 레이아웃**으로 그린다 — 묶음 칸 세로 병합 +
@@ -3715,7 +3744,7 @@ def render_view(view: dict, month: int, key_prefix: str,
             unsafe_allow_html=True,
         )
     render_period_note(view, month)
-    render_unclassified_note(table, fields)
+    render_unclassified_note(unclassified)
     if editing and (as_group or view["rank_by"]):
         # 순위표에서만 뜻이 있다 — 색칠하지 않는 표에는 지정할 자리가 없다.
         marked = table.copy()

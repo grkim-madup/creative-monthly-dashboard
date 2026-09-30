@@ -82,7 +82,39 @@ def test_장르_컬럼을_두_이름으로_찾는다(name):
     assert "GENRE_COLUMN" in body and "field_label" in body, (
         f"{name}: 필드 이름과 라벨 중 한쪽만 봅니다"
     )
-    target = _function(ast.parse(source), NOTE)
+    target = _function(ast.parse(source), "drop_unclassified_genre")
     assert "genre_column_of" in ast.unparse(target), (
-        f"{name}: {NOTE} 가 컬럼 탐색을 따로 하고 있습니다 — 두 벌이 되면 갈립니다"
+        f"{name}: 제외 함수가 컬럼 탐색을 따로 하고 있습니다 — 두 벌이 되면 갈립니다"
     )
+
+
+# ------------------------- 미분류 제외 (규리님 2026-10-01)
+
+@pytest.mark.parametrize("name", ENTRYPOINTS)
+def test_장르_표에서_미분류를_뺀다(name):
+    """규리님: *"미분류 장르는 테이블에서 제외하고 각주만 달아줘."*"""
+    source = read(name)
+    view = _function(ast.parse(source), "render_view")
+    body = ast.unparse(view)
+    assert "drop_unclassified_genre(table, fields)" in body, (
+        f"{name}: 표에서 미분류를 빼지 않습니다")
+
+
+@pytest.mark.parametrize("name", ENTRYPOINTS)
+def test_뺀_금액을_각주에_찍는다(name):
+    """⚠ 말없이 빼면 광고주가 총괄·KPI 카드와 대조하며 어긋난 금액을 본다.
+    `drop_unattributable`(구글 iOS)이 같은 이유로 사유와 금액을 함께 찍는다."""
+    node = _function(ast.parse(read(name)), NOTE)
+    body = ast.unparse(node)
+    assert "cost" in body, f"{name}: 제외 금액을 안 찍습니다"
+    assert "제외" in body, name
+    assert "sec-legend" in body, f"{name}: 편집자 전용이면 광고주가 못 본다"
+
+
+@pytest.mark.parametrize("name", ENTRYPOINTS)
+def test_장르_축이_없으면_안_건드린다(name):
+    """`미분류`는 소재명 파싱 실패 등 다른 축에서도 나온다 — 그건 대상이 아니다."""
+    node = _function(ast.parse(read(name)), "drop_unclassified_genre")
+    body = ast.unparse(node)
+    assert "if column is None" in body, name
+    assert "return (table, None)" in body or "return table, None" in body, name
