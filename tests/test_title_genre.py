@@ -133,6 +133,43 @@ def test_중국어_제목으로도_찾는다():
     assert G.lookup(table, "", "丟臉遊戲") == "[A-2] SCHOOL ROMANCE"
 
 
+# ------------------------------------------------------- 시리즈 회차 접미사
+
+def test_회차_접미사만_다른_제목을_흡수한다():
+    """RAW는 `화산귀환 2부`, 광고주 시트는 `화산귀환`이다(9월 실측).
+
+    구글 행은 소재명이 `-`라 **코드가 없어 이름에만 의존**한다 — 그래서 같은 작품이
+    메타·틱톡(코드 `5519` 보유)에서는 장르가 붙고 구글에서만 `미분류`로 떨어졌다
+    (소진 ₩2,447,474).
+    """
+    table = {"by_code": {}, "by_name": {"화산귀환": "[B-3] MARTIAL_ARTS ACTION"}}
+    assert G.lookup(table, "", "화산귀환 2부") == "[B-3] MARTIAL_ARTS ACTION"
+    assert G.lookup(table, "", "화산귀환") == "[B-3] MARTIAL_ARTS ACTION"
+
+
+def test_회차가_각각_등재됐으면_정확_매칭이_이긴다():
+    """시트에 `아일랜드1부`·`아일랜드2부`가 **따로** 등재돼 있다(실측).
+
+    접미사를 먼저 떼면 서로 다른 작품이 한 장르로 뭉친다 — 정확 매칭이 앞선다.
+    """
+    table = {"by_code": {},
+             "by_name": {"아일랜드1부": "[C] THRILLER & HORROR",
+                         "아일랜드2부": "[E] ETC"}}
+    assert G.lookup(table, "", "아일랜드 1부") == "[C] THRILLER & HORROR"
+    assert G.lookup(table, "", "아일랜드 2부") == "[E] ETC"
+
+
+def test_접미사를_떼도_없으면_추측하지_않는다():
+    table = {"by_code": {}, "by_name": {"다른작품": "[E] ETC"}}
+    assert G.lookup(table, "", "없는작품 2부") is None
+
+
+def test_숫자부로_끝나지_않으면_건드리지_않는다():
+    """`부`로 끝나기만 하는 작품명을 잘라내면 엉뚱한 작품에 붙는다."""
+    table = {"by_code": {}, "by_name": {"승부": "[E] ETC", "승": "[C] THRILLER & HORROR"}}
+    assert G.lookup(table, "", "승부") == "[E] ETC"
+
+
 def test_못_찾으면_None이다():
     """추측해서 채우지 않는다 — 광고주가 장르로 읽는 값이다."""
     table = G.parse_title_genres(_sheet(ROWS))

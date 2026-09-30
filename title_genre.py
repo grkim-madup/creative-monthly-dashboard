@@ -59,6 +59,14 @@ _PLACEHOLDER_CODES = {"", "0", "nan", "none", "확인불가"}
 
 _SPACE = re.compile(r"\s+")
 
+#: 시리즈 회차 접미사(`2부`). RAW는 `화산귀환 2부`인데 광고주 시트는 `화산귀환`이라
+#: 이름 매칭이 깨졌다 — 구글은 소재명이 `-`라 **작품 코드가 없어 이름에만 의존**하므로,
+#: 같은 작품이 메타·틱톡에서는 장르가 붙고 구글에서만 `미분류`로 떨어졌다
+#: (9월 실측 ₩2,447,474). 메타·틱톡 행은 코드 `5519`를 들고 있어 원래 정상이었다.
+#: ⚠ **정확 매칭이 실패했을 때만** 떼어 본다 — 시트에 `아일랜드1부`·`아일랜드2부`처럼
+#:   회차가 각각 등재된 작품이 있어서, 먼저 떼면 서로 다른 작품이 한 줄로 뭉친다.
+_SERIES_SUFFIX = re.compile(r"\d+부$")
+
 
 def _clean(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -154,8 +162,14 @@ def lookup(table: dict, code, name) -> str | None:
         return by_code[normalized]
     by_name = table.get("by_name") or {}
     key = normalize_name(name)
-    if key and key in by_name:
+    if not key:
+        return None
+    if key in by_name:
         return by_name[key]
+    # 회차 접미사만 다른 경우(`화산귀환 2부` → `화산귀환`). 정확 매칭 뒤에 온다.
+    base = _SERIES_SUFFIX.sub("", key)
+    if base != key and base in by_name:
+        return by_name[base]
     return None
 
 

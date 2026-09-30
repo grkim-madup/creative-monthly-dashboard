@@ -3301,6 +3301,54 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str) -> 
     )
 
 
+def genre_column_of(table: pd.DataFrame, fields: list[str]) -> str | None:
+    """표에서 장르 컬럼 이름을 찾는다. 없으면 `None`.
+
+    ⚠ **표의 컬럼 이름이 경로마다 다르다.** 순위표(`render_ranked_table`)는 필드 이름
+    그대로(`genre_group`) 받고, 일반 표는 그리기 직전에 라벨(`장르`)로 바꾼다.
+    예전에는 라벨만 찾아서, **정작 장르 프리셋 표(항상 순위표다)에서는 경고가 한 번도
+    뜨지 않았다.** 두 이름을 다 본다.
+    """
+    if title_genre.GENRE_COLUMN not in fields:
+        return None
+    for name in (title_genre.GENRE_COLUMN, field_label(title_genre.GENRE_COLUMN)):
+        if name in table.columns:
+            return name
+    return None
+
+
+def render_unclassified_note(table: pd.DataFrame, fields: list[str]) -> None:
+    """`미분류`가 왜 생기는지 **광고주에게** 설명한다(규리님 2026-09-30 지시).
+
+    ⚠ **`editing` 안에 감싸지 말 것.** 광고주가 보는 표에 `미분류` 줄이 그대로 나가는데,
+      설명이 없으면 "분류를 안 한 것"으로 읽힌다. 실제로는 대부분 **작품 하나로 귀속되지
+      않는 집행**이다.
+
+    9월 실측(₩29,358,041 · 소진의 10.0%)으로 확인한 구성 — 이 문구의 근거다:
+
+    | 원인 | 소진 | 비중 |
+    |---|---|---|
+    | 믹스 캠페인(구글, 작품 컬럼이 `Mix`/`-`) | ₩23,883,089 | 81.4% |
+    | 테마·시즌 캠페인(메타, 코드 `0000` — 開學·中秋節·教師節·9月新作·EPUB) | ₩2,406,361 | 8.2% |
+    | 광고주 시트 미등재(약사의 혼잣말·킹덤·괴수 8호 — 일본 라이선스작) | ₩621,106 | 2.1% |
+
+    즉 **89.6%가 원리적으로 장르가 없는 집행**이고, 분류 실패는 나머지다.
+    나머지 ₩2,447,474(`화산귀환 2부`)는 이름 매칭 결함이라 고쳤다(`title_genre`).
+    """
+    column = genre_column_of(table, fields)
+    if column is None:
+        return
+    if not (table[column] == title_genre.UNKNOWN_GENRE).any():
+        return
+    st.markdown(
+        '<div class="sec-legend"><b>미분류</b>는 장르를 정하지 못한 것이 아니라, '
+        '작품 하나로 귀속되지 않는 집행입니다. 여러 작품을 한 캠페인에 묶어 집행한 '
+        '믹스 캠페인과, 특정 작품이 아닌 테마·시즌 캠페인(개학·중추절·신작 소개 등)이 '
+        '여기에 들어갑니다. 신규 작품은 작품 목록에 등재되기 전까지 함께 묶입니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_genre_gap(table: pd.DataFrame, view: dict, fields: list[str]) -> None:
     """장르가 아직 안 붙은 작품을 **편집자에게만** 알린다.
 
@@ -3312,10 +3360,10 @@ def render_genre_gap(table: pd.DataFrame, view: dict, fields: list[str]) -> None
       규리님은 편집 권한이 있어 **보기 모드에서도 보이고, 그 화면을 광고주에게
       공유한다**(`test_editor_only_panels.py`가 잡는 사고 유형이다).
     """
-    if not auth.can_edit() or title_genre.GENRE_COLUMN not in fields:
+    if not auth.can_edit():
         return
-    label = field_label(title_genre.GENRE_COLUMN)
-    if label not in table.columns or "cost" not in table.columns:
+    label = genre_column_of(table, fields)
+    if label is None or "cost" not in table.columns:
         return
 
     rows = table[table[label] == title_genre.UNKNOWN_GENRE]
@@ -3329,9 +3377,11 @@ def render_genre_gap(table: pd.DataFrame, view: dict, fields: list[str]) -> None
     if share < 0.005:
         return
     st.markdown(
-        f'<div class="tbl-note">장르 미등록 소진 ₩{missing:,.0f} '
-        f"({share:.1%}) — 광고주 PM 시트 <code>title_info</code>의 CLUSTER가 "
-        "아직 안 채워진 작품입니다. 표에는 <b>미분류</b>로 묶입니다.</div>",
+        f'<div class="tbl-note">미분류 소진 ₩{missing:,.0f} ({share:.1%}) — '
+        "대부분은 믹스·테마 캠페인이라 작품 단위가 없습니다. 다만 광고주 PM 시트 "
+        "<code>title_info</code>에 <b>행 자체가 없는 작품</b>도 여기 섞입니다"
+        "(9월 실측: 일본 라이선스작 3종 ₩621,106). 요청할 것은 "
+        "<b>CLUSTER를 채워달라</b>가 아니라 <b>이 코드를 등재해달라</b>입니다.</div>",
         unsafe_allow_html=True,
     )
 
@@ -3445,6 +3495,8 @@ def render_view(view: dict, month: int, key_prefix: str,
                 f"(소진 ₩{cost:,.0f}) — {html.escape(why)}.</div>",
                 unsafe_allow_html=True,
             )
+    # 광고주도 보는 각주가 먼저, 편집자 전용 경고가 그 다음이다.
+    render_unclassified_note(table, fields)
     render_genre_gap(table, view, fields)
     if editing:
         # 이 안내는 **편집자용**이다 — 광고주가 보는 화면에는 넣지 않는다.

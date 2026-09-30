@@ -49,3 +49,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — creative_data.ad_group_totals 새 심볼 (2026-09-29)
 # 재시작 마커 — 규격 무시 짝 판정 / PARSER_VERSION v7 (2026-09-30)
 # 재시작 마커 — GROUP_ORDER_* 새 심볼 / view_state.grouped (2026-09-30)
+# 재시작 마커 — title_genre 회차 접미사 매칭(화산귀환 2부) (2026-09-30)
