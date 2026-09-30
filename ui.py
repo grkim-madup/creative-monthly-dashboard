@@ -1680,6 +1680,120 @@ section[data-testid="stSidebar"] h2 {
   display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted);
   font-weight: 400;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   모션 1단계 — 눌림 피드백 · 편집 UI 등장 · 처리 중 표시 (2026-10-01)
+
+   규리님: *"토글이랑 버튼을 눌렀을 때 반응이 없어서 답답해."*
+
+   **여기 한 블록에 모아 둔다.** 되돌리려면 이 구역만 지우면 된다 — 위쪽 CSS는
+   한 줄도 건드리지 않았다.
+
+   지킨 것:
+   · 시간은 기존 값에 맞춘다(`.12s` 눌림 / `.14~.18s` 기존 전환 / `.34s` 등장).
+   · **보기 모드 동작은 안 바꾼다.** 등장 애니메이션은 편집 모드에만 있는
+     컨테이너(`te_`/`pv_`/`gv_`/`mp_`/`insert_`)에만 건다 — 광고주 화면에는
+     그 요소가 **아예 없으므로** 구조적으로 샐 수 없다.
+   · `prefers-reduced-motion: reduce` 면 전부 끈다(맨 아래).
+
+   ⚠ **Streamlit 버전에 묶인 선택자**(streamlit==1.60.0 실측):
+     · `.stButton button`            — 위젯 래퍼 클래스
+     · `button[role="radio"]`        — `st.segmented_control`(모드 토글)
+     · `[class*="st-key-<키>"]`      — `st.container(key=)`가 만드는 클래스
+     · `[data-test-script-state]`    — 리런 상태
+     업그레이드하면 이 구역부터 확인할 것. 위쪽 CSS도 같은 선택자를 쓰므로
+     여기만 깨지는 일은 없다(같이 깨지거나 같이 산다).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── ① 눌림 피드백 ────────────────────────────────────────────────────────
+   누른 순간 줄었다 돌아오는 것만으로 "먹혔다"가 전달된다. Streamlit은 리런이
+   끝나야 화면이 바뀌는데 그 사이가 비어 있어서 두 번 누르게 된다. */
+.stApp .stButton button,
+.stApp [class*="st-key-hlchip_"] .stButton button,
+.stApp .st-key-mode_toggle button[role="radio"] {
+  transition: transform .12s cubic-bezier(.22,.61,.36,1),
+              filter .14s cubic-bezier(.22,.61,.36,1),
+              box-shadow .14s cubic-bezier(.22,.61,.36,1);
+}
+.stApp .stButton button:hover,
+.stApp [class*="st-key-hlchip_"] .stButton button:hover,
+.stApp .st-key-mode_toggle button[role="radio"]:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 1px 3px rgba(8,51,29,.10);
+}
+.stApp .stButton button:active,
+.stApp [class*="st-key-hlchip_"] .stButton button:active,
+.stApp .st-key-mode_toggle button[role="radio"]:active {
+  transform: scale(.97);
+  box-shadow: none;
+}
+/* 이미 선택된 모드는 눌러도 아무 일이 없다 — 줄어들면 바뀐 줄 안다. */
+.stApp .st-key-mode_toggle button[role="radio"][aria-checked="true"]:active {
+  transform: none;
+}
+
+/* ── ② 편집 모드에서 나타나는 것들 ───────────────────────────────────────
+   편집을 켜면 표마다 편집기가 한꺼번에 튀어나와 화면이 갑자기 길어진다.
+   아래에서 올라오면 "이게 새로 생긴 것"이 읽힌다. */
+@keyframes rpt-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.stApp [class*="st-key-te_"],
+.stApp [class*="st-key-pv_"],
+.stApp [class*="st-key-gv_"],
+.stApp [class*="st-key-mp_"],
+.stApp [class*="st-key-insert_"] {
+  animation: rpt-rise .34s cubic-bezier(.22,.61,.36,1) both;
+}
+/* ⚠ **계단식(0.07s씩 지연)은 CSS로 못 한다 — 넣었다가 뺐다.**
+   Streamlit이 `st.container(key=)` 하나하나를 **자기 wrapper의 외동 자식**으로
+   감싼다(2026-10-01 실측: 편집 컨테이너 18개 전부 `형제수 1 · 순번 1`).
+   그래서 `:nth-of-type(2)`·`:nth-child(2)`가 **영영 안 맞는다** — 실제로 넣어 보니
+   지연이 전부 `0s`였다. CSS에는 "같은 클래스 중 몇 번째"를 세는 방법이 없다.
+   계단을 만들려면 렌더할 때 순번을 실어 보내야 하므로 **파이썬 쪽 작업**이다
+   (2단계). 여기서는 다 같이 올라온다 — 0.34s면 한꺼번에 떠도 급하지 않다. */
+
+/* ── ③ 처리 중 ───────────────────────────────────────────────────────────
+   상단 2px 진행 바(`rpt-topbar`)는 **이미 리런 전체에 걸려 있다** — 모드 토글도
+   저장도 그 안이다(위 `[data-test-script-state]` 규칙). 새로 만들지 않는다.
+   다만 화면을 내려 보고 있으면 맨 위 바가 시야 밖이라, 누른 자리에서도
+   "처리 중"이 보이게 커서만 바꾼다. 모션이 아니라 상태 표시라 보기 모드에도
+   안전하다. */
+[data-test-script-state="running"] .stApp .stButton button,
+[data-test-script-state="rerunRequested"] .stApp .stButton button,
+[data-testid="stApp"][data-test-script-state="running"] .stButton button,
+[data-testid="stApp"][data-test-script-state="rerunRequested"] .stButton button,
+[data-testid="stApp"][data-test-script-state="running"] button[role="radio"],
+[data-testid="stApp"][data-test-script-state="rerunRequested"] button[role="radio"] {
+  cursor: progress;
+}
+
+/* ── 모션을 줄이도록 설정한 사용자 ───────────────────────────────────────
+   위 `rpt-topbar`의 reduce 규칙과 같은 방침이다. 상태 표시(커서)는 모션이
+   아니므로 남긴다. */
+@media (prefers-reduced-motion: reduce) {
+  .stApp .stButton button,
+  .stApp [class*="st-key-hlchip_"] .stButton button,
+  .stApp .st-key-mode_toggle button[role="radio"] {
+    transition: none;
+  }
+  .stApp .stButton button:hover,
+  .stApp [class*="st-key-hlchip_"] .stButton button:hover,
+  .stApp .st-key-mode_toggle button[role="radio"]:hover,
+  .stApp .stButton button:active,
+  .stApp [class*="st-key-hlchip_"] .stButton button:active,
+  .stApp .st-key-mode_toggle button[role="radio"]:active {
+    transform: none; filter: none; box-shadow: none;
+  }
+  .stApp [class*="st-key-te_"],
+  .stApp [class*="st-key-pv_"],
+  .stApp [class*="st-key-gv_"],
+  .stApp [class*="st-key-mp_"],
+  .stApp [class*="st-key-insert_"] {
+    animation: none;
+  }
+}
 </style>
 
 """

@@ -767,13 +767,11 @@ def render_google_table(df: pd.DataFrame, highlight: bool = True,
     # 구글 표도 다른 표와 같은 HTML 렌더를 쓴다(2026-08-29) — st.dataframe으로는 헤더를
     # 가운데 정렬하거나 굵게 할 수 없다. 이 표는 셀 클릭 강조를 쓰지 않아 잃는 게 없다.
     # 소재 식별자가 URL이라 '소재 링크'만 실제 링크로 심는다.
-    headers = list(renamed.columns) + ([PICK_REASON_COLUMN] if highlight else [])
+    headers = list(renamed.columns)
     rows = [
         [format_cell(name, value)
          for name, value in zip(renamed.columns, record)]
-        + ([pick_reason(idx, best, worst, manual=manual_used)] if highlight else [])
-        for idx, record in zip(renamed.index,
-                               renamed.itertuples(index=False, name=None))
+        for record in renamed.itertuples(index=False, name=None)
     ]
     row_classes = [
         "is-good" if idx in best else "is-bad" if idx in worst else ""
@@ -1181,17 +1179,10 @@ def manual_pick_editor(table: pd.DataFrame, month: int, os_name: str,
                     st.success("지정을 저장했습니다.")
                     rerun_local()
 
-
-#: 왜 칠해졌는지 적는 컬럼. **광고주도 본다.**
-#:
-#: 규리님 2026-09-30 지적의 뿌리다 — 지표를 둘(CPI + 보조) 쓰는데 표에는 어느 지표로
-#: 뽑혔는지가 없었다. 9월 AOS·인스톨에서 **우수의 CPI(1,690)가 저조의 CPI(1,573)보다
-#: 나빴고**, CPI 컬럼만 보는 사람에게는 규칙이 틀린 것처럼 읽혔다.
-#:
-#: ⚠ **문장을 넣지 말 것.** 적합성 점검 표에서 `사유` 컬럼을 한 번 걷어낸 적이 있다 —
-#:   긴 문장이 들어가 표가 밀렸다(`ui.py`의 표 안티패턴 절 참고). 여기는 지표 이름만 쓴다.
-#: ⚠ 툴팁으로 처리하지 말 것 — 이 리포트는 PDF로도 나간다(`tools/export_pdf.py`).
-PICK_REASON_COLUMN = "선정"
+# ⚠ `선정` 컬럼을 걷어냈다(규리님 2026-10-01: *"선정 컬럼을 빼라는 거였어, 각 테이블마다"*).
+#   2026-09-30에 "우수인데 CPI가 나빠 보인다"를 설명하려고 넣었던 컬럼이다 —
+#   되살릴 거면 그 경위부터 확인할 것(CLAUDE.md). 지표 이름은 표 아래 각주가 말한다.
+#   `pick_reason`은 **편집기의 `자동` 컬럼**에서 계속 쓰므로 지우지 않았다.
 
 
 #: 수기 지정된 줄의 사유 자리에 쓰는 문구.
@@ -1239,12 +1230,11 @@ def render_table_best_worst(
     # 이 표는 매체가 섞여 있는데 CPI 스케일이 매체마다 통째로 달라서, 표 전체로
     # 견주면 한 매체가 우수를·다른 매체가 저조를 통째로 가져간다(9월 실측).
     best, worst = pick_by_media(df, rank_metric=rank_metric)
-    manual_used = False
     if os_name is not None and month is not None and rank_metric is not None:
-        picked_best, picked_worst = manual_picks.apply(
+        # ⚠ 수기 지정이 자동 선정을 덮는 것은 그대로다. 다만 **그 사실이 이제 표에
+        #   안 적힌다** — `선정` 컬럼을 뺐기 때문이다(규리님 2026-10-01).
+        best, worst = manual_picks.apply(
             df, month, os_name, rank_metric, best, worst)
-        manual_used = (picked_best, picked_worst) != (best, worst)
-        best, worst = picked_best, picked_worst
     # 표에는 지표 컬럼만 보여준다 — title_kr처럼 카드 전용으로 딸려온 컬럼은 여기서 뺀다
     # (소재명 컬럼과 내용이 겹쳐 표를 어지럽힌다).
     display_df = df[display_columns(df, rank_metric)]
@@ -1252,13 +1242,11 @@ def render_table_best_worst(
 
     # 이 표는 셀 클릭 강조를 쓰지 않으므로 HTML로 직접 그린다 — st.dataframe으로는
     # 헤더를 가운데 정렬하거나 굵게 할 수 없고 지표 묶음 구분선도 못 넣는다.
-    headers = list(renamed.columns) + [PICK_REASON_COLUMN]
+    headers = list(renamed.columns)
     rows = [
         [format_cell(name, value)
          for name, value in zip(renamed.columns, record)]
-        + [pick_reason(idx, best, worst, manual=manual_used)]
-        for idx, record in zip(renamed.index,
-                               renamed.itertuples(index=False, name=None))
+        for record in renamed.itertuples(index=False, name=None)
     ]
     row_classes = [
         "is-good" if idx in best else "is-bad" if idx in worst else ""
@@ -3369,12 +3357,11 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str,
     labels = [field_label(f) for f in fields]
     headers = [field_label(f) for f in fields] + [
         COLUMN_LABELS.get(c, c) for c in table.columns if c not in fields
-    ] + [PICK_REASON_COLUMN]
+    ]
     value_columns = [c for c in table.columns if c not in fields]
     # 칠할 칸 = 마지막 축(장르 등) + 모든 지표 칸. 묶음 축은 병합이라 제외한다.
     paint_columns = ([labels[-1]]
-                     + [COLUMN_LABELS.get(c, c) for c in value_columns]
-                     + [PICK_REASON_COLUMN])
+                     + [COLUMN_LABELS.get(c, c) for c in value_columns])
 
     rows: list[list[str]] = []
     row_classes: list[str] = []
@@ -3416,21 +3403,17 @@ def render_ranked_table(table: pd.DataFrame, fields: list[str], metric: str,
     # 행 축을 바꾸면 그 표의 지정은 조용히 무시된다(`apply`가 표에 없는 지정을 버린다).
     # 편집기가 `자동` 컬럼에 쓸 값 — 수기 지정으로 덮기 **전**의 결과다.
     auto_picks = (dict(best_at), dict(worst_at))
-    manual_used = False
     if month is not None and view_id:
         marked = table.copy()
         marked[manual_picks.PIVOT_ID_COLUMN] = manual_picks.pivot_ids(table, fields)
-        picked_best, picked_worst = manual_picks.apply(
+        best_at, worst_at = manual_picks.apply(
             marked, month, manual_picks.pivot_os(view_id), metric,
             best_at, worst_at, id_column=manual_picks.PIVOT_ID_COLUMN)
-        manual_used = (picked_best, picked_worst) != (best_at, worst_at)
-        best_at, worst_at = picked_best, picked_worst
 
     for index, (position, row) in enumerate(table.iterrows()):
         line = [str(row[f]) for f in fields]
         for column in value_columns:
             line.append(fmt_metric(column, row[column]))
-        line.append(pick_reason(position, best_at, worst_at, manual=manual_used))
         rows.append(line)
         row_classes.append("ct-grp" if (start_of[index] and index) else "")
         # 색은 **축 이름부터 오른쪽 끝까지** 한 줄로 칠한다(규리님 2026-09-16).
