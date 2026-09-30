@@ -53,12 +53,32 @@ CSS = """
   --line-soft: #f0f2f4;
   --surface: #ffffff;
   --bg: #ffffff;
+  --font: 'Pretendard', -apple-system, BlinkMacSystemFont,
+          'Segoe UI', 'Malgun Gothic', sans-serif;
 }
 
 html, body, [class*="css"], .stApp {
-  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont,
-               'Segoe UI', 'Malgun Gothic', sans-serif;
+  font-family: var(--font);
   font-feature-settings: 'tnum' 1, 'case' 1;
+}
+
+/* ⚠ **Streamlit이 자기 컨테이너에 `font-family: "Source Sans"` 를 직접 건다.**
+   위의 `body` 선언은 상속이라 그 규칙에 덮인다 — 실측(2026-09-30): 화면의 글자
+   **1,332개**가 Source Sans였다. 그 글꼴에는 한글이 없어 시스템 대체 글꼴로
+   떨어지고, 그래서 `소진액`(대체 글꼴)과 `₩8,239,106`(Source Sans)이 서로 다른
+   글꼴로 그려져 두께·높이가 어긋났다. 광고주가 보는 본문 대부분이 그랬다.
+
+   컨테이너에만 되돌려 준다 — 자식은 상속으로 따라온다.
+   ⚠ **아이콘은 건드리면 안 된다.** Streamlit 아이콘은 `Material Symbols Rounded`
+     **합자**라, 글꼴을 덮으면 `keyboard_arrow_right` 같은 글자가 그대로 나온다.
+     아이콘 요소는 자기 `font-family` 를 직접 갖고 있어 상속으로는 안 깨진다 —
+     그래서 `*` 로 싹 덮지 않고 컨테이너만 지정한다. */
+[data-testid="stMarkdownContainer"],
+[data-testid="stNumberInputField"],
+[data-testid="stTextInputRootElement"],
+[data-testid="stHeadingWithActionElements"],
+[data-testid="stHeaderActionElements"] {
+  font-family: var(--font) !important;
 }
 
 .stApp { background: var(--bg); }
