@@ -48,6 +48,11 @@ SUM_METRICS = {
 #:   (구글 행의 `D0 read`를 비워 두는 것과 같은 이유다).
 EXTRA_SUM_METRICS = ("in_app_action",)
 
+#: 인앱 액션 한 건당 비용. 구글에는 D0 coin·read가 없어 **설치 이후를 금액으로 보는
+#: 유일한 지표**다. 이름을 한글로 두는 것은 `google_ads_report`가 이미 같은 이름으로
+#: 만들어 쓰기 때문이다 — 두 벌이 되면 한쪽만 고쳐져 갈린다.
+GOOGLE_CPA = "인앱 CPA"
+
 MEDIA_ALIASES = {
     "facebook": "Meta",
     "meta": "Meta",
@@ -448,6 +453,13 @@ def add_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["D0 read CVR"] = _safe_divide(out["D0 read"], out["total install"])
     out["D0 coin CVR"] = _safe_divide(out["D0 coin"], out["total install"])
     out["D7 coin CVR"] = _safe_divide(out["D7 coin"], out["total install"])
+    # 구글 전용(규리님 2026-10-01: *"인앱액션 행을 넣을 게 아니라 CPA를 넣어야지"*).
+    # ⚠ **컬럼이 있을 때만 만든다.** `in_app_action`은 시트 파서가 만들지 않아
+    #   메타·틱톡만 있는 프레임에는 아예 없다 — 무조건 참조하면 KeyError로 죽는다.
+    # ⚠ 액션 0건은 `_safe_divide`가 NaN으로 돌려준다. 0으로 두면 "CPA ₩0"이라는
+    #   **가장 좋은 값**으로 찍혀 구글 AOS가 전부 우수가 된다.
+    if "in_app_action" in out.columns:
+        out[GOOGLE_CPA] = _safe_divide(out["cost"], out["in_app_action"])
     return out
 
 
@@ -1086,7 +1098,7 @@ METRIC_DISPLAY = {
     "D0 read": "D0 Read", "D0 read CVR": "D0 Read CVR",
     "D0 coin": "D0 Coin", "D0 coin CVR": "D0 Coin CVR",
     "D7 coin": "D7 coin", "D7 coin CVR": "D7 coin CVR",
-    "in_app_action": "인앱 액션",
+    "in_app_action": "인앱 액션", GOOGLE_CPA: GOOGLE_CPA,
 }
 
 
@@ -1095,7 +1107,7 @@ METRIC_DISPLAY = {
 #: 값이 **작을수록** 좋은 지표. 정렬 방향과 "평균보다 나은가" 판정이 여기서 갈린다.
 #: 낮을수록 좋은 지표. **CPM을 빠뜨리면 판정이 뒤집힌다** —
 #: 단가가 올라간 것을 "우수"로 읽는다.
-LOWER_IS_BETTER = frozenset({"CPI", "CPC", "CPM"})
+LOWER_IS_BETTER = frozenset({"CPI", "CPC", "CPM", GOOGLE_CPA})
 
 #: 비율 지표의 벤치마크는 **평균의 평균이 아니라 합계에서 다시 계산**해야 한다.
 #: 행별 CPI를 산술평균하면 소진 1%짜리 소재가 소진 40%짜리와 같은 무게를 갖는다.
@@ -1106,6 +1118,7 @@ BENCHMARK_RATIO = {
     "D0 read CVR": ("D0 read", "total install"),
     "D0 coin CVR": ("D0 coin", "total install"),
     "D7 coin CVR": ("D7 coin", "total install"),
+    GOOGLE_CPA: ("cost", "in_app_action"),
 }
 
 
@@ -1242,6 +1255,7 @@ METRIC_COLUMNS = [
     "cost", "impression", "click", "total install",
     "D0 read", "D0 coin", "D7 coin", "in_app_action",
     "CTR", "CPM", "CPC", "CPI", "D0 read CVR", "D0 coin CVR", "D7 coin CVR",
+    GOOGLE_CPA,
 ]
 
 #: 화면에 내보이는 순서 = 이 목록의 순서. 사용자가 고른 순서를 쓰지 않는다 —

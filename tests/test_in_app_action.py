@@ -41,6 +41,54 @@ class TestCarried:
         assert "in_app_action" in cd.SELECTABLE_COLUMNS
 
 
+class TestCPA:
+    """규리님 2026-10-01: *"인앱액션 행을 넣을 게 아니라 CPA 인앱액션당 비용을 넣어야지."*
+
+    표에 내보이는 것은 **건수가 아니라 단가**다. 건수는 분모로만 쓴다.
+    """
+
+    def frame(self):
+        return pd.DataFrame([
+            {"media": "Google", "cost": 50000.0, "in_app_action": 5,
+             "impression": 1000, "click": 10, "total install": 20,
+             "D0 read": 0, "D0 coin": 0, "D7 coin": 0},
+            {"media": "Google", "cost": 30000.0, "in_app_action": 0,
+             "impression": 800, "click": 8, "total install": 9,
+             "D0 read": 0, "D0 coin": 0, "D7 coin": 0},
+        ])
+
+    def test_액션당_비용을_만든다(self):
+        out = cd.add_derived_metrics(self.frame())
+        assert out[cd.GOOGLE_CPA].iloc[0] == 10000.0
+
+    def test_액션_0건은_0원이_아니라_결측이다(self):
+        """**0으로 두면 `CPA ₩0`이 가장 좋은 값이 되어 구글 AOS가 전부 우수가 된다.**
+        9월 용사의 발라드 AOS 구글이 정확히 액션 0건이었다."""
+        out = cd.add_derived_metrics(self.frame())
+        assert pd.isna(out[cd.GOOGLE_CPA].iloc[1])
+
+    def test_낮을수록_좋은_지표다(self):
+        """빠뜨리면 단가가 오른 것을 우수로 읽는다(CPM에서 실제로 겪었다)."""
+        assert cd.GOOGLE_CPA in cd.LOWER_IS_BETTER
+
+    def test_벤치마크는_합계에서_다시_계산한다(self):
+        assert cd.BENCHMARK_RATIO[cd.GOOGLE_CPA] == ("cost", "in_app_action")
+
+    def test_컬럼이_없는_프레임에서도_죽지_않는다(self):
+        """메타·틱톡만 있는 프레임에는 `in_app_action`이 **아예 없다** —
+        시트 파서가 만들지 않기 때문이다."""
+        meta = pd.DataFrame([{"media": "Meta", "cost": 100.0, "impression": 10,
+                              "click": 1, "total install": 1, "D0 read": 1,
+                              "D0 coin": 0, "D7 coin": 0}])
+        out = cd.add_derived_metrics(meta)
+        assert cd.GOOGLE_CPA not in out.columns
+
+    def test_이름이_구글_표와_같다(self):
+        """두 벌이 되면 한쪽만 고쳐져 갈린다."""
+        import google_ads_report as gg
+        assert cd.GOOGLE_CPA in gg.GOOGLE_METRIC_COLUMNS
+
+
 class TestNotZeroFilled:
     """**이 테스트가 핵심 계약이다.**
 
