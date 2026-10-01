@@ -1727,9 +1727,63 @@ section[data-testid="stSidebar"] h2 {
   transform: scale(.97);
   box-shadow: none;
 }
+/* **되돌리기 어려운 버튼은 더 깊게**(.94, 규리님 선택 2026-10-01).
+   무거운 조작은 반응도 커야 한다. 갱신(⟳)·칩처럼 가벼운 것은 .97 그대로 둔다 —
+   전부 키우면 표 주변이 산만해진다. */
+.stApp [class*="st-key-save_"] .stButton button:active,
+.stApp [class*="st-key-next_step_save_"] .stButton button:active,
+.stApp [class*="st-key-cancel_"] .stButton button:active,
+.stApp [class*="st-key-nscancel_"] .stButton button:active,
+.stApp [class*="st-key-del_"] .stButton button:active,
+.stApp [class*="st-key-google_freeze"] .stButton button:active,
+.stApp [class*="st-key-backup_dl"] .stButton button:active {
+  transform: scale(.94);
+}
 /* 이미 선택된 모드는 눌러도 아무 일이 없다 — 줄어들면 바뀐 줄 안다. */
 .stApp .st-key-mode_toggle button[role="radio"][aria-checked="true"]:active {
   transform: none;
+}
+
+/* ── ①-b 모드 토글: 초록 알약이 미끄러진다 (규리님 선택 2026-10-01, B안) ──────
+   규리님: *"사이드바의 보기/편집 토글은 모션이 더 컸으면 좋겠어."*
+
+   눌림만 깊게 해도(A안) **가장 답답한 구간이 안 채워진다** — 누른 뒤 리런이 끝날
+   때까지다. 색만 즉시 바뀌면 그 사이가 비어 있다. 알약이 건너가면 "바뀌었다"가
+   움직임으로 읽힌다. 자동 재생 시안 넷을 나란히 놓고 고르셨다.
+
+   ⚠ **알약은 DOM에 없다.** Streamlit은 선택된 버튼에 배경색을 칠할 뿐이라, 배경을
+     끄고 **부모에 가짜 알약(`::before`)을 그려** 옮긴다.
+   ⚠ **`:has()`를 쓴다** — 위쪽 CSS에는 없던 선택자다. 크롬/사파리/파이어폭스 최신은
+     되지만(실측 `CSS.supports('selector(:has(*))')` true), 안 되는 브라우저에서는
+     알약이 왼쪽에 머문다. 그때도 글자는 읽히고 동작은 그대로다(모양만 손해).
+   ⚠ **폭 50% 가정을 코드로 지킨다** — `flex: 1 1 0`으로 두 칸을 같게 만든다.
+     지금은 `보기`·`편집` 둘 다 두 글자라 우연히 같지만(실측 33.6px/33.6px),
+     라벨이 바뀌면 알약이 어긋난다. */
+.stApp .st-key-mode_toggle .stButtonGroup > div:has(> button[role="radio"]) {
+  position: relative;
+}
+.stApp .st-key-mode_toggle .stButtonGroup > div:has(> button[role="radio"])::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 50%;
+  background: var(--brand); border-radius: 3px; z-index: 0;
+  /* 끝에서 살짝 튕긴다 — 알약이 "도착했다"가 읽힌다. */
+  transition: transform .34s cubic-bezier(.34,1.45,.5,1);
+}
+.stApp .st-key-mode_toggle .stButtonGroup
+  > div:has(> button[role="radio"]:nth-of-type(2)[aria-checked="true"])::before {
+  transform: translateX(100%);
+}
+.stApp .st-key-mode_toggle .stButtonGroup > div > button[role="radio"] {
+  flex: 1 1 0; position: relative; z-index: 1;
+  transition: transform .12s cubic-bezier(.22,.61,.36,1),
+              color .2s linear,
+              filter .14s cubic-bezier(.22,.61,.36,1);
+}
+/* 칠해져 있던 초록을 끈다 — 이제 알약이 그 일을 한다.
+   ⚠ 위쪽 규칙이 `!important`라 여기서도 써야 이긴다(구체도 0,4,1 > 0,3,1).
+   ⚠ **`vmetric_` 세그먼트는 건드리지 않는다** — 그건 옮길 알약이 없다. */
+.stApp .st-key-mode_toggle button[role="radio"][aria-checked="true"] {
+  background: transparent !important;
+  border-color: transparent !important;
 }
 
 /* ── ② 편집 모드에서 나타나는 것들 ───────────────────────────────────────
@@ -1792,6 +1846,14 @@ section[data-testid="stSidebar"] h2 {
   .stApp [class*="st-key-mp_"],
   .stApp [class*="st-key-insert_"] {
     animation: none;
+  }
+  /* 알약은 **끄지 않고 즉시 이동**시킨다 — 없애면 어느 쪽이 선택됐는지 안 보인다.
+     모션만 빼는 것이 이 미디어 쿼리의 뜻이다. */
+  .stApp .st-key-mode_toggle .stButtonGroup > div:has(> button[role="radio"])::before {
+    transition: none;
+  }
+  .stApp .st-key-mode_toggle .stButtonGroup > div > button[role="radio"] {
+    transition: none;
   }
 }
 </style>

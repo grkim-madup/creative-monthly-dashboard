@@ -55,3 +55,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — 구글 영문 헤더 / 소재명 축 / through_date (2026-10-01)
 # 재시작 마커 — as_creative_rows / view_state.google_creative (2026-10-01)
 # 재시작 마커 — pick_by_media(rank_metric) / pick_basis / PICK_PROFILES, pick_best_worst 등 삭제 (2026-10-01)
+# 재시작 마커 — ui.py 모션 CSS(모드 토글 알약 슬라이드) (2026-10-01)
