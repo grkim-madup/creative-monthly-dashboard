@@ -291,6 +291,7 @@ COLUMN_LABELS = {
     "D0 read CVR": "D0 Read CVR",
     "D0 coin CVR": "D0 Coin CVR",
     "genre_group": "장르",
+    "in_app_action": "인앱 액션",
 }
 
 # 퍼센트가 아닌 값은 전부 소수점 없이. 퍼센트만 소수 2자리.

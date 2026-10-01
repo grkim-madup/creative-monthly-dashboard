@@ -325,7 +325,13 @@ def google_dimensions_for(frame: pd.DataFrame) -> dict[str, str]:
 #: 구글 창작 애셋을 **소재 단위 프레임 모양**으로 바꿀 때 쓰는 컬럼 대응.
 #: 구글 애셋에는 없는 지표(`D0 read`·`D0 coin`·`D7 coin`)는 **비운다** —
 #: 0으로 채우면 "전환이 0건이었다"로 읽혀 CVR이 0%로 찍힌다(구조적 부재와 실제 0은 다르다).
-_CREATIVE_ROW_METRICS = ("impression", "click", "cost", "total install")
+#: ⚠ `in_app_action`을 함께 넘긴다(규리님 2026-10-01: *"용사의 발라드 구글에서
+#:   인앱 액션을 넣어야 해"*). 구글에는 D0 coin·read가 없어 설치 이후를 보는 지표가
+#:   이것뿐이다. **표본이 얇다는 것을 알고 선택하셨다** — 9월 용사의 발라드 기준
+#:   캠페인 전체 96건 중 소재명이 붙은 애셋에 떨어지는 것은 **13건**뿐이고
+#:   소재 57개 중 50개가 0이다(소진·설치와 똑같이 애셋 유형별로 배분되기 때문).
+_CREATIVE_ROW_METRICS = ("impression", "click", "cost", "total install",
+                         "in_app_action")
 
 
 def as_creative_rows(frame: pd.DataFrame, month: int | None = None) -> pd.DataFrame:

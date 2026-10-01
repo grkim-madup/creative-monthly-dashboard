@@ -36,6 +36,18 @@ SUM_METRICS = {
     # 빼면 aggregate_by가 만들어내지 않으므로 모든 표에서 한 번에 사라진다.
 }
 
+#: `Media_RAW`에 없고 **구글 애셋 리포트에서만** 오는 합산 지표.
+#:
+#: ⚠ `SUM_METRICS`에 넣지 않는다. 그쪽은 **시트 컬럼 → 내부 이름** 대응표라
+#:   `parse_raw_values`가 함께 읽는다 — 넣으면 parquet 스키마가 바뀌어
+#:   `PARSER_VERSION`을 올려야 하고, 캐시를 전부 다시 받아야 한다.
+#:
+#: ⚠ 메타·틱톡 행에는 이 컬럼이 **아예 없다.** `aggregate_by`가 `sum(min_count=1)`
+#:   이라 전부 결측인 묶음은 0이 아니라 결측으로 남고, 화면에 `-`로 나온다.
+#:   **0으로 채우지 말 것** — "액션이 0건이었다"와 "측정 자체가 없다"는 다르다
+#:   (구글 행의 `D0 read`를 비워 두는 것과 같은 이유다).
+EXTRA_SUM_METRICS = ("in_app_action",)
+
 MEDIA_ALIASES = {
     "facebook": "Meta",
     "meta": "Meta",
@@ -443,7 +455,8 @@ def aggregate_by(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     """지정한 키로 합산 후 파생 지표 재계산. 비율은 절대 평균내지 않고 합계에서 다시 계산한다."""
     if df.empty:
         return df
-    metrics = [c for c in SUM_METRICS.values() if c in df.columns]
+    metrics = [c for c in list(SUM_METRICS.values()) + list(EXTRA_SUM_METRICS)
+               if c in df.columns]
     grouped = (
         df.groupby(keys, dropna=False)[metrics]
         .sum(min_count=1)
@@ -1073,6 +1086,7 @@ METRIC_DISPLAY = {
     "D0 read": "D0 Read", "D0 read CVR": "D0 Read CVR",
     "D0 coin": "D0 Coin", "D0 coin CVR": "D0 Coin CVR",
     "D7 coin": "D7 coin", "D7 coin CVR": "D7 coin CVR",
+    "in_app_action": "인앱 액션",
 }
 
 
@@ -1226,7 +1240,7 @@ DIMENSION_COLUMNS = [
 #: **지표** 컬럼 — 집계 결과를 보여줄 뿐 집계 키에 영향을 주지 않는다.
 METRIC_COLUMNS = [
     "cost", "impression", "click", "total install",
-    "D0 read", "D0 coin", "D7 coin",
+    "D0 read", "D0 coin", "D7 coin", "in_app_action",
     "CTR", "CPM", "CPC", "CPI", "D0 read CVR", "D0 coin CVR", "D7 coin CVR",
 ]
 
