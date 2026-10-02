@@ -58,3 +58,4 @@ imageio-ffmpeg==0.6.0
 # 재시작 마커 — ui.py 모션 CSS(모드 토글 알약 슬라이드) (2026-10-01)
 # 재시작 마커 — creative_data.EXTRA_SUM_METRICS / 구글 소재 행 인앱 액션 (2026-10-01)
 # 재시작 마커 — creative_data.GOOGLE_CPA(인앱 액션당 비용) (2026-10-01)
+# 재시작 마커 — view_state.from_date / period_bounds / freeze_period (2026-10-02)

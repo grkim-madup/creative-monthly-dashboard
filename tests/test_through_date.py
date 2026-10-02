@@ -100,11 +100,24 @@ def test_기간을_표에_찍는다(name):
 
 @pytest.mark.parametrize("name", ENTRYPOINTS)
 def test_기간이_비면_각주를_안_그린다(name):
-    """평소 표에 군더더기를 남기지 않는다."""
+    """평소 표에 군더더기를 남기지 않는다.
+
+    ⚠ **가드 문구가 아니라 "일찍 빠져나간다"를 본다.** 예전에는
+    `"if not through" in body` 로 문자열을 찾았는데, 구간(`period_bounds`)으로
+    바뀌자 동작은 그대로인데 검사만 깨졌다.
+    """
     node = next(n for n in ast.walk(ast.parse(read(name)))
                 if isinstance(n, ast.FunctionDef) and n.name == "render_period_note")
-    body = ast.unparse(node)
-    assert "if not through" in body or "if not through_date" in body, name
+    # 문서화 문자열을 뺀 첫 실행문이 "없으면 return"이어야 한다.
+    stmts = [x for x in node.body
+             if not (isinstance(x, ast.Expr) and isinstance(x.value, ast.Constant))]
+    guard = next((x for x in stmts if isinstance(x, ast.If)), None)
+    assert guard is not None, f"{name}: 조기 반환 가드가 없다"
+    assert any(isinstance(x, ast.Return) for x in ast.walk(guard)), name
+    # 가드보다 먼저 화면에 쓰는 것이 없어야 한다.
+    before = stmts[:stmts.index(guard)]
+    for stmt in before:
+        assert "st.markdown" not in ast.unparse(stmt), f"{name}: 가드 전에 그린다"
 
 
 # --------------------------------------------- 고정(freeze)에서 안 사라지게

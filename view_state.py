@@ -64,6 +64,13 @@ VIEW_DEFAULTS = {
     #: ⚠ 날짜 범위를 **일반 필터로 만들지 않는다.** `filtered_scope`는 범주형
     #:   `isin`이라 31개 날짜를 나열하게 된다. 한 필드로 끝낸다.
     "through_date": "",
+    #: 기간 예외의 **시작일**. 비면 리포트 월 1일이다(= 2026-09-30에 만든 동작 그대로).
+    #:
+    #: 규리님(2026-10-02): *"장르별 성과 쪽도 기간을 6월~9월까지 넓게 보고 싶은데."*
+    #: 종료일만 있던 동안에는 시작이 **리포트 월 1일로 고정**이라, `2026-06-01`을
+    #: 넣으면 `9/1 ~ 6/1` 이라는 거꾸로 된 구간이 되어 **표가 통째로 비었다**
+    #: (규리님 화면에서 `조건에 맞는 소재가 없습니다`로 확인).
+    "from_date": "",
     #: 기간 비교 뷰용. `metrics`는 편집 위젯이 없어 늘 기본값이었다 — 지금은 `values`를
     #: 쓴다. 필드는 지우지 않는다(되돌릴 수 있게).
     "periods": [], "metrics": [],
@@ -162,7 +169,8 @@ def view_with_defaults(view: dict) -> dict:
         #   기간 예외를 걸어도 지킬 방법이 없으므로 여기서 비운다.
         merged.update({"contrast": False, "contrast_field": "", "thumbs": False,
                        "include_ads": [], "chart_kind": "", "title_level": False,
-                       "through_date": "", "google_creative": False})
+                       "through_date": "", "from_date": "",
+                       "google_creative": False})
     # ⚠ **작품 단위 집계는 조건을 코드로 건다.** 소재 단위 축이 하나라도 섞이면 구글
     #   행이 전부 `미분류` 한 줄이 되어 표에 가짜 버킷이 생긴다(`883600f`와 같은 사고).
     #   화면에서 토글을 감추는 것만으로는 부족하다 — 축을 나중에 바꾸면 저장된 True가
@@ -218,11 +226,15 @@ def view_from_widgets(view: dict, view_key: str, session) -> dict:
     merged["rank_by"] = str(take(f"pvrank_{view_key}", merged["rank_by"]) or "")
     # ⚠ **체크박스를 먼저 본다.** 날짜 위젯 값은 체크를 꺼도 세션에 남아서, 그것만
     #   읽으면 껐는데 저장 때 되살아난다.
-    if take(f"pvthru_on_{view_key}", bool(merged["through_date"])):
+    if take(f"pvthru_on_{view_key}",
+            bool(merged["through_date"] or merged["from_date"])):
         merged["through_date"] = str(
             take(f"pvthru_{view_key}", merged["through_date"]) or "")
+        merged["from_date"] = str(
+            take(f"pvfrom_{view_key}", merged["from_date"]) or "")
     else:
         merged["through_date"] = ""
+        merged["from_date"] = ""
 
     # 기간 비교의 기간 두 개. 위젯은 라벨·월을 따로 쓴다.
     periods = []

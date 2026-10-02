@@ -2010,24 +2010,36 @@ else:
 live_source_available = dropbox_source.configured() or Path(google_folder).exists()
 
 
-def freeze_through_date(month: int) -> str:
-    """이 달 블록들이 쓰는 **기간 예외 종료일의 최댓값**. 없으면 빈 문자열.
+def freeze_period(month: int) -> tuple[str, str]:
+    """이 달 블록들이 쓰는 기간 예외 구간의 **가장 이른 시작일 · 가장 늦은 종료일**.
 
-    ⚠ 고정이 이 날짜를 모르면 **기간 예외 블록만 조용히 줄어든다.** 고정은
+    ⚠ 고정이 이 구간을 모르면 **기간 예외 블록만 조용히 줄어든다.** 고정은
     `month == month` 행만 저장하기 때문이다(`media_snapshot.rows_for` 주석 참고).
+
+    ⚠ **시작일도 함께 모은다**(2026-10-02). 종료일만 보던 동안에는 `6월~9월`처럼
+      **거슬러 보는** 표가 고정 후 9월치만 남아 조용히 줄어들었다 — 종료일 확장과
+      정확히 같은 사고가 반대 방향으로 난다.
     """
-    latest = ""
+    earliest, latest = "", ""
     try:
         state = report_blocks.load_state(month, use_cache=True)
     except Exception:  # noqa: BLE001 — 고정을 막을 이유는 아니다
-        return ""
+        return "", ""
     for slot_blocks in (state or {}).values():
         for block in slot_blocks or []:
             for view in (block.get("views") or []):
                 through = str(view.get("through_date") or "")
+                since = str(view.get("from_date") or "")
                 if through > latest:
                     latest = through
-    return latest
+                if since and (not earliest or since < earliest):
+                    earliest = since
+    return earliest, latest
+
+
+def freeze_through_date(month: int) -> str:
+    """종료일만 필요한 호출부를 위한 얇은 창구."""
+    return freeze_period(month)[1]
 
 
 def freeze_month(month: int) -> list[str]:
@@ -2055,12 +2067,16 @@ def freeze_month(month: int) -> list[str]:
 
     # 메타·틱톡이 먼저다. 구글은 폴더가 없을 수 있지만 이쪽은 항상 가능하다.
     # 기간 예외 블록이 보는 날짜까지 함께 얼린다 — 안 그러면 고정 후 그 표만 줄어든다.
-    _through = freeze_through_date(month)
+    _since, _through = freeze_period(month)
     if _through:
         settings["through_date"] = _through
+    if _since:
+        settings["from_date"] = _since
     media_snapshot.save(month, _load(sheet_id), settings=settings,
-                        through_date=_through or None)
-    done.append("메타·틱톡" + (f" (+{_through}까지)" if _through else ""))
+                        through_date=_through or None, from_date=_since or None)
+    _span = " · ".join(x for x in (f"{_since}부터" if _since else "",
+                                   f"{_through}까지" if _through else "") if x)
+    done.append("메타·틱톡" + (f" (+{_span})" if _span else ""))
 
     if live_source_available:
         try:
@@ -3474,15 +3490,12 @@ def render_period_note(view: dict, month: int) -> None:
     ⚠ **표마다 찍는다.** 한 블록 안에서 기간이 갈릴 수 있다 — 메타·틱톡은 10/1까지,
       구글은 리포트 추출 시점(9/27)까지다. 블록 단위로 한 번 적으면 거짓말이 된다.
     """
-    through = str(view.get("through_date") or "")
-    if not through:
-        return
-    limit = pd.to_datetime(through, errors="coerce")
-    if pd.isna(limit):
+    begin, limit = period_bounds(view, month)
+    if begin is None:
         return
     # ⚠ 프레임의 실제 날짜 최소·최대를 찍지 않는다. 그건 "그 소재가 집행된 기간"이라
     #   집계 구간과 다르고, 광고주가 둘을 같은 것으로 읽는다. **요청한 구간**을 적는다.
-    span = f"{int(month)}/1~{limit.month}/{limit.day}"
+    span = f"{begin.month}/{begin.day}~{limit.month}/{limit.day}"
     st.markdown(
         f'<div class="sec-legend">기간 <b>{html.escape(span)}</b> — '
         "이 표만 리포트 월을 넘겨 집계합니다. 다른 표·총괄 수치와 기간이 다릅니다."
@@ -3566,15 +3579,42 @@ def through_date_scope(view: dict, month: int, named: bool = True):
     frame = all_months_named if named else all_months
     if frame is None or getattr(frame, "empty", True) or "date" not in frame.columns:
         return frame
-    limit = pd.to_datetime(str(view.get("through_date") or ""), errors="coerce")
-    if pd.isna(limit):
+    start, limit = period_bounds(view, month, frame)
+    if start is None:
         return frame
-    year = int(pd.to_datetime(frame["date"], errors="coerce").dt.year.dropna().max()
-               or limit.year)
-    start = pd.Timestamp(year=year, month=int(month), day=1)
     days = pd.to_datetime(frame["date"], errors="coerce")
     out = frame[(days >= start) & (days <= limit)]
     return manual_overrides.apply(out, month)
+
+
+def period_bounds(view: dict, month: int, frame=None):
+    """기간 예외 구간 `(시작, 끝)`. 걸려 있지 않으면 `(None, None)`.
+
+    **시작은 `from_date`, 없으면 리포트 월 1일**이다(2026-09-30 동작 그대로).
+    규리님(2026-10-02): *"장르별 성과 쪽도 기간을 6월~9월까지 넓게 보고 싶은데."*
+
+    ⚠ **판정을 한 곳에만 둔다.** 프레임을 자르는 쪽·표 아래 기간을 찍는 쪽·고정하는
+      쪽이 각자 계산하면 조용히 갈린다 — 이 저장소에서 반복된 실패다.
+    """
+    through = str(view.get("through_date") or "")
+    since = str(view.get("from_date") or "")
+    limit = pd.to_datetime(through, errors="coerce")
+    begin = pd.to_datetime(since, errors="coerce")
+    if pd.isna(limit) and pd.isna(begin):
+        return None, None
+    year = limit.year if not pd.isna(limit) else begin.year
+    if frame is not None and "date" in getattr(frame, "columns", []):
+        seen = pd.to_datetime(frame["date"], errors="coerce").dt.year.dropna()
+        if not seen.empty:
+            year = int(seen.max())
+    if pd.isna(begin):
+        begin = pd.Timestamp(year=year, month=int(month), day=1)
+    if pd.isna(limit):
+        # 시작만 주면 **리포트 월 말일까지**로 읽는다 — 끝을 안 정했다고 미래까지
+        # 끌고 오면 다음 달 집행이 조용히 섞인다.
+        limit = (pd.Timestamp(year=year, month=int(month), day=1)
+                 + pd.offsets.MonthEnd(1))
+    return begin, limit
 
 
 def render_view(view: dict, month: int, key_prefix: str,
@@ -4251,7 +4291,8 @@ def pivot_editor(view: dict, view_key: str) -> dict:
         # ⚠ 예전에는 이 줄 **아래 별도 체크박스**로 붙여서, 토글 넷과 정렬이 어긋났다
         #   (규리님 지적 2026-10-01). 같은 줄·같은 폭으로 둔다.
         through = str(view.get("through_date") or "")
-        use_through = c_thru.toggle("기간 예외", value=bool(through),
+        since = str(view.get("from_date") or "")
+        use_through = c_thru.toggle("기간 예외", value=bool(through or since),
                                     key=f"pvthru_on_{view_key}")
 
         # 필터가 여러 개면 **무엇을 대조 기준으로 삼을지**가 결과를 바꾼다.
@@ -4282,21 +4323,39 @@ def pivot_editor(view: dict, view_key: str) -> dict:
 
     if use_through:
         # 날짜는 토글 아래 한 줄로 들여쓴다 — 라벨 칸을 비워 왼쪽 선을 맞춘다.
-        _pad, _date = st.columns([1.05, 2.4])
-        default = pd.to_datetime(through, errors="coerce")
-        if pd.isna(default):
-            default = (pd.Timestamp(year=dt.date.today().year, month=int(month), day=1)
-                       + pd.offsets.MonthEnd(1))
-        with _date:
+        # ⚠ **시작·종료 두 칸이다**(규리님 2026-10-02). 종료만 있던 동안에는 시작이
+        #   리포트 월 1일로 고정이라, 지난달을 넣으면 거꾸로 된 구간이 되어 표가
+        #   통째로 비었다.
+        _pad, _from, _to = st.columns([1.05, 1.2, 1.2])
+        year = dt.date.today().year
+        begin = pd.to_datetime(since, errors="coerce")
+        if pd.isna(begin):
+            begin = pd.Timestamp(year=year, month=int(month), day=1)
+        end = pd.to_datetime(through, errors="coerce")
+        if pd.isna(end):
+            end = (pd.Timestamp(year=year, month=int(month), day=1)
+                   + pd.offsets.MonthEnd(1))
+        with _from:
+            since = str(st.date_input(
+                "기간 예외 시작일", value=begin.date(),
+                key=f"pvfrom_{view_key}", label_visibility="collapsed",
+                format="YYYY-MM-DD"))
+        with _to:
             through = str(st.date_input(
-                "기간 예외 종료일", value=default.date(),
+                "기간 예외 종료일", value=end.date(),
                 key=f"pvthru_{view_key}", label_visibility="collapsed",
                 format="YYYY-MM-DD"))
+        if since > through:
+            # 거꾸로 두면 표가 조용히 비어 버린다 — 그 전에 말한다.
+            status_row("warn", "시작일이 종료일보다 뒤입니다",
+                       f"{since} ~ {through} — 이대로 저장하면 표가 빕니다.")
     else:
         through = ""
+        since = ""
 
     out = {**view, "values": list(metrics), "filters": filters,
-           "through_date": through, "google_creative": bool(google_creative_on),
+           "through_date": through, "from_date": since,
+           "google_creative": bool(google_creative_on),
            "include_ads": list(include),
            "contrast": bool(contrast), "thumbs": bool(thumbs),
            "title_level": bool(title_level), "grouped": bool(grouped),
@@ -4573,21 +4632,36 @@ def save_block(block: dict, month: int, views: list[dict], owner: str) -> None:
     if locks.status(f"block:{block_id}", month, owner, fresh=True).state != "mine":
         st.error("다른 사람이 이 블록을 이어받았습니다. 내용을 복사해 두고 다시 편집하세요.")
         return
+    def write(data: dict) -> None:
+        # ⚠ **코멘트는 세션에 키가 있을 때만 쓴다.** 예전에는
+        #   `st.session_state.get(키) or ""` 라 **키가 없으면 빈 문자열로 덮어썼다** —
+        #   2026-10-02에 `<용사의 발라드>` 코멘트가 이 경로로 사라졌고 복구 사본이
+        #   없었다. 표 설정(`view_from_widgets`)은 *"세션 키가 없으면 저장된 값을
+        #   그대로 유지한다"* 가 명시된 계약인데 코멘트만 그걸 안 지키고 있었다.
+        #
+        #   키가 없다는 것은 **에디터가 이번 리런에 안 그려졌다**는 뜻이지
+        #   "사용자가 비웠다"가 아니다. 지울 때는 에디터가 떠 있고 키는 `""`로
+        #   존재하므로, 의도적인 비우기는 그대로 저장된다.
+        current = report_blocks.find_block(data, report_blocks.SLOT_ANALYSIS,
+                                           block_id) or {}
+        key = comment_key(block_id)
+        comment = (st.session_state[key] or "") if key in st.session_state             else current.get("comment", "")
+        report_blocks.update_block(
+            data, report_blocks.SLOT_ANALYSIS, block_id,
+            title=st.session_state.get(f"blocktitle_{block_id}",
+                                       block.get("title", "")),
+            views=[view_from_widgets(v, f"{block_id}_{v['id']}") for v in views],
+            comment=comment,
+            # 텍스트 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드는 남겨 둔다 —
+            # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
+            insight="",
+        )
+
     saved = commit_blocks(
         # 화면이 들고 있는 스냅샷이 아니라 저장소의 최신 상태에 이 블록만 덮어쓴다.
         # expect(내가 보고 있던 rev)를 함께 넘겨, 그 사이 같은 블록이 바뀌었으면
         # 덮어쓰지 않고 거부한다.
-        month,
-        lambda d: report_blocks.update_block(
-            d, report_blocks.SLOT_ANALYSIS, block_id,
-            title=st.session_state.get(f"blocktitle_{block_id}",
-                                       block.get("title", "")),
-            views=[view_from_widgets(v, f"{block_id}_{v['id']}") for v in views],
-            comment=st.session_state.get(comment_key(block_id)) or "",
-            # 텍스트 칸을 하나로 합쳤으므로 `insight`는 비운다. 필드는 남겨 둔다 —
-            # 저장 형식을 지우면 코드를 되돌려도 예전 내용을 다시 못 읽는다.
-            insight="",
-        ),
+        month, write,
         expect={block_id: block.get("_rev", 0)},
     )
     if saved:
