@@ -2022,18 +2022,17 @@ def freeze_period(month: int) -> tuple[str, str]:
     """
     earliest, latest = "", ""
     try:
-        state = report_blocks.load_state(month, use_cache=True)
+        views = report_blocks.all_views(
+            report_blocks.load_state(month, use_cache=True))
     except Exception:  # noqa: BLE001 — 고정을 막을 이유는 아니다
         return "", ""
-    for slot_blocks in (state or {}).values():
-        for block in slot_blocks or []:
-            for view in (block.get("views") or []):
-                through = str(view.get("through_date") or "")
-                since = str(view.get("from_date") or "")
-                if through > latest:
-                    latest = through
-                if since and (not earliest or since < earliest):
-                    earliest = since
+    for view in views:
+        through = str(view.get("through_date") or "")
+        since = str(view.get("from_date") or "")
+        if through > latest:
+            latest = through
+        if since and (not earliest or since < earliest):
+            earliest = since
     return earliest, latest
 
 

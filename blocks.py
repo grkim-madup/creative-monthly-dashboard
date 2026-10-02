@@ -449,6 +449,32 @@ def add_block(
     return block_id
 
 
+def all_views(state) -> list[dict]:
+    """그 달 모든 블록의 뷰를 한 줄로 편다.
+
+    ⚠ **`load_state`는 `dict`가 아니라 `BlocksState`를 돌려준다.** 진입점이
+    `(state or {}).values()` 로 dict처럼 다뤄 **월 고정이 2026-09-30부터 계속
+    `AttributeError`로 실패하고 있었다**(규리님이 `지금 고정하기`를 눌러서 발견).
+
+    진입점 안에 있던 순회라 **어떤 테스트도 그 코드를 부르지 못했다** — 그래서
+    여기로 옮긴다(`spend_pool`·`aggregate_by_axis`를 옮긴 것과 같은 이유).
+
+    `dict`를 받아도 동작한다 — 예전 호출부가 남아 있어도 깨지지 않는다.
+    """
+    data = getattr(state, "data", state) or {}
+    if not hasattr(data, "values"):
+        return []
+    out: list[dict] = []
+    for slot_blocks in data.values():
+        for block in slot_blocks or []:
+            if not isinstance(block, dict):
+                continue
+            for view in (block.get("views") or []):
+                if isinstance(view, dict):
+                    out.append(view)
+    return out
+
+
 def find_block(data: dict, slot: str, block_id: str) -> dict | None:
     for block in data.get(slot, []):
         if block.get("id") == block_id:
